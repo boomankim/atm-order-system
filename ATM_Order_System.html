@@ -1,0 +1,2984 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0">
+<title>ALL THAT MEAT - 통합 주문관리 시스템</title>
+<!-- Firebase SDK (compat v9) -->
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+<style>
+  :root {
+    --brand: #8B1A1A; --brand-dark: #5C0F0F; --brand-light: #C8A2A2;
+    --cream: #FAF6F1; --bg: #F2EEE8; --ink: #2A1A1A; --muted: #6B5B5B;
+    --line: #E5DCD3; --ok: #2F7D32; --warn: #B8860B; --danger: #C0392B;
+    --info: #2E5C8A;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    font-family: 'Helvetica Neue','Apple SD Gothic Neo','Malgun Gothic',Arial,sans-serif;
+    background: var(--bg); color: var(--ink); line-height: 1.5;
+    -webkit-print-color-adjust: exact; print-color-adjust: exact;
+    min-height: 100vh;
+  }
+  /* Top Nav */
+  .nav {
+    position: sticky; top: 0; z-index: 100;
+    background: var(--brand-dark); color: #fff;
+    padding: 10px 16px; display: flex; gap: 6px;
+    align-items: center; flex-wrap: wrap;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+  }
+  .nav .logo {
+    font-weight: 800; letter-spacing: 1.5px; font-size: 15px;
+    margin-right: 12px; white-space: nowrap;
+  }
+  .nav .tab {
+    background: transparent; color: rgba(255,255,255,0.85);
+    border: 1px solid transparent; padding: 6px 12px;
+    border-radius: 6px; cursor: pointer; font-size: 13px;
+    font-family: inherit; font-weight: 500;
+  }
+  .nav .tab:hover { background: rgba(255,255,255,0.1); color: #fff; }
+  .nav .tab.active { background: #fff; color: var(--brand-dark); font-weight: 700; }
+  .nav .spacer { flex: 1; }
+  .nav .util {
+    background: #F0B400; color: var(--ink); border: none;
+    padding: 6px 10px; border-radius: 5px; cursor: pointer;
+    font-size: 12px; font-weight: 600;
+  }
+
+  /* Main container */
+  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
+  main.narrow { max-width: 780px; }
+
+  h2.page-title {
+    margin: 4px 0 16px 0; font-size: 22px;
+    color: var(--brand-dark); font-weight: 700;
+  }
+  h2.page-title .sub { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 10px; }
+
+  .card {
+    background: #fff; border-radius: 10px;
+    box-shadow: 0 2px 10px rgba(0,0,0,0.06);
+    padding: 18px; margin-bottom: 16px;
+  }
+  .card h3 {
+    margin: 0 0 14px 0; font-size: 13px;
+    color: var(--brand); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 1.5px;
+    border-left: 4px solid var(--brand); padding-left: 10px;
+  }
+
+  /* Forms */
+  .field { display: flex; flex-direction: column; gap: 4px; margin-bottom: 10px; }
+  .field label {
+    font-size: 11px; color: var(--muted); font-weight: 700;
+    text-transform: uppercase; letter-spacing: 0.5px;
+  }
+  .field input, .field textarea, .field select {
+    border: 1px solid var(--line); background: var(--cream);
+    padding: 9px 10px; border-radius: 6px; font-size: 14px;
+    color: var(--ink); font-family: inherit;
+  }
+  .field input:focus, .field textarea:focus, .field select:focus {
+    outline: none; border-color: var(--brand); background: #fff;
+  }
+  .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px 14px; }
+  .grid-3 { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px 14px; }
+
+  /* Buttons */
+  .btn {
+    background: var(--brand); color: #fff; border: none;
+    padding: 10px 16px; border-radius: 6px; cursor: pointer;
+    font-size: 14px; font-weight: 600; font-family: inherit;
+    transition: transform 0.1s;
+  }
+  .btn:hover { background: var(--brand-dark); }
+  .btn:active { transform: scale(0.98); }
+  .btn.secondary { background: var(--cream); color: var(--brand-dark); border: 1px solid var(--line); }
+  .btn.secondary:hover { background: #F0E5D8; }
+  .btn.success { background: var(--ok); }
+  .btn.warn { background: var(--warn); }
+  .btn.danger { background: var(--danger); }
+  .btn.kakao { background: #FEE500; color: #391B1B; }
+  .btn.kakao:hover { background: #FFD600; }
+  .btn.sm { padding: 6px 10px; font-size: 12px; }
+  .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
+
+  /* Table */
+  table.t { width: 100%; border-collapse: collapse; font-size: 13px; }
+  table.t thead { background: var(--brand); color: #fff; }
+  table.t thead th { padding: 9px 8px; text-align: left; font-size: 11px;
+    text-transform: uppercase; letter-spacing: 0.5px; font-weight: 600; }
+  table.t tbody tr { border-bottom: 1px solid var(--line); }
+  table.t tbody tr:nth-child(even) { background: #FBF8F4; }
+  table.t tbody tr:hover { background: #F5E8DD; }
+  table.t td { padding: 8px; vertical-align: middle; }
+  table.t td.num { text-align: right; }
+  table.t td.act { text-align: right; white-space: nowrap; }
+
+  /* Pills / Status */
+  .pill { display: inline-block; padding: 3px 9px; border-radius: 11px;
+    font-size: 11px; font-weight: 600; }
+  .pill.new { background: #FDF2E0; color: #8A5A00; }
+  .pill.weighing { background: #E3EBF8; color: #1E4577; }
+  .pill.weighed { background: #DFF0E1; color: #1F5D24; }
+  .pill.invoiced { background: #E8E8E8; color: #444; }
+  .pill.delivered { background: #D8E8FF; color: #1A3F6E; }
+
+  /* Brand chips */
+  .chip { display: inline-block; padding: 2px 7px; border-radius: 4px;
+    font-size: 10px; background: #F0E5D8; color: var(--brand-dark);
+    margin-right: 4px; font-weight: 600; }
+
+  /* HOME / Role picker */
+  .roles { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 14px; }
+  .role-card {
+    background: #fff; border: 2px solid var(--line);
+    border-radius: 12px; padding: 24px;
+    text-align: center; cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s, border-color 0.15s;
+  }
+  .role-card:hover {
+    transform: translateY(-2px); border-color: var(--brand);
+    box-shadow: 0 8px 20px rgba(139,26,26,0.12);
+  }
+  .role-card .icon { font-size: 42px; margin-bottom: 10px; }
+  .role-card h4 { margin: 0 0 6px 0; color: var(--brand-dark); }
+  .role-card p { margin: 0; font-size: 12px; color: var(--muted); }
+
+  /* Order entry - product selector */
+  .search-bar {
+    position: sticky; top: 56px; z-index: 10;
+    background: #fff; padding: 10px;
+    border-radius: 8px; box-shadow: 0 2px 8px rgba(0,0,0,0.06);
+    margin-bottom: 12px;
+  }
+  .search-bar input {
+    width: 100%; border: 2px solid var(--line); background: var(--cream);
+    padding: 10px 14px; border-radius: 6px; font-size: 15px;
+  }
+  .quick-add {
+    display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px;
+  }
+  .quick-add .qa {
+    background: var(--cream); border: 1px solid var(--line);
+    padding: 6px 10px; border-radius: 18px; font-size: 12px;
+    cursor: pointer; color: var(--brand-dark); font-weight: 600;
+  }
+  .quick-add .qa:hover { background: var(--brand); color: #fff; }
+  .quick-add .qa.fav { background: #FFF5D6; border-color: #F0B400; }
+  .quick-add .qa.fav:hover { background: #F0B400; color: var(--ink); }
+
+  /* Cart */
+  .cart-item {
+    border: 1px solid var(--line); border-radius: 8px;
+    padding: 12px; margin-bottom: 10px; background: #fff;
+  }
+  .cart-item .top { display: flex; justify-content: space-between; align-items: center; }
+  .cart-item .name { font-weight: 700; color: var(--ink); }
+  .cart-item .brand-tag { font-size: 11px; color: var(--muted); margin-left: 4px; }
+  .cart-item .body { margin-top: 8px; display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 8px; }
+  .cart-item .body label { font-size: 10px; color: var(--muted); text-transform: uppercase; }
+  .cart-item .body input, .cart-item .body select {
+    width: 100%; border: 1px solid var(--line); background: var(--cream);
+    padding: 8px; border-radius: 5px; font-size: 14px;
+  }
+  .cart-item .unit-row { display: flex; gap: 4px; margin-top: 4px; }
+  .cart-item .unit-row button {
+    flex: 1; padding: 6px; border: 1px solid var(--line);
+    background: #fff; cursor: pointer; border-radius: 5px;
+    font-size: 12px; font-weight: 600;
+  }
+  .cart-item .unit-row button.active { background: var(--brand); color: #fff; border-color: var(--brand); }
+  .cart-item .del { background: transparent; border: none; color: var(--danger);
+    font-size: 22px; cursor: pointer; }
+  .cart-item .notes-row { margin-top: 8px; }
+  .cart-item .notes-row input { width: 100%; border: 1px dashed var(--line);
+    background: transparent; padding: 6px; font-size: 12px; border-radius: 4px; }
+
+  /* Empty state */
+  .empty {
+    text-align: center; padding: 40px 20px; color: var(--muted);
+    font-size: 14px;
+  }
+  .empty .icon { font-size: 48px; opacity: 0.4; margin-bottom: 8px; }
+
+  /* Floating summary (mobile) */
+  .summary-bar {
+    position: sticky; bottom: 0; z-index: 20;
+    background: var(--brand-dark); color: #fff;
+    padding: 12px 16px; margin: 16px -16px -16px -16px;
+    border-radius: 12px 12px 0 0;
+    display: flex; justify-content: space-between; align-items: center;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.15);
+  }
+  .summary-bar .info { font-size: 13px; }
+  .summary-bar .info b { font-size: 16px; }
+  .summary-bar button {
+    background: #F0B400; color: var(--ink); border: none;
+    padding: 10px 20px; border-radius: 6px; font-weight: 700;
+    font-size: 14px; cursor: pointer;
+  }
+
+  /* Modal */
+  .modal-bg {
+    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
+    display: flex; align-items: center; justify-content: center;
+    z-index: 1000; padding: 16px;
+  }
+  .modal {
+    background: #fff; border-radius: 12px; max-width: 500px;
+    width: 100%; max-height: 90vh; overflow-y: auto;
+    padding: 24px; box-shadow: 0 12px 40px rgba(0,0,0,0.25);
+  }
+  .modal h3 { margin: 0 0 14px 0; color: var(--brand-dark); }
+
+  /* Invoice */
+  .invoice {
+    background: #fff; padding: 36px; max-width: 800px; margin: 0 auto;
+    box-shadow: 0 4px 24px rgba(0,0,0,0.08);
+  }
+  .invoice-header { display: flex; justify-content: space-between; border-bottom: 3px solid var(--brand); padding-bottom: 16px; margin-bottom: 20px; }
+  .invoice-header h1 { margin: 0; color: var(--brand-dark); letter-spacing: 2px; }
+  .invoice table { width: 100%; border-collapse: collapse; margin-top: 14px; }
+  .invoice table th { background: var(--brand); color: #fff; padding: 8px; text-align: left; font-size: 12px; }
+  .invoice table td { padding: 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  .invoice table td.num { text-align: right; }
+  .invoice .tot-block { display: flex; justify-content: flex-end; margin-top: 16px; }
+  .invoice .tot-box { min-width: 260px; padding: 14px 16px; background: var(--cream); border-radius: 8px; }
+  .invoice .tot-row { display: flex; justify-content: space-between; padding: 4px 0; }
+  .invoice .tot-row.grand { border-top: 2px solid var(--brand); font-weight: 700; font-size: 17px; padding-top: 10px; margin-top: 6px; color: var(--brand-dark); }
+
+  /* Notice */
+  .notice {
+    background: #FFFAEB; border-left: 4px solid var(--warn);
+    padding: 12px 14px; border-radius: 4px; font-size: 13px;
+    margin-bottom: 14px;
+  }
+
+  @media print {
+    .nav, .summary-bar, .btn, .btn-row, .search-bar { display: none !important; }
+    body { background: #fff; }
+    main { max-width: 100%; padding: 0; }
+    .card { box-shadow: none; }
+  }
+  @media (max-width: 640px) {
+    .grid-2, .grid-3 { grid-template-columns: 1fr; }
+    .nav { padding: 8px; }
+    .nav .logo { font-size: 13px; margin-right: 6px; }
+    .nav .tab { padding: 5px 8px; font-size: 12px; }
+    .cart-item .body { grid-template-columns: 1fr; }
+    .invoice { padding: 20px; }
+    .invoice-header { flex-direction: column; }
+  }
+</style>
+</head>
+<body>
+
+<nav class="nav">
+  <span class="logo">🥩 ALL THAT MEAT</span>
+  <button class="tab" data-route="#home">🏠 홈</button>
+  <button class="tab" data-route="#order">🛒 주문하기</button>
+  <button class="tab" data-route="#warehouse">⚖️ 작업장</button>
+  <button class="tab" data-route="#office">📋 사무실</button>
+  <button class="tab" data-route="#admin">⚙️ 관리자</button>
+  <span class="spacer"></span>
+  <button class="util" onclick="exportAll()">💾 백업</button>
+  <button class="util" onclick="importAll()">📂 복원</button>
+</nav>
+
+<main id="app"></main>
+
+<script>
+// =========================================================================
+//  ALL THAT MEAT - Order Management System (single-file demo)
+//  Data is persisted to localStorage. For multi-device use see README at #home.
+// =========================================================================
+
+const STORAGE_KEY = 'atm_order_system_v3';
+const OLD_STORAGE_KEYS = ['atm_order_system_v2', 'atm_order_system_v1'];
+let DB = null;
+
+// =====================================================================
+//  🔥 FIREBASE CONFIG — 아래 값을 Firebase 콘솔에서 복사해서 붙여넣으세요
+// =====================================================================
+const firebaseConfig = {
+  apiKey:            "AIzaSyCsrsbrCeWyc9AU5en8vP9NkSwYN3xwNAA",
+  authDomain:        "atm-order-system.firebaseapp.com",
+  databaseURL:       "https://atm-order-system-default-rtdb.asia-southeast1.firebasedatabase.app",
+  projectId:         "atm-order-system",
+  storageBucket:     "atm-order-system.firebasestorage.app",
+  messagingSenderId: "356675041494",
+  appId:             "1:356675041494:web:cb492963627ec620d3f177"
+};
+const FIREBASE_READY = firebaseConfig.apiKey !== 'PASTE_API_KEY_HERE';
+let DB_REF = null;
+if (FIREBASE_READY) {
+  try {
+    firebase.initializeApp(firebaseConfig);
+    DB_REF = firebase.database().ref('atm_db');
+  } catch(e) { console.error('Firebase init failed:', e); }
+}
+
+// -------- localStorage helpers (cache / fallback) --------
+function loadLocalDB() {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch (e) { console.warn('localStorage read failed', e); }
+  for (const oldKey of OLD_STORAGE_KEYS) {
+    try {
+      const raw = localStorage.getItem(oldKey);
+      if (raw) {
+        const db = JSON.parse(raw);
+        if (db.company) db.company.gstRate = 0;
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+        return db;
+      }
+    } catch (e) {}
+  }
+  return null;
+}
+function saveLocalDB() {
+  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); } catch(e) {}
+}
+
+let _lastSaveTime = 0;
+let _isOrderEntry = false;
+
+function saveDB() {
+  _lastSaveTime = Date.now();
+  saveLocalDB();
+  if (DB_REF) {
+    DB_REF.set(DB).catch(e => console.error('Firebase save error:', e));
+  }
+}
+function uid(prefix='id') {
+  return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
+}
+
+// -------- Seed Data --------
+function seed() {
+  return {
+    company: {
+      name: 'ALL THAT MEAT WHOLESALE PTY LTD',
+      abn: '',
+      phone: '',
+      email: '',
+      address: 'Australia',
+      gstRate: 0,
+      currency: 'AUD'
+    },
+    products: JSON.parse(`[{"id":"p001_angus_flap_meat","name":"ANGUS FLAP MEAT","cut":"소고기","brand":"GIBSSON","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p002_flap_meat","name":"FLAP MEAT","cut":"소고기","brand":"signiture","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p003_short_rib_meat","name":"SHORT RIB MEAT","cut":"소고기","brand":"BARCOO","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p004_전중량_재단갈비la_short_rib_la_c","name":"[전중량]재단갈비LA SHORT RIB LA CUT","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p005_갈비_short_rib","name":"갈비 SHORT RIB","cut":"소고기","brand":"SR+","boxKg":0,"packKg":0,"priceKg":18.7,"active":true},{"id":"p006_갈비_short_rib","name":"갈비 SHORT RIB","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p007_갈비_short_rib_cut","name":"갈비 SHORT RIB CUT","cut":"소고기","brand":"SR2+","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p008_갈비_short_rib_cut","name":"갈비 SHORT RIB CUT","cut":"소고기","brand":"TARA/ 1CTN","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p009_갈비_short_ribs","name":"갈비 SHORT RIBS","cut":"소고기","brand":"JOSDALE","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p010_갈비_short_ribs","name":"갈비 SHORT RIBS","cut":"소고기","brand":"JOSHDALE","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p011_갈비_short_ribs","name":"갈비 SHORT RIBS","cut":"소고기","brand":"SR+","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p012_갈비_short_ribs","name":"갈비 SHORT RIBS","cut":"소고기","brand":"SR2+","boxKg":0,"packKg":0,"priceKg":22.55,"active":true},{"id":"p013_갈비_short_ribs","name":"갈비 SHORT RIBS","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p014_갈비_short_ribs","name":"갈비 SHORT RIBS","cut":"소고기","brand":"TARA / 3CTNS","boxKg":0,"packKg":0,"priceKg":22.88,"active":true},{"id":"p015_갈비_short_ribs","name":"갈비 SHORT RIBS","cut":"소고기","brand":"TARA/ 1CTN","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p016_갈비_short_ribs_mb3","name":"갈비 SHORT RIBS MB3+","cut":"소고기","brand":"joshdale","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p017_꼬리_beef_tail","name":"꼬리 BEEF TAIL","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p018_꼬리_beef_tail","name":"꼬리 BEEF TAIL","cut":"소고기","brand":"80","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p019_꼬리_beef_tail","name":"꼬리 BEEF TAIL","cut":"소고기","brand":"AMH","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p020_꼬리_beef_tail","name":"꼬리 BEEF TAIL","cut":"소고기","brand":"FLINDERS","boxKg":0,"packKg":0,"priceKg":18.7,"active":true},{"id":"p021_꼬리_beef_tail","name":"꼬리 BEEF TAIL","cut":"소고기","brand":"LOCKYER","boxKg":0,"packKg":0,"priceKg":18.7,"active":true},{"id":"p022_냉동양지_frozen_point_end_bri","name":"냉동양지 FROZEN POINT END BRISKET","cut":"소고기","brand":"BORTHWICK","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p023_냉동양지_frozen_point_end_bri","name":"냉동양지 FROZEN POINT END BRISKET","cut":"소고기","brand":"DIAMANTINA","boxKg":0,"packKg":0,"priceKg":14.85,"active":true},{"id":"p024_냉동양지_point_end_brisket","name":"냉동양지 POINT END BRISKET","cut":"소고기","brand":"SR2+","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p025_냉동양지_point_end_brisket","name":"냉동양지 POINT END BRISKET","cut":"소고기","brand":"SR4+","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p026_냉동양지_point_end_brisket_mb","name":"냉동양지 POINT END BRISKET MB2+","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p027_냉동양지_point_end_brisket_mb","name":"냉동양지 POINT END BRISKET MB2+","cut":"소고기","brand":"AMG / JOSH / TEYS","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p028_냉동양지_point_end_brisket_mb","name":"냉동양지 POINT END BRISKET MB4+","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p029_냉동양지_point_end_brisket_sr","name":"냉동양지 POINT END BRISKET SR2+","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.4,"active":true},{"id":"p030_너클_angus_knuckle","name":"너클 ANGUS KNUCKLE","cut":"소고기","brand":"DIAMANTINA","boxKg":0,"packKg":0,"priceKg":15.18,"active":true},{"id":"p031_너클_knukle","name":"너클 KNUKLE","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":14.85,"active":true},{"id":"p032_너클슬라이스_sliced_knuckle_1_2","name":"너클슬라이스 SLICED KNUCKLE (1.2mm)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p033_너클슬라이스_sliced_knuckle_1_2","name":"너클슬라이스 SLICED KNUCKLE (1.2mm)/ 2CTNS","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p034_너클슬라이스_sliced_knuckle_1_4","name":"너클슬라이스 SLICED KNUCKLE (1.4mm)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p035_너클슬라이스_sliced_knuckle_1_4","name":"너클슬라이스 SLICED KNUCKLE (1.4mm)/ 1CTN","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p036_너클슬라이스_sliced_knuckle_1_4","name":"너클슬라이스 SLICED KNUCKLE (1.4mm)/ 2CTNS","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p037_대창구이_large_intestine_300g","name":"대창구이 LARGE INTESTINE (300g /PACK)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p038_대창구이_large_intestine_300g","name":"대창구이 LARGE INTESTINE (300g /PACK)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p039_대창구이_large_intestine_300g","name":"대창구이 LARGE INTESTINE 300g","cut":"소고기","brand":"PACK","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p040_대창구이_large_intestine_300g","name":"대창구이 LARGE INTESTINE 300g/ PACK","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p041_사태_conical_muscle","name":"사태 CONICAL MUSCLE","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p042_사태_conical_muscle","name":"사태 CONICAL MUSCLE","cut":"소고기","brand":"TARA or UNION STATION","boxKg":0,"packKg":0,"priceKg":17.05,"active":true},{"id":"p043_샤브_beef_slice_shabu_이스터","name":"샤브 BEEF SLICE SHABU/이스터***","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p044_샤브_슬라이스_sliced_knuckle_1_","name":"샤브 슬라이스 SLICED KNUCKLE (1.2mm)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p045_샤브슬라이스_sliced_knuckle_1_2","name":"샤브슬라이스 SLICED KNUCKLE (1.2mm)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":16.28,"active":true},{"id":"p046_소불_슬라이스_sliced_knuckle_1_","name":"소불 슬라이스 SLICED KNUCKLE (1.4mm)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p047_소불슬라이스_sliced_knuckle_1_4","name":"소불슬라이스 SLICED KNUCKLE (1.4mm)","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":16.83,"active":true},{"id":"p048_스지_beef_tendon","name":"스지 BEEF TENDON","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p049_스지_beef_tendon","name":"스지 BEEF TENDON","cut":"소고기","brand":"TEYS","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p050_아롱사태_conical_muscle","name":"아롱사태 CONICAL MUSCLE","cut":"소고기","brand":"BARCOO","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p051_아롱사태_conical_muscle","name":"아롱사태 CONICAL MUSCLE","cut":"소고기","brand":"BINDAREE","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p052_아롱사태_conical_muscle","name":"아롱사태 CONICAL MUSCLE","cut":"소고기","brand":"GREEN STOCK","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p053_아롱사태_conical_muscle","name":"아롱사태 CONICAL MUSCLE","cut":"소고기","brand":"MIDFIELD","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p054_아롱사태_conical_muscle","name":"아롱사태 CONICAL MUSCLE","cut":"소고기","brand":"QUEENSLAND","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p055_아롱사태_conical_muscle","name":"아롱사태 CONICAL MUSCLE","cut":"소고기","brand":"STOCK YARD","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p056_아롱사태_conical_muscle_stock","name":"아롱사태 CONICAL MUSCLE /STOCKYARD/1CTN","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p057_아롱사태_conical_muscle_stock","name":"아롱사태 CONICAL MUSCLE/ STOCKYARD","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p058_알치마살_angus_flap_meat","name":"알치마살 ANGUS FLAP MEAT","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":11.0,"active":true},{"id":"p059_앵거스_너클_angus_knuckle","name":"앵거스 너클 ANGUS KNUCKLE","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":14.85,"active":true},{"id":"p060_앵거스_너클_angus_knuckle","name":"앵거스 너클 ANGUS KNUCKLE","cut":"소고기","brand":"JACKS","boxKg":0,"packKg":0,"priceKg":14.85,"active":true},{"id":"p061_앵거스_플랩밋_angus_flap_meat","name":"앵거스 플랩밋 ANGUS FLAP MEAT","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p062_앵거스_플랩밋_flap_meat","name":"앵거스 플랩밋 FLAP MEAT","cut":"소고기","brand":"GIPPSON","boxKg":0,"packKg":0,"priceKg":19.58,"active":true},{"id":"p063_앵거스플랩밋_angus_flap_meat","name":"앵거스플랩밋 ANGUS FLAP MEAT","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p064_양지_point_end_brisdket","name":"양지 POINT END BRISDKET","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p065_양지_point_end_brisket","name":"양지 POINT END BRISKET","cut":"소고기","brand":"COORONG","boxKg":0,"packKg":0,"priceKg":14.85,"active":true},{"id":"p066_양지_point_end_brisket","name":"양지 POINT END BRISKET","cut":"소고기","brand":"SR+","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p067_양지_point_end_brisket","name":"양지 POINT END BRISKET","cut":"소고기","brand":"SR2+","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p068_양지_point_end_brisket","name":"양지 POINT END BRISKET","cut":"소고기","brand":"SR2+ / TEYS","boxKg":0,"packKg":0,"priceKg":15.4,"active":true},{"id":"p069_양지_point_end_brisket","name":"양지 POINT END BRISKET","cut":"소고기","brand":"SR4+","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p070_양지_point_end_brisket_mb2","name":"양지 POINT END BRISKET MB2+","cut":"소고기","brand":"SR+","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p071_양지_point_end_brisket_mb2","name":"양지 POINT END BRISKET MB2+","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p072_양지_point_end_brisket_mb2","name":"양지 POINT END BRISKET MB2+","cut":"소고기","brand":"AMG / SR+","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p073_양지_point_end_brisket_mb2","name":"양지 POINT END BRISKET MB2+","cut":"소고기","brand":"AMG/ 2CTNS","boxKg":0,"packKg":0,"priceKg":15.4,"active":true},{"id":"p074_양지_point_end_brisket_mb2","name":"양지 POINT END BRISKET MB2+","cut":"소고기","brand":"SR+","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p075_양지_point_end_brisket_mb4","name":"양지 POINT END BRISKET MB4+","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p076_양지_point_end_brisket_mb4","name":"양지 POINT END BRISKET MB4+","cut":"소고기","brand":"AMG / SR+","boxKg":0,"packKg":0,"priceKg":17.05,"active":true},{"id":"p077_우목뼈_beef_neck_bone","name":"우목뼈 BEEF NECK BONE","cut":"소고기","brand":"EST","boxKg":0,"packKg":0,"priceKg":5.5,"active":true},{"id":"p078_우삼겹_neb_slice","name":"우삼겹 NEB SLICE","cut":"소고기","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p079_우설_beef_tongue","name":"우설 BEEF TONGUE","cut":"소고기","brand":"KIM","boxKg":0,"packKg":0,"priceKg":9.9,"active":true},{"id":"p080_우설_beef_tongue","name":"우설 BEEF TONGUE","cut":"소고기","brand":"KIMBERLEY","boxKg":0,"packKg":0,"priceKg":17.05,"active":true},{"id":"p081_우설_beef_tongue","name":"우설 BEEF TONGUE","cut":"소고기","brand":"PURE BLACK","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p082_우족_beef_feet","name":"우족 BEEF FEET","cut":"소고기","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":2.2,"active":true},{"id":"p083_작업_갈비살_intercostal","name":"작업 갈비살 INTERCOSTAL","cut":"소고기","brand":"JACKS","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p084_작업늑간_intercostal_special","name":"작업늑간 INTERCOSTAL    ** SPECIAL  **","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p085_작업사골_beef_marrow_bone","name":"작업사골 BEEF MARROW BONE","cut":"소고기","brand":"CUT","boxKg":0,"packKg":0,"priceKg":4.4,"active":true},{"id":"p086_작업사골_beef_marrow_bone_cut","name":"작업사골 BEEF MARROW BONE CUT","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":4.4,"active":true},{"id":"p087_작업우족_beef_feet_cut","name":"작업우족 BEEF FEET CUT","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p088_작업우족_beef_feet_cut","name":"작업우족 BEEF FEET CUT","cut":"소고기","brand":"MCPHEE","boxKg":0,"packKg":0,"priceKg":9.9,"active":true},{"id":"p089_작업우족_beef_feet_cut","name":"작업우족 BEEF FEET CUT","cut":"소고기","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p090_작업우족_beef_feet_cut","name":"작업우족 BEEF FEET CUT","cut":"소고기","brand":"OKAEY","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p091_작업우족_beef_feet_cut","name":"작업우족 BEEF FEET CUT","cut":"소고기","brand":"WINGHAM","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p092_작업우족_beef_feet_cut","name":"작업우족 BEEF FEET CUT","cut":"소고기","brand":"WINGHAM / OAKEY","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p093_작업우족_beef_feet_cut_okey_1","name":"작업우족 BEEF FEET CUT/ OKEY/1CTN","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":7.7,"active":true},{"id":"p094_재단_사골_beef_marrow_bone","name":"재단 사골 BEEF MARROW BONE","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":3.85,"active":true},{"id":"p095_재단_사골_beef_marrow_bone_cu","name":"재단 사골 BEEF MARROW BONE CUT","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":3.85,"active":true},{"id":"p096_재단갈비_short_rib","name":"재단갈비 SHORT RIB","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p097_재단갈비la_short_rib_la_cut","name":"재단갈비LA SHORT RIB LA CUT","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":25.19,"active":true},{"id":"p098_재단갈비la_short_rib_la_cut","name":"재단갈비LA SHORT RIB LA CUT","cut":"소고기","brand":"TARA/ 3CTN","boxKg":0,"packKg":0,"priceKg":25.19,"active":true},{"id":"p099_재단찜갈비_short_ribs_cut","name":"재단찜갈비 SHORT RIBS CUT","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":24.75,"active":true},{"id":"p100_재단편갈비_short_ribs_cut","name":"재단편갈비 SHORT RIBS CUT","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":11.0,"active":true},{"id":"p101_짜투리_beef","name":"짜투리 BEEF","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":8.8,"active":true},{"id":"p102_척갈비_chuck_rib","name":"척갈비 CHUCK RIB","cut":"소고기","brand":"TARA","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p103_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p104_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"CAG / NORTH RIVER / MIDFIELD","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p105_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"CAG / NORTHERN","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p106_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"COORONG","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p107_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"EBONY","boxKg":0,"packKg":0,"priceKg":18.7,"active":true},{"id":"p108_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"EST / WINGHAM / GIPSON","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p109_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"MIDFIELD","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p110_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"MIDFIELD / PHOENIX","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p111_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"OAKDALE","boxKg":0,"packKg":0,"priceKg":21.78,"active":true},{"id":"p112_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":24.75,"active":true},{"id":"p113_치마_flank_steak","name":"치마 FLANK STEAK","cut":"소고기","brand":"RIVERINE","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p114_치마_flank_steak_mb3","name":"치마 FLANK STEAK MB3","cut":"소고기","brand":"LEE","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p115_치마_flank_steak_mb3","name":"치마 FLANK STEAK MB3","cut":"소고기","brand":"YARRABAH","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p116_치마_flank_steak_mb3","name":"치마 FLANK STEAK MB3","cut":"소고기","brand":"YARRABAH / AMH / LEE","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p117_치마_flank_steak_lee_1ctn","name":"치마 FLANK STEAK/ LEE/ 1CTN","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p118_큐브롤_cube_roll_rib","name":"큐브롤 CUBE ROLL RIB","cut":"소고기","brand":"SHIMMO","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p119_특양구이_beef_tripe_220g_pack","name":"특양구이 BEEF TRIPE (220g /PACK) 20p/CTN","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":17.6,"active":true},{"id":"p120_특양구이_beef_tripe_220g_pack","name":"특양구이 BEEF TRIPE (220g /PACK)/ 50","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p121_특양구이_beef_tripe_220g","name":"특양구이 BEEF TRIPE 220g","cut":"소고기","brand":"PACK","boxKg":0,"packKg":0,"priceKg":18.7,"active":true},{"id":"p122_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p123_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"CAG","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p124_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"SONDELLA","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p125_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"YARRABAH","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p126_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"LEE","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p127_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"CAG","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p128_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"COORONG","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p129_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"EBONY","boxKg":0,"packKg":0,"priceKg":11.0,"active":true},{"id":"p130_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"KIDMAN","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p131_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"KILCOEY","boxKg":0,"packKg":0,"priceKg":26.4,"active":true},{"id":"p132_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"KIMBERLEY","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p133_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"LEE","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p134_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"PURE","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p135_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"SIGNATURE","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p136_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"SONDALERA","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p137_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"SONDELLA","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p138_플랩밋_flap_meat","name":"플랩밋 FLAP MEAT","cut":"소고기","brand":"YARRABAH","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p139_플랩밋_flap_meat_mb2","name":"플랩밋 FLAP MEAT MB2+","cut":"소고기","brand":"AMG","boxKg":0,"packKg":0,"priceKg":25.85,"active":true},{"id":"p140_플랩밋_flap_meat_mb2","name":"플랩밋 FLAP MEAT MB2+","cut":"소고기","brand":"AMG 1p","boxKg":0,"packKg":0,"priceKg":25.85,"active":true},{"id":"p141_플랩밋_flap_meat_mb2","name":"플랩밋 FLAP MEAT MB2+","cut":"소고기","brand":"YARRABAH","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p142_플랩밋_flap_meat_mb4","name":"플랩밋 FLAP MEAT MB4+","cut":"소고기","brand":"에보니","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p143_플랩밋_flap_meat_cag_1ctn","name":"플랩밋 FLAP MEAT/ CAG/ 1CTN","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":25.85,"active":true},{"id":"p144_플랩밋_flap_meat_ebony","name":"플랩밋 FLAP MEAT/EBONY","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":11.0,"active":true},{"id":"p145_플랩밋_flap_meat_cag","name":"플랩밋 FLAP MEAT/cag","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p146_플랩밋_flap_meat_kimbery","name":"플랩밋 FLAP MEAT/kimbery","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p147_플랩밋_flap_meat_lee","name":"플랩밋 FLAP MEAT/lee","cut":"소고기","brand":"","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p148_홍두깨_angus_eye_round","name":"홍두깨 ANGUS EYE ROUND","cut":"소고기","brand":"BARCOO","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p149_wagytrimming_75cl","name":"WAGYTRIMMING 75CL","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":9.9,"active":true},{"id":"p150_wagyu_chuck_eye_roll_mb8_","name":"WAGYU CHUCK EYE ROLL MB8-9","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":37.4,"active":true},{"id":"p151_wagyu_chuck_eye_roll_mb8_","name":"WAGYU CHUCK EYE ROLL MB8-9","cut":"와규","brand":"BLACK OPAL","boxKg":0,"packKg":0,"priceKg":39.6,"active":true},{"id":"p152_wagyu_chuck_eye_roll_mb8_","name":"WAGYU CHUCK EYE ROLL MB8-9","cut":"와규","brand":"BLACK OPAL 1p","boxKg":0,"packKg":0,"priceKg":37.4,"active":true},{"id":"p153_wagyu_chuck_eye_roll_mb8_","name":"WAGYU CHUCK EYE ROLL MB8-9","cut":"와규","brand":"BLACK OPAL/ 1CN","boxKg":0,"packKg":0,"priceKg":39.6,"active":true},{"id":"p154_wagyu_chuck_eye_roll_mb8_","name":"WAGYU CHUCK EYE ROLL MB8-9","cut":"와규","brand":"KIMBARA","boxKg":0,"packKg":0,"priceKg":34.1,"active":true},{"id":"p155_wagyu_chuck_eye_roll_mb8_","name":"WAGYU CHUCK EYE ROLL MB8-9","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":38.5,"active":true},{"id":"p156_wagyu_chuck_eye_roll_mb9","name":"WAGYU CHUCK EYE ROLL MB9+","cut":"와규","brand":"MARBLE KING","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p157_wagyu_chuck_eye_roll_mb9","name":"WAGYU CHUCK EYE ROLL MB9+","cut":"와규","brand":"mable king","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p158_wagyu_chuck_rib_meat_9","name":"WAGYU CHUCK RIB MEAT 9+","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":70.4,"active":true},{"id":"p159_wagyu_chuck_rib_meat_mb6_","name":"WAGYU CHUCK RIB MEAT MB6-7","cut":"와규","brand":"2GR","boxKg":0,"packKg":0,"priceKg":63.8,"active":true},{"id":"p160_wagyu_chuck_rib_meat_mb6_","name":"WAGYU CHUCK RIB MEAT MB6-7 /2gr","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":60.5,"active":true},{"id":"p161_wagyu_chuck_rib_meat_mb8_","name":"WAGYU CHUCK RIB MEAT MB8-9","cut":"와규","brand":"2GR","boxKg":0,"packKg":0,"priceKg":74.8,"active":true},{"id":"p162_wagyu_chuck_rib_meat_mb8_","name":"WAGYU CHUCK RIB MEAT MB8-9","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":61.6,"active":true},{"id":"p163_wagyu_chuck_rib_meat_mb9","name":"WAGYU CHUCK RIB MEAT MB9+","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":66.0,"active":true},{"id":"p164_wagyu_chuck_tender_mb4_5","name":"WAGYU CHUCK TENDER MB4-5","cut":"와규","brand":"Kidman","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p165_wagyu_chuck_tender_mb9","name":"WAGYU CHUCK TENDER MB9+","cut":"와규","brand":"MARBLEKING","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p166_wagyu_conical_muscle_mb9","name":"WAGYU CONICAL MUSCLE MB9+","cut":"와규","brand":"MARBLEKING","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p167_wagyu_cube_roll_lip","name":"WAGYU CUBE ROLL LIP","cut":"와규","brand":"STOCKYARD","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p168_wagyu_cube_roll_lip_mb6_7","name":"WAGYU CUBE ROLL LIP MB6-7","cut":"와규","brand":"STOCK YARD","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p169_wagyu_deckle_mb89_2gr","name":"WAGYU DECKLE MB89 /2gr","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":71.5,"active":true},{"id":"p170_wagyu_deckle_mb9","name":"WAGYU DECKLE MB9+","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":63.8,"active":true},{"id":"p171_wagyu_deckle_mb9","name":"WAGYU DECKLE MB9+","cut":"와규","brand":"m king","boxKg":0,"packKg":0,"priceKg":68.2,"active":true},{"id":"p172_wagyu_eye_round_mb4_5","name":"WAGYU EYE ROUND MB4-5","cut":"와규","brand":"SIR HARRY","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p173_wagyu_eye_round_mb4_5","name":"WAGYU EYE ROUND MB4-5","cut":"와규","brand":"STOCK YARD","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p174_wagyu_flap_meat_mb_6_7","name":"WAGYU FLAP MEAT MB 6-7","cut":"와규","brand":"SIR HARRY","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p175_wagyu_inside_skirt_mb4_5","name":"WAGYU INSIDE SKIRT MB4-5","cut":"와규","brand":"KIMBARA","boxKg":0,"packKg":0,"priceKg":13.75,"active":true},{"id":"p176_wagyu_inside_skirt_mb4_5","name":"WAGYU INSIDE SKIRT MB4-5","cut":"와규","brand":"KIMBARA 1p","boxKg":0,"packKg":0,"priceKg":13.75,"active":true},{"id":"p177_wagyu_inside_skirt_mb4_5","name":"WAGYU INSIDE SKIRT MB4-5","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":26.4,"active":true},{"id":"p178_wagyu_inside_skirt_mb45","name":"WAGYU INSIDE SKIRT MB45","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p179_wagyu_inside_skirt_mb6_7","name":"WAGYU INSIDE SKIRT MB6-7","cut":"와규","brand":"LAKE","boxKg":0,"packKg":0,"priceKg":30.8,"active":true},{"id":"p180_wagyu_intercostal_mb4_5","name":"WAGYU INTERCOSTAL MB4-5","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":30.8,"active":true},{"id":"p181_wagyu_intercostal_mb4_5","name":"WAGYU INTERCOSTAL MB4-5","cut":"와규","brand":"magaret river","boxKg":0,"packKg":0,"priceKg":36.3,"active":true},{"id":"p182_wagyu_intercostal_mb6_7","name":"WAGYU INTERCOSTAL MB6-7","cut":"와규","brand":"KR 1p","boxKg":0,"packKg":0,"priceKg":31.9,"active":true},{"id":"p183_wagyu_intercostal_mb6_7","name":"WAGYU INTERCOSTAL MB6-7","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":30.8,"active":true},{"id":"p184_wagyu_intercostal_mb6_7_2","name":"WAGYU INTERCOSTAL MB6-7 /2gr","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":33.0,"active":true},{"id":"p185_wagyu_intercostal_mb8_9","name":"WAGYU INTERCOSTAL MB8-9","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":37.4,"active":true},{"id":"p186_wagyu_intercostal_mb8_9","name":"WAGYU INTERCOSTAL MB8-9","cut":"와규","brand":"LAKE ** SPECIAL **","boxKg":0,"packKg":0,"priceKg":27.5,"active":true},{"id":"p187_wagyu_intercostal_mb8_9","name":"WAGYU INTERCOSTAL MB8-9","cut":"와규","brand":"LAKE **SPECIAL **","boxKg":0,"packKg":0,"priceKg":27.5,"active":true},{"id":"p188_wagyu_intercostal_mb8_9","name":"WAGYU INTERCOSTAL MB8-9+","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":36.3,"active":true},{"id":"p189_wagyu_intercostal_mb9","name":"WAGYU INTERCOSTAL MB9+","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":38.5,"active":true},{"id":"p190_wagyu_intercostal_mb9","name":"WAGYU INTERCOSTAL MB9+","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":38.5,"active":true},{"id":"p191_wagyu_intercostal_mb9","name":"WAGYU INTERCOSTAL MB9+","cut":"와규","brand":"SHIMO/LAKE/ 2CTNS","boxKg":0,"packKg":0,"priceKg":33.0,"active":true},{"id":"p192_wagyu_karubi_plate","name":"WAGYU KARUBI PLATE","cut":"와규","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p193_wagyu_karubi_plate_mb4_5","name":"WAGYU KARUBI PLATE MB4-5","cut":"와규","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p194_wagyu_karubi_plate_mb4_5","name":"WAGYU KARUBI PLATE MB4-5","cut":"와규","brand":"SIR HARRY","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p195_wagyu_karubi_plate_mb6","name":"WAGYU KARUBI PLATE MB6+","cut":"와규","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p196_wagyu_karubi_plate_mb6_7","name":"WAGYU KARUBI PLATE MB6-7","cut":"와규","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p197_wagyu_karubi_plate_mb6_7","name":"WAGYU KARUBI PLATE MB6-7","cut":"와규","brand":"sir harry","boxKg":0,"packKg":0,"priceKg":25.85,"active":true},{"id":"p198_wagyu_knuckle_mb9_sliced","name":"WAGYU KNUCKLE MB9 sliced","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":22.55,"active":true},{"id":"p199_wagyu_neb_mb8","name":"WAGYU NEB MB8+","cut":"와규","brand":"OAKEY","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p200_wagyu_oyster_blade_mb6_7","name":"WAGYU OYSTER BLADE MB6-7","cut":"와규","brand":"2GR","boxKg":0,"packKg":0,"priceKg":63.8,"active":true},{"id":"p201_wagyu_oyster_blade_mb7","name":"WAGYU OYSTER BLADE MB7+","cut":"와규","brand":"WX","boxKg":0,"packKg":0,"priceKg":53.9,"active":true},{"id":"p202_wagyu_oyster_blade_mb8_9","name":"WAGYU OYSTER BLADE MB8-9","cut":"와규","brand":"2GR","boxKg":0,"packKg":0,"priceKg":70.4,"active":true},{"id":"p203_wagyu_oyster_blade_mb8_9","name":"WAGYU OYSTER BLADE MB8-9","cut":"와규","brand":"2gr","boxKg":0,"packKg":0,"priceKg":69.3,"active":true},{"id":"p204_wagyu_oyster_blade_mb8_9","name":"WAGYU OYSTER BLADE MB8-9","cut":"와규","brand":"JOCKER","boxKg":0,"packKg":0,"priceKg":68.2,"active":true},{"id":"p205_wagyu_oyster_blade_mb8_9","name":"WAGYU OYSTER BLADE MB8-9","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":67.1,"active":true},{"id":"p206_wagyu_oyster_blade_mb9","name":"WAGYU OYSTER BLADE MB9+","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":68.2,"active":true},{"id":"p207_wagyu_pe_brisket_mb6_7","name":"WAGYU PE BRISKET MB6-7","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p208_wagyu_point_end_brisket_m","name":"WAGYU POINT END BRISKET MB6-7","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p209_wagyu_point_end_brisket_m","name":"WAGYU POINT END BRISKET MB8-9","cut":"와규","brand":"KR","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p210_wagyu_point_end_brisket_m","name":"WAGYU POINT END BRISKET MB8-9","cut":"와규","brand":"LAKE","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p211_wagyu_point_end_brisket_m","name":"WAGYU POINT END BRISKET MB9+","cut":"와규","brand":"2GR","boxKg":0,"packKg":0,"priceKg":26.4,"active":true},{"id":"p212_wagyu_point_end_brisket_m","name":"WAGYU POINT END BRISKET MB9+","cut":"와규","brand":"KIWAMI","boxKg":0,"packKg":0,"priceKg":25.3,"active":true},{"id":"p213_wagyu_shin_shank_mb0_9","name":"WAGYU SHIN SHANK MB0-9","cut":"와규","brand":"KIDMAN","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p214_wagyu_short_rib_meat_mb6_","name":"WAGYU SHORT RIB MEAT MB6-7","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":88.0,"active":true},{"id":"p215_wagyu_tri_tip_8_9","name":"WAGYU TRI TIP 8-9","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":60.5,"active":true},{"id":"p216_wagyu_tri_tip_8_9","name":"WAGYU TRI TIP 8-9","cut":"와규","brand":"9+ lake","boxKg":0,"packKg":0,"priceKg":52.8,"active":true},{"id":"p217_wagyu_tri_tip_mb4_5","name":"WAGYU TRI TIP MB4-5","cut":"와규","brand":"KIDMAN","boxKg":0,"packKg":0,"priceKg":40.7,"active":true},{"id":"p218_wagyu_tri_tip_mb4_5","name":"WAGYU TRI TIP MB4-5","cut":"와규","brand":"KR","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p219_wagyu_tri_tip_mb4_5","name":"WAGYU TRI TIP MB4-5","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p220_wagyu_tri_tip_mb6_7","name":"WAGYU TRI TIP MB6-7","cut":"와규","brand":"KRP / KIMBARA / SHIMO","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p221_wagyu_tri_tip_mb6_7","name":"WAGYU TRI TIP MB6-7","cut":"와규","brand":"LAKE","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p222_wagyu_tri_tip_mb6_7","name":"WAGYU TRI TIP MB6-7","cut":"와규","brand":"STOCK YARD","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p223_wagyu_tri_tip_mb6_8","name":"WAGYU TRI TIP MB6-8","cut":"와규","brand":"CABASSI","boxKg":0,"packKg":0,"priceKg":47.3,"active":true},{"id":"p224_wagyu_tri_tip_mb8_9","name":"WAGYU TRI TIP MB8-9","cut":"와규","brand":"KRP / KIMBARA / SIMO / LAKE","boxKg":0,"packKg":0,"priceKg":53.9,"active":true},{"id":"p225_wagyu_tri_tip_mb9","name":"WAGYU TRI TIP MB9+","cut":"와규","brand":"MARBLE KING","boxKg":0,"packKg":0,"priceKg":62.7,"active":true},{"id":"p226_wagyu_trimming_75cl","name":"WAGYU TRIMMING 75CL","cut":"와규","brand":"KR","boxKg":0,"packKg":0,"priceKg":8.8,"active":true},{"id":"p227_wagyu_cuberoll_strap","name":"WAGYU cuberoll STRAP","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p228_냉동와규너클_wagyu_knuckle_mb4_","name":"냉동와규너클 WAGYU KNUCKLE MB4-5/ DIAMANTINA","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":15.95,"active":true},{"id":"p229_냉동와규너클_wagyu_knuckle_mb6_","name":"냉동와규너클 WAGYU KNUCKLE MB6-7","cut":"와규","brand":"KRP","boxKg":0,"packKg":0,"priceKg":17.6,"active":true},{"id":"p230_냉동와규너클_wagyu_knuckle_mb6_","name":"냉동와규너클 WAGYU KNUCKLE MB6-7","cut":"와규","brand":"SIR HARRY","boxKg":0,"packKg":0,"priceKg":18.7,"active":true},{"id":"p231_냉동와규너클_wagyu_knuckle_mb9","name":"냉동와규너클 WAGYU KNUCKLE MB9+","cut":"와규","brand":"2GR","boxKg":0,"packKg":0,"priceKg":22.55,"active":true},{"id":"p232_와규_꼬리_wagyu_beef_tail","name":"와규 꼬리 WAGYU BEEF TAIL","cut":"와규","brand":"KR","boxKg":0,"packKg":0,"priceKg":24.75,"active":true},{"id":"p233_와규_꼬리_wagyu_beef_tail","name":"와규 꼬리 WAGYU BEEF TAIL","cut":"와규","brand":"ONIX","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p234_와규꼬리_wagyu_beef_tail","name":"와규꼬리 WAGYU BEEF TAIL","cut":"와규","brand":"DIAMANTINA","boxKg":0,"packKg":0,"priceKg":24.75,"active":true},{"id":"p235_와규꼬리_wagyu_beef_tail","name":"와규꼬리 WAGYU BEEF TAIL","cut":"와규","brand":"JAC","boxKg":0,"packKg":0,"priceKg":24.75,"active":true},{"id":"p236_와규꼬리_wagyu_beef_tail","name":"와규꼬리 WAGYU BEEF TAIL","cut":"와규","brand":"SIR HARRY","boxKg":0,"packKg":0,"priceKg":24.2,"active":true},{"id":"p237_와규꼬리_wagyu_bone_in_tail","name":"와규꼬리 WAGYU BONE-IN TAIL","cut":"와규","brand":"JACK'S CREEK","boxKg":0,"packKg":0,"priceKg":24.75,"active":true},{"id":"p238_와규너클슬라_wagyu_knuckle_slic","name":"와규너클슬라 WAGYU KNUCKLE SLICE MB9+ (1.2mm)","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":22.55,"active":true},{"id":"p239_와규너클슬라_wagyu_knuckle_slic","name":"와규너클슬라 WAGYU KNUCKLE SLICE MB9+ (1.2mm)/ 1CTN","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":22.55,"active":true},{"id":"p240_와규너클슬라이스_wagyu_knuckle_sl","name":"와규너클슬라이스 WAGYU KNUCKLE SLICE MB4-5(1.2mm)","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p241_와규너클슬라이스_wagyu_knuckle_sl","name":"와규너클슬라이스 WAGYU KNUCKLE SLICE MB4-5(1.2mm)/ 1CTN","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p242_와규샤브슬라이스_wagyu_knuckle_sl","name":"와규샤브슬라이스 WAGYU KNUCKLE SLICE MB8-9+ (1.2mm)","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":22.55,"active":true},{"id":"p243_와규샤브슬라이스_wagyu_knuckle_sl","name":"와규샤브슬라이스 WAGYU KNUCKLE SLICE MB9+ (1.2mm)","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":22.55,"active":true},{"id":"p244_와규슬라이스_wagyu_knuckle_slic","name":"와규슬라이스 WAGYU KNUCKLE SLICE MB4-5(1.2mm)","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p245_와규슬라이스_wagyu_knuckle_slic","name":"와규슬라이스 WAGYU KNUCKLE SLICE MB8-9(1.2mm)","cut":"와규","brand":"","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p246_홍두깨_wagyu_eye_round","name":"홍두깨 WAGYU EYE ROUND","cut":"와규","brand":"KIDMAN","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p247_홍두깨_wagyu_eye_round","name":"홍두깨 WAGYU EYE ROUND","cut":"와규","brand":"KIDMAN/ 1CTN","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p248_홍두깨_wagyu_eye_round","name":"홍두깨 WAGYU EYE ROUND","cut":"와규","brand":"SIR HARRY","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p249_홍두깨_wagyu_eye_round_mb5","name":"홍두깨 WAGYU EYE ROUND MB5+","cut":"와규","brand":"PHEINIX","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p250_홍두깨_wagyu_eye_round_mb6_7","name":"홍두깨 WAGYU EYE ROUND MB6-7","cut":"와규","brand":"SIR HARRY","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p251_홍두깨_wagyu_eye_round_mb6_7","name":"홍두깨 WAGYU EYE ROUND MB6-7","cut":"와규","brand":"STOCK YARD","boxKg":0,"packKg":0,"priceKg":21.45,"active":true},{"id":"p252_american_rib","name":"AMERICAN RIB","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":15.4,"active":true},{"id":"p253_pork_mince_trimming","name":"PORK MINCE TRIMMING","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p254_곱창_small_intestine","name":"곱창 SMALL INTESTINE","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p255_깐양_honey_comb","name":"깐양 HONEY COMB","cut":"돼지고기","brand":"QVP / OAKEY/AMG","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p256_냉동목살_frozen_collar_butt","name":"냉동목살 FROZEN COLLAR BUTT","cut":"돼지고기","brand":"GOLDEN DRAGON","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p257_냉동삼겹_frozen_pork_belly","name":"냉동삼겹 FROZEN PORK BELLY","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p258_냉동삼겹_frozen_pork_belly","name":"냉동삼겹 FROZEN PORK BELLY","cut":"돼지고기","brand":"RIVALEA","boxKg":0,"packKg":0,"priceKg":19.58,"active":true},{"id":"p259_냉동전지_pork_shoulder","name":"냉동전지 PORK SHOULDER","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":11.55,"active":true},{"id":"p260_대패삼겹슬라이스_pork_belly_slice","name":"대패삼겹슬라이스 PORK BELLY  SLICED","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p261_돈갈비_pork_riblet","name":"돈갈비 PORK RIBLET","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":15.4,"active":true},{"id":"p262_돈갈비_pork_riblet","name":"돈갈비 PORK RIBLET","cut":"돼지고기","brand":"TENDER VALLEY","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p263_돈갈비_pork_riblet_pack","name":"돈갈비 PORK RIBLET PACK","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":13.75,"active":true},{"id":"p264_돈등뼈_재_pork_marrow_bone_6m","name":"돈등뼈 재 PORK MARROW BONE/ 6mm","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":3.85,"active":true},{"id":"p265_돈등심_pork_backstraps","name":"돈등심 PORK BACKSTRAPS","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p266_돈등심_pork_backstraps","name":"돈등심 PORK BACKSTRAPS","cut":"돼지고기","brand":"SUNPORK/ 1CTN","boxKg":0,"packKg":0,"priceKg":12.65,"active":true},{"id":"p267_돈등심_pork_backstraps","name":"돈등심 PORK BACKSTRAPS","cut":"돼지고기","brand":"TENDER VALLEY","boxKg":0,"packKg":0,"priceKg":13.42,"active":true},{"id":"p268_돈머리_pork_head","name":"돈머리 PORK HEAD","cut":"돼지고기","brand":"WIL MEAT","boxKg":0,"packKg":0,"priceKg":4.07,"active":true},{"id":"p269_돈목뼈_pork_neck_bone","name":"돈목뼈 PORK NECK BONE","cut":"돼지고기","brand":"PACIFIC","boxKg":0,"packKg":0,"priceKg":3.85,"active":true},{"id":"p270_돈중족_pork_hock","name":"돈중족 PORK HOCK","cut":"돼지고기","brand":"WIL MEAT","boxKg":0,"packKg":0,"priceKg":6.6,"active":true},{"id":"p271_등갈비_loin_rib","name":"등갈비 LOIN RIB","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p272_등갈비_pork_riblet","name":"등갈비 PORK RIBLET","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":12.1,"active":true},{"id":"p273_로인립_pork_loin_rib","name":"로인립 PORK LOIN RIB","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":17.6,"active":true},{"id":"p274_로인립_pork_loin_rib","name":"로인립 PORK LOIN RIB","cut":"돼지고기","brand":"FAIRLIGHT","boxKg":0,"packKg":0,"priceKg":17.6,"active":true},{"id":"p275_롱대패_슬라이스_long_sliced_bell","name":"롱대패 슬라이스 LONG SLICED BELLY","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p276_목살_collar_butt","name":"목살 COLLAR BUTT","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p277_목살_collar_butt","name":"목살 COLLAR BUTT","cut":"돼지고기","brand":"RIVALEA","boxKg":0,"packKg":0,"priceKg":12.98,"active":true},{"id":"p278_목살_collar_butt","name":"목살 COLLAR BUTT","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":12.1,"active":true},{"id":"p279_목살_collar_butt","name":"목살 COLLAR BUTT","cut":"돼지고기","brand":"SUNPORK / 2CTNS","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p280_목살_collar_butt","name":"목살 COLLAR BUTT","cut":"돼지고기","brand":"SUNPORK / RIVALEA","boxKg":0,"packKg":0,"priceKg":12.1,"active":true},{"id":"p281_목살_collar_butt","name":"목살 COLLAR BUTT","cut":"돼지고기","brand":"SUNPORK or RIVALEA","boxKg":0,"packKg":0,"priceKg":12.98,"active":true},{"id":"p282_목살_collar_butt","name":"목살 COLLAR BUTT","cut":"돼지고기","brand":"TENDER VALLEY","boxKg":0,"packKg":0,"priceKg":12.1,"active":true},{"id":"p283_목살슬라이스_sliced_collar_butt","name":"목살슬라이스 SLICED COLLAR BUTT (2.5mm)","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":16.28,"active":true},{"id":"p284_미박삼겹_pork_belly_blro","name":"미박삼겹 PORK BELLY BLRO","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p285_미박삼겹_pork_belly_blro","name":"미박삼겹 PORK BELLY BLRO","cut":"돼지고기","brand":"RIVALEA","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p286_미박삼겹_pork_belly_blro","name":"미박삼겹 PORK BELLY BLRO","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p287_미박삼겹_pork_belly_blro","name":"미박삼겹 PORK BELLY BLRO","cut":"돼지고기","brand":"SUNPORK / RIVALEA","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p288_미박삼겹_pork_belly_blro","name":"미박삼겹 PORK BELLY BLRO","cut":"돼지고기","brand":"SUNPORK/ 1CTN","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p289_미박삼겹_pork_belly_blro","name":"미박삼겹 PORK BELLY BLRO","cut":"돼지고기","brand":"SUNPORK/ 2CTNS","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p290_미박삼겹_pork_belly_blro","name":"미박삼겹 PORK BELLY BLRO","cut":"돼지고기","brand":"WILMEAT","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p291_미박삼겹_미추리_pork_belly_blro","name":"미박삼겹 미추리 PORK BELLY BLRO","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p292_미박삼겹_미추리_pork_belly_blro","name":"미박삼겹 미추리 PORK BELLY BLRO","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p293_뼈삼_pork_belly_birl","name":"뼈삼 PORK BELLY BIRL","cut":"돼지고기","brand":"WIL MEAT 1p","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p294_삼겹살_pork_belly_blrl","name":"삼겹살 PORK BELLY BLRL","cut":"돼지고기","brand":"riv","boxKg":0,"packKg":0,"priceKg":19.25,"active":true},{"id":"p295_삼겹슬라이스_sliced_pork_belly_","name":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":22.33,"active":true},{"id":"p296_삼겹슬라이스_sliced_pork_belly_","name":"삼겹슬라이스 SLICED PORK BELLY BLRL (5mm)","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p297_삼겹슬라이스_sliced_pork_belly_","name":"삼겹슬라이스 SLICED PORK BELLY BLRL (5mm)/ 1CTN","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":22.0,"active":true},{"id":"p298_삼겹슬라이스_sliced_pork_belly_","name":"삼겹슬라이스 SLICED PORK BELLY BLRL (6mm)","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":20.9,"active":true},{"id":"p299_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":17.6,"active":true},{"id":"p300_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"PACIFIC","boxKg":0,"packKg":0,"priceKg":18.15,"active":true},{"id":"p301_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"RIVALEA","boxKg":0,"packKg":0,"priceKg":18.92,"active":true},{"id":"p302_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"RIVALEA / BACAMPBELL/ 3CTNS","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p303_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"RIVALEA / SUNPORK/ 8 CTNS","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p304_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"RIVALEA 1p","boxKg":0,"packKg":0,"priceKg":19.58,"active":true},{"id":"p305_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"RIVALEA 2p","boxKg":0,"packKg":0,"priceKg":18.92,"active":true},{"id":"p306_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":20.35,"active":true},{"id":"p307_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"SUNPORK/ 5CTN","boxKg":0,"packKg":0,"priceKg":20.13,"active":true},{"id":"p308_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"SUNPORK/ 5CTNS","boxKg":0,"packKg":0,"priceKg":19.58,"active":true},{"id":"p309_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"be cam","boxKg":0,"packKg":0,"priceKg":18.7,"active":true},{"id":"p310_생삼겹_pork_belly_blrl","name":"생삼겹 PORK BELLY BLRL","cut":"돼지고기","brand":"리벨리","boxKg":0,"packKg":0,"priceKg":19.58,"active":true},{"id":"p311_작업돈목뼈_pork_neck_bone_cut","name":"작업돈목뼈 PORK NECK BONE CUT","cut":"돼지고기","brand":"PACIFIC","boxKg":0,"packKg":0,"priceKg":3.85,"active":true},{"id":"p312_작업돈목뼈_pork_neck_bone_cut","name":"작업돈목뼈 PORK NECK BONE CUT","cut":"돼지고기","brand":"RIVALEA","boxKg":0,"packKg":0,"priceKg":3.85,"active":true},{"id":"p313_작업돈목뼈_pork_neck_bone_cut","name":"작업돈목뼈 PORK NECK BONE CUT","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":4.62,"active":true},{"id":"p314_전지_pork_shoulder","name":"전지 PORK SHOULDER","cut":"돼지고기","brand":"RIVALEA","boxKg":0,"packKg":0,"priceKg":10.89,"active":true},{"id":"p315_전지_pork_shoulder","name":"전지 PORK SHOULDER","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":10.89,"active":true},{"id":"p316_전지_pork_shoulder","name":"전지 PORK SHOULDER","cut":"돼지고기","brand":"TENDER VALLEY","boxKg":0,"packKg":0,"priceKg":10.89,"active":true},{"id":"p317_전지슬라이스_sliced_pork_should","name":"전지슬라이스 SLICED PORK SHOULDER (2mm)","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":11.88,"active":true},{"id":"p318_전지슬라이스_sliced_pork_should","name":"전지슬라이스 SLICED PORK SHOULDER (2mm)","cut":"돼지고기","brand":"1CTN","boxKg":0,"packKg":0,"priceKg":11.55,"active":true},{"id":"p319_전지슬라이스_sliced_pork_should","name":"전지슬라이스 SLICED PORK SHOULDER/ 1CTN","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":11.55,"active":true},{"id":"p320_항정_pork_jowls","name":"항정 PORK JOWLS","cut":"돼지고기","brand":"","boxKg":0,"packKg":0,"priceKg":8.14,"active":true},{"id":"p321_항정_pork_jowls","name":"항정 PORK JOWLS","cut":"돼지고기","brand":"BE CAMPBEL","boxKg":0,"packKg":0,"priceKg":8.14,"active":true},{"id":"p322_항정_pork_jowls","name":"항정 PORK JOWLS","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":8.14,"active":true},{"id":"p323_항정_pork_jowls","name":"항정 PORK JOWLS","cut":"돼지고기","brand":"BE CAMPBELL","boxKg":0,"packKg":0,"priceKg":8.14,"active":true},{"id":"p324_항정_pork_jowls","name":"항정 PORK JOWLS","cut":"돼지고기","brand":"BE CAMPBELL/ SUNPORK","boxKg":0,"packKg":0,"priceKg":8.14,"active":true},{"id":"p325_항정_pork_jowls","name":"항정 PORK JOWLS","cut":"돼지고기","brand":"SUNPORK","boxKg":0,"packKg":0,"priceKg":8.14,"active":true},{"id":"p326_오가살_duck_breast_fillet","name":"오가살 DUCK BREAST FILLET","cut":"오리","brand":"","boxKg":0,"packKg":0,"priceKg":34.65,"active":true},{"id":"p327_훈제오리_smokde_duck","name":"훈제오리 SMOKDE DUCK","cut":"오리","brand":"","boxKg":0,"packKg":0,"priceKg":50.49,"active":true},{"id":"p328_훈제오리_smoked_duck","name":"훈제오리 SMOKED DUCK","cut":"오리","brand":"","boxKg":0,"packKg":0,"priceKg":47.85,"active":true},{"id":"p329_훈제오리_smoked_duck_4p","name":"훈제오리 SMOKED DUCK 4p","cut":"오리","brand":"","boxKg":0,"packKg":0,"priceKg":47.85,"active":true},{"id":"p330_훈제오리_smoked_duck_1ctn","name":"훈제오리 SMOKED DUCK/ 1CTN","cut":"오리","brand":"","boxKg":0,"packKg":0,"priceKg":47.85,"active":true},{"id":"p331_갈비탕_beef_rib_soup","name":"갈비탕 BEEF RIB SOUP","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p332_갈비탕_beef_rib_soup_18p_ctn","name":"갈비탕 BEEF RIB SOUP (18p/CTN)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p333_꼬리곰탕_beef_tail_soup","name":"꼬리곰탕 BEEF TAIL SOUP","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p334_꼬리곰탕_beef_tail_soup_18p_c","name":"꼬리곰탕 BEEF TAIL SOUP (18P/CTN)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":19.8,"active":true},{"id":"p335_대패돌돌이_pork_belly_rolled_p","name":"대패돌돌이 PORK BELLY ROLLED PACKED","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":25.3,"active":true},{"id":"p336_돈까스_donkastu_18p_ctn","name":"돈까스 DONKASTU (18p/CTN)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":13.75,"active":true},{"id":"p337_돈까스_donkastu_18p_ctn_1ctn","name":"돈까스 DONKASTU 18p/CTN/ 1CTN","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p338_롱롱돈까스_long_donkastu_400g","name":"롱롱돈까스 LONG DONKASTU 400g","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":9.9,"active":true},{"id":"p339_롱롱돈까스_long_donkastu_400g_","name":"롱롱돈까스 LONG DONKASTU 400g 18p","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":9.9,"active":true},{"id":"p340_매운사태_braised_beef_shank_2","name":"매운사태 BRAISED BEEF SHANK (24p/CTN)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p341_매운사태_braised_beef_shank_2","name":"매운사태 BRAISED BEEF SHANK (24p/CTN) 17p","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p342_사골국_beef_bone_soup_s","name":"사골국 BEEF BONE SOUP (S)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p343_사골국_l_beef_marrow_bone_so","name":"사골국(L) BEEF MARROW BONE SOUP (12P","cut":"가공육","brand":"CTN)/ 1CTN","boxKg":0,"packKg":0,"priceKg":13.97,"active":true},{"id":"p344_사골국_l_beef_marrow_bone_so","name":"사골국(L) BEEF MARROW BONE SOUP (12p/CTN)1CTN","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":13.97,"active":true},{"id":"p345_사골국_l_beef_marrow_bone_so","name":"사골국(L) BEEF MARROW BONE SOUP (12p/ctn)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":13.97,"active":true},{"id":"p346_사골국_s_beef_marrow_bone_so","name":"사골국(S) BEEF MARROW BONE SOUP","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p347_사골국_s_beef_marrow_bone_so","name":"사골국(S) BEEF MARROW BONE SOUP (20p/ctn)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p348_사골국_s_beef_marrow_bone_so","name":"사골국(S) BEEF MARROW BONE SOUP 20P/CTN/ 1CTN","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":8.25,"active":true},{"id":"p349_일반소세지smoked_kransky_12p_b","name":"일반소세지SMOKED KRANSKY (12P/B)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":5.72,"active":true},{"id":"p350_주문_양념돈불_05_01_2026","name":"주문 양념돈불 05/01/2026","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":17.49,"active":true},{"id":"p351_주문_찌개용_냉동_05_01_2026","name":"주문 찌개용 (냉동) 05/01/2026","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":26.4,"active":true},{"id":"p352_치즈돈까스_cheese_donkastu_18p","name":"치즈돈까스 CHEESE DONKASTU (18p/CTN)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":14.85,"active":true},{"id":"p353_치즈돈까스_cheese_donkastu_18p","name":"치즈돈까스 CHEESE DONKASTU (18p/ctn)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":14.41,"active":true},{"id":"p354_치즈소세지_smoked_cheese_krans","name":"치즈소세지 SMOKED CHEESE KRANSKY (12P/B)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":5.83,"active":true},{"id":"p355_치즈소세지_smoked_cheese_krans","name":"치즈소세지 SMOKED CHEESE KRANSKY(12P/B)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":5.83,"active":true},{"id":"p356_튀긴롱롱돈까스deep_fried_long_do","name":"튀긴롱롱돈까스DEEP FRIED LONG DONKASTU 400g (18p/ctn)","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":13.2,"active":true},{"id":"p357_튀김용_돈까스_donkastu","name":"튀김용 돈까스 DONKASTU","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":4.18,"active":true},{"id":"p358_튀김용_돈까스_donkastu_120p","name":"튀김용 돈까스 DONKASTU/ 120P","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":4.07,"active":true},{"id":"p359_튀김용_돈까스_donkastu_200pcs","name":"튀김용 돈까스 DONKASTU/ 200PCS","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":4.07,"active":true},{"id":"p360_튀김용_치즈돈까스_cheese_donkastu","name":"튀김용 치즈돈까스 CHEESE DONKASTU","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":4.29,"active":true},{"id":"p361_튀김용_치즈돈까스_cheese_donkastu","name":"튀김용 치즈돈까스 CHEESE DONKASTU/ 30PCS","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":4.29,"active":true},{"id":"p362_핫푸드용치즈돈까스_cheese_donkastu","name":"핫푸드용치즈돈까스 CHEESE DONKASTU","cut":"가공육","brand":"","boxKg":0,"packKg":0,"priceKg":4.79,"active":true},{"id":"p363_foam_tray_7_5_1p","name":"FOAM TRAY 7*5 1p","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":14.3,"active":true},{"id":"p364_soaker_pad","name":"SOAKER PAD","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":33.0,"active":true},{"id":"p365_tray","name":"tray","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":55.0,"active":true},{"id":"p366_간장_soy_sauce","name":"간장 SOY SAUCE","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":43.45,"active":true},{"id":"p367_간장_soy_sauce_1","name":"간장 SOY SAUCE/ 1","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":43.45,"active":true},{"id":"p368_고기마을_박스_25개","name":"고기마을 박스 25개","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p369_고기마을_박스_meat_world_box_25","name":"고기마을 박스 MEAT WORLD BOX *25","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":3.3,"active":true},{"id":"p370_고기마을_스티커","name":"고기마을 스티커","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p371_고기마을_스티커_와규_스티커","name":"고기마을 스티커 & 와규 스티커","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p372_고기마을스티커","name":"고기마을스티커","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p373_고추장_pepper_paste","name":"고추장 PEPPER PASTE","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":55.0,"active":true},{"id":"p374_골절기_톱날_band_saw_blade","name":"골절기 톱날 BAND SAW BLADE","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":132.0,"active":true},{"id":"p375_달력","name":"달력","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p376_대패삼겹슬라이스_패킹_pork_belly_sl","name":"대패삼겹슬라이스 패킹 PORK BELLY  SLICED PACKING","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p377_랩_wrap_40cm_6","name":"랩 WRAP (40cm) *6","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":44.0,"active":true},{"id":"p378_랩_wrap_45cm_4","name":"랩 WRAP (45cm) *4","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":47.3,"active":true},{"id":"p379_롱대패_슬라이스패킹_long_sliced_be","name":"롱대패 슬라이스패킹 LONG SLICED BELLY PACKING","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":23.43,"active":true},{"id":"p380_목살슬라이스_패킹_sliced_collar_b","name":"목살슬라이스 패킹 SLICED COLLAR BUTT PACKING","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":14.85,"active":true},{"id":"p381_물엿_corn_syrup_5kg_x4","name":"물엿 CORN SYRUP 5kg x4","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":13.75,"active":true},{"id":"p382_미림_mirim_1_8l_x_6","name":"미림 MIRIM 1.8L x 6","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":10.12,"active":true},{"id":"p384_박스라이너_carton_liner","name":"박스라이너 CARTON LINER","cut":"공산품","brand":"BOX","boxKg":0,"packKg":0,"priceKg":68.2,"active":true},{"id":"p385_빵가루_frozen_bread_crumb","name":"빵가루 FROZEN BREAD CRUMB","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":77.0,"active":true},{"id":"p386_빵가루_frozen_bread_crumb_10","name":"빵가루 FROZEN BREAD CRUMB 10kg","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":62.7,"active":true},{"id":"p387_빵가루_frozen_bread_crumb_2c","name":"빵가루 FROZEN BREAD CRUMB/ 2CTN","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":77.0,"active":true},{"id":"p388_빵가루_frozen_bread_crumb_4","name":"빵가루 FROZEN BREAD CRUMB/ 4","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":77.0,"active":true},{"id":"p389_샤브_트레이패킹_beef_slice_shabu","name":"샤브 트레이패킹 BEEF SLICE SHABU TRAY PACKING","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":17.05,"active":true},{"id":"p390_설탕_sugar_brown_25kg","name":"설탕 SUGAR BROWN 25KG","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":72.49,"active":true},{"id":"p391_소불고기_패킹_beef_knuckle_slic","name":"소불고기 패킹 BEEF KNUCKLE SLICE PACKING","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":16.5,"active":true},{"id":"p392_실링컨테이너_5kg","name":"실링컨테이너 5KG","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":55.0,"active":true},{"id":"p393_오일_vegetable_cooking_oil_","name":"오일 VEGETABLE COOKING OIL 18L","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":63.8,"active":true},{"id":"p394_오일_vegetable_cooking_oil_","name":"오일 VEGETABLE COOKING OIL 18L/ 2","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":63.8,"active":true},{"id":"p395_오일_vegetable_cooking_oil_","name":"오일 VEGETABLE COOKING OIL 18L/ 2CTNS","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":63.8,"active":true},{"id":"p396_와규_스티커","name":"와규 스티커","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p397_와규스티커","name":"와규스티커","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p398_임가고추가루_red_pepper_powder","name":"임가고추가루 RED PEPPER POWDER","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":127.16,"active":true},{"id":"p399_장갑","name":"장갑","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p400_진공필름_vacumm_film","name":"진공필름 VACUMM FILM","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":418.0,"active":true},{"id":"p401_차돌슬라이스_패킹_pe_brisket_slic","name":"차돌슬라이스 패킹 PE BRISKET SLICE PACKING","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":17.05,"active":true},{"id":"p402_참소스_soy_sauce_20_1box","name":"참소스 SOY SAUCE (20/ 1BOX)","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":48.4,"active":true},{"id":"p403_카라멜소스_caramel_sauce_2_7l_","name":"카라멜소스 CARAMEL SAUCE 2.7L x 5","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":23.1,"active":true},{"id":"p404_카스라벨지","name":"카스라벨지","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":0,"active":true},{"id":"p405_후추_black_pepper_1kg_10","name":"후추 BLACK PEPPER 1kg*10","cut":"공산품","brand":"","boxKg":0,"packKg":0,"priceKg":33.0,"active":true}]`),
+    customers: [
+      { id: 'c_demo1', code: 'CUST001', name: '강남 BBQ', contact: '김사장', phone: '0412 345 678',
+        email: 'gangnam@example.com', address: '123 King St, Sydney NSW 2000',
+        favoriteProductIds: ['p294_삼겹살_pork_belly_blrl','p005_갈비_short_rib','p401_차돌슬라이스_패킹_pe_brisket_slic','p004_전중량_재단갈비la_short_rib_la_c','p320_항정_pork_jowls'],
+        terms: '7일 외상', active: true },
+      { id: 'c_demo2', code: 'CUST002', name: '서울 정육점', contact: '이대표', phone: '0413 999 111',
+        email: '', address: '45 Smith St, Strathfield NSW 2135',
+        favoriteProductIds: ['p150_wagyu_chuck_eye_roll_mb8_','p214_wagyu_short_rib_meat_mb6_','p174_wagyu_flap_meat_mb_6_7','p200_wagyu_oyster_blade_mb6_7'],
+        terms: '현금', active: true },
+      { id: 'c_demo3', code: 'CUST003', name: '명동 갈비', contact: '박매니저', phone: '0414 222 333',
+        email: '', address: '88 George St, Parramatta NSW 2150',
+        favoriteProductIds: ['p009_갈비_short_ribs','p007_갈비_short_rib_cut','p004_전중량_재단갈비la_short_rib_la_c','p017_꼬리_beef_tail'],
+        terms: '14일 외상', active: true },
+    ],
+    orders: [],
+    settings: {
+      orderSeq: 1,
+      invoiceSeq: 1
+    }
+  };
+}
+
+// -------- Customer Mode (per-customer access control) --------
+let CUSTOMER_MODE = null;
+try { CUSTOMER_MODE = sessionStorage.getItem('atm_customer_mode') || null; } catch(e){}
+function setCustomerMode(id) {
+  CUSTOMER_MODE = id;
+  try { sessionStorage.setItem('atm_customer_mode', id); } catch(e){}
+}
+function clearCustomerMode() {
+  CUSTOMER_MODE = null;
+  try { sessionStorage.removeItem('atm_customer_mode'); } catch(e){}
+}
+function exitCustomerMode() {
+  if (!confirm('로그아웃하시겠습니까?')) return;
+  clearCustomerMode();
+  location.hash = '#home';
+}
+
+// -------- Staff Auth (password gate for #order, #warehouse, #office) --------
+let STAFF_UNLOCKED = false;
+try { STAFF_UNLOCKED = sessionStorage.getItem('atm_staff_unlocked') === '1'; } catch(e){}
+
+function staffLogout() {
+  STAFF_UNLOCKED = false;
+  try { sessionStorage.removeItem('atm_staff_unlocked'); } catch(e){}
+  location.hash = '#home';
+  route();
+}
+
+function showStaffLogin() {
+  const app = document.getElementById('app');
+  const isFirstTime = !DB.settings.staffPasswordHash;
+  updateNav();
+  app.innerHTML = `
+    <h2 class="page-title">🔑 Staff Login
+      <span class="sub">${isFirstTime ? 'Set up staff password' : 'Authorised staff only'}</span></h2>
+    <div class="card" style="max-width:420px; margin:30px auto;">
+      ${isFirstTime ? `
+        <div class="notice">First time setup — please set a staff password. Staff will need this to access Orders, Warehouse, and Office.</div>
+      ` : `
+        <p style="font-size:13px; color:var(--muted); margin-top:0;">Enter the staff password to access the system.</p>
+      `}
+      <div class="field">
+        <label>Password (min 4 characters)</label>
+        <input type="password" id="staffPw" autofocus onkeydown="if(event.key==='Enter') submitStaffLogin(${isFirstTime})">
+      </div>
+      ${isFirstTime ? `
+      <div class="field">
+        <label>Confirm Password</label>
+        <input type="password" id="staffPw2" onkeydown="if(event.key==='Enter') submitStaffLogin(${isFirstTime})">
+      </div>` : ''}
+      <div class="btn-row">
+        <button class="btn" onclick="submitStaffLogin(${isFirstTime})">${isFirstTime ? 'Set Password' : 'Login'}</button>
+        <button class="btn secondary" onclick="location.hash='#home'; route();">Cancel</button>
+      </div>
+    </div>
+  `;
+}
+
+async function submitStaffLogin(isFirstTime) {
+  const pw = (document.getElementById('staffPw')||{}).value || '';
+  if (pw.length < 4) return alert('Password must be at least 4 characters.');
+  if (isFirstTime === true || isFirstTime === 'true') {
+    const pw2 = (document.getElementById('staffPw2')||{}).value || '';
+    if (pw !== pw2) return alert('Passwords do not match.');
+    DB.settings.staffPasswordHash = await hashPw(pw);
+    saveDB();
+    alert('Staff password set successfully.');
+  } else {
+    const h = await hashPw(pw);
+    if (h !== DB.settings.staffPasswordHash) return alert('Incorrect password.');
+  }
+  STAFF_UNLOCKED = true;
+  try { sessionStorage.setItem('atm_staff_unlocked', '1'); } catch(e){}
+  location.hash = '#home';
+  route();
+}
+
+// -------- Admin Auth (password gate for #admin) --------
+let ADMIN_UNLOCKED = false;
+try { ADMIN_UNLOCKED = sessionStorage.getItem('atm_admin_unlocked') === '1'; } catch(e){}
+
+async function hashPw(pw) {
+  try {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+    return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2,'0')).join('');
+  } catch(e) {
+    // Fallback (no crypto.subtle, e.g. file:// in some browsers) — simple obfuscation
+    let h = 5381;
+    for (let i = 0; i < pw.length; i++) h = ((h << 5) + h) + pw.charCodeAt(i);
+    return 'fallback_' + (h >>> 0).toString(16);
+  }
+}
+
+function adminLogout() {
+  ADMIN_UNLOCKED = false;
+  try { sessionStorage.removeItem('atm_admin_unlocked'); } catch(e){}
+  location.hash = '#home';
+}
+
+function showAdminLogin() {
+  const app = document.getElementById('app');
+  const isFirstTime = !DB.settings.adminPasswordHash;
+  app.innerHTML = `
+    <h2 class="page-title">🔒 관리자 ${isFirstTime?'비밀번호 설정':'로그인'}</h2>
+    <div class="card" style="max-width:420px; margin:30px auto;">
+      ${isFirstTime ? `
+        <div class="notice">처음 접속하셨네요. 관리자 비밀번호를 설정해주세요. 이후 관리자 메뉴 진입 시 이 비밀번호가 필요합니다. <b>분실 시 백업 데이터로 복원해야 하니 꼭 기억하세요.</b></div>
+      ` : `
+        <p style="font-size:13px; color:var(--muted); margin-top:0;">품목·거래처·즐겨찾기·회사정보 관리는 인증이 필요합니다.</p>
+      `}
+      <div class="field">
+        <label>비밀번호 (최소 4자)</label>
+        <input type="password" id="adminPw" autofocus onkeydown="if(event.key==='Enter') submitAdminLogin(${isFirstTime})">
+      </div>
+      ${isFirstTime ? `
+      <div class="field">
+        <label>비밀번호 확인</label>
+        <input type="password" id="adminPw2" onkeydown="if(event.key==='Enter') submitAdminLogin(${isFirstTime})">
+      </div>` : ''}
+      <div class="btn-row">
+        <button class="btn" onclick="submitAdminLogin(${isFirstTime})">${isFirstTime?'설정':'로그인'}</button>
+        <button class="btn secondary" onclick="location.hash='#home'">취소</button>
+        ${!isFirstTime ? `<button class="btn danger sm" style="margin-left:auto;" onclick="resetAdminPassword()" title="비밀번호 분실 시">비밀번호 분실</button>` : ''}
+      </div>
+    </div>
+  `;
+}
+
+async function submitAdminLogin(isFirstTime) {
+  const pw = (document.getElementById('adminPw')||{}).value || '';
+  if (pw.length < 4) return alert('비밀번호는 최소 4자입니다.');
+  if (isFirstTime === true || isFirstTime === 'true') {
+    const pw2 = (document.getElementById('adminPw2')||{}).value || '';
+    if (pw !== pw2) return alert('비밀번호가 일치하지 않습니다.');
+    DB.settings.adminPasswordHash = await hashPw(pw);
+    saveDB();
+    alert('비밀번호가 설정되었습니다.');
+  } else {
+    const h = await hashPw(pw);
+    if (h !== DB.settings.adminPasswordHash) return alert('비밀번호가 틀렸습니다.');
+  }
+  ADMIN_UNLOCKED = true;
+  try { sessionStorage.setItem('atm_admin_unlocked', '1'); } catch(e){}
+  location.hash = '#admin';
+  route();
+}
+
+function resetAdminPassword() {
+  if (!confirm('비밀번호를 초기화하시겠습니까?\n전체 데이터 백업 파일이 있어야 안전합니다.\n초기화 후 다시 설정하셔야 합니다.')) return;
+  const confirm2 = prompt('확인을 위해 "초기화"를 입력하세요:');
+  if (confirm2 !== '초기화') return alert('취소되었습니다.');
+  DB.settings.adminPasswordHash = null;
+  saveDB();
+  alert('비밀번호가 삭제되었습니다. 관리자 진입 시 다시 설정해주세요.');
+  location.hash = '#admin';
+  route();
+}
+
+function updateNav() {
+  const nav = document.querySelector('.nav');
+  if (CUSTOMER_MODE) {
+    const cust = DB.customers.find(c => c.id === CUSTOMER_MODE);
+    nav.innerHTML = `
+      <span class="logo">🥩 ALL THAT MEAT</span>
+      <button class="tab" data-route="#order?c=${CUSTOMER_MODE}">🛒 Place Order</button>
+      <button class="tab" data-route="#myOrders">📜 My Orders</button>
+      <span class="spacer"></span>
+      <span style="font-size:12px; color:rgba(255,255,255,0.85); margin-right:8px; white-space:nowrap;">👤 ${cust ? cust.name : '거래처'}</span>
+      <button class="util" onclick="exitCustomerMode()" style="background:#fff;">Logout</button>
+    `;
+  } else if (STAFF_UNLOCKED) {
+    nav.innerHTML = `
+      <span class="logo">🥩 ALL THAT MEAT</span>
+      <button class="tab" data-route="#home">🏠 Home</button>
+      <button class="tab" data-route="#order">🛒 Orders</button>
+      <button class="tab" data-route="#warehouse">⚖️ Warehouse</button>
+      <button class="tab" data-route="#office">📋 Office</button>
+      <button class="tab" data-route="#admin">⚙️ Admin</button>
+      <span class="spacer"></span>
+      <button class="util" onclick="staffLogout()" style="background:#fff; color:var(--brand-dark);">🔒 Logout</button>
+    `;
+  } else {
+    nav.innerHTML = `
+      <span class="logo">🥩 ALL THAT MEAT</span>
+      <span class="spacer"></span>
+      <button class="util" onclick="showStaffLogin()">🔑 Staff Login</button>
+    `;
+  }
+  document.querySelectorAll('.nav .tab').forEach(t => {
+    t.onclick = () => { location.hash = t.dataset.route; };
+  });
+}
+
+// -------- Routing --------
+function route() {
+  const hash = location.hash || '#home';
+  const [path, query] = hash.slice(1).split('?');
+  const params = new URLSearchParams(query || '');
+
+  // Customer mode entry: URL has &customer=1 → lock to that customer
+  if (params.get('customer') === '1' && params.get('c')) {
+    setCustomerMode(params.get('c'));
+  }
+
+  // Staff access control — block staff routes unless logged in
+  if (!CUSTOMER_MODE) {
+    const staffRoutes = ['order', 'warehouse', 'office', 'weigh', 'invoicePrep', 'invoice', 'history', 'orderDetail', 'admin'];
+    if (staffRoutes.includes(path) && !STAFF_UNLOCKED) {
+      updateNav();
+      showStaffLogin();
+      return;
+    }
+  }
+
+  // Customer mode access control
+  if (CUSTOMER_MODE) {
+    const allowed = ['order', 'myOrders', 'orderDetail', 'enter'];
+    if (!allowed.includes(path)) {
+      location.hash = '#myOrders'; return;
+    }
+    if (path === 'order') {
+      const c = params.get('c');
+      if (!c) {
+        // No customer specified — force own customer
+        location.hash = '#order?c=' + CUSTOMER_MODE; return;
+      }
+      if (c !== CUSTOMER_MODE) {
+        // Trying to view another customer's order page
+        location.hash = '#myOrders'; return;
+      }
+    }
+    if (path === 'orderDetail') {
+      const ord = DB.orders.find(o => o.id === params.get('id'));
+      if (!ord || ord.customerId !== CUSTOMER_MODE) {
+        location.hash = '#myOrders'; return;
+      }
+    }
+  }
+
+  updateNav();
+  document.querySelectorAll('.nav .tab').forEach(t => {
+    const routePath = (t.dataset.route || '').slice(1).split('?')[0];
+    t.classList.toggle('active', routePath === path);
+  });
+  const view = ROUTES[path] || ROUTES['home'];
+  document.getElementById('app').innerHTML = '';
+  view(params);
+  window.scrollTo(0, 0);
+  // Track whether user is actively entering an order (suppress auto-rerender)
+  _isOrderEntry = (path === 'order' || path === 'enter');
+}
+window.addEventListener('hashchange', route);
+
+// =========================================================================
+//  VIEW: HOME
+// =========================================================================
+function viewHome() {
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <h2 class="page-title">ALL THAT MEAT 통합 주문관리 시스템
+      <span class="sub">데모 / Prototype</span></h2>
+
+    <div class="notice" style="border-left-color:var(--warn); background:#FFFBF0; margin-bottom:14px;">
+      <b>📁 폴더 설정이 필요한 이유</b><br>
+      브라우저는 보안상 컴퓨터의 특정 폴더에 파일을 직접 저장할 수 없습니다.
+      상단의 <b>📁 폴더 설정</b>을 <b>처음 한 번만 클릭해서 원하는 폴더를 지정</b>해두면,
+      이후부터는 💾 Backup(JSON)과 📄 인보이스 PDF 모두 같은 폴더에 자동 저장됩니다.<br>
+      <small style="color:var(--muted);">📄 인보이스 PDF는 지정 폴더 안 <b>인보이스/날짜/업체명/</b> 구조로 정리됩니다.</small><br>
+      <span style="color:var(--muted); font-size:11px; margin-top:4px; display:block;">
+        ※ <b>Chrome 또는 Edge</b> 에서만 폴더 직접 저장을 지원합니다. Safari·Firefox는 일반 다운로드 폴더로 저장됩니다.
+        폴더 권한은 브라우저를 닫으면 초기화되므로, 재시작 후 처음 저장 시 한 번 더 승인이 필요할 수 있습니다.
+      </span>
+    </div>
+
+    <div class="card">
+      <h3>역할 선택 / Choose Role</h3>
+      <div class="roles">
+        <div class="role-card" onclick="location.hash='#order'">
+          <div class="icon">🛒</div>
+          <h4>거래처 주문</h4>
+          <p>거래처가 카카오톡 링크로<br>접속해 주문 입력</p>
+        </div>
+        <div class="role-card" onclick="location.hash='#warehouse'">
+          <div class="icon">⚖️</div>
+          <h4>작업장 (계근)</h4>
+          <p>주문된 품목을 챙기고<br>실제 중량 입력</p>
+        </div>
+        <div class="role-card" onclick="location.hash='#office'">
+          <div class="icon">📋</div>
+          <h4>사무실 (인보이스)</h4>
+          <p>계근 완료된 주문 확인<br>인보이스 발행</p>
+        </div>
+        <div class="role-card" onclick="location.hash='#admin'">
+          <div class="icon">⚙️</div>
+          <h4>관리자</h4>
+          <p>품목·거래처 관리,<br>즐겨찾기 설정</p>
+        </div>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>오늘 현황 / Today's Snapshot</h3>
+      <div id="stats"></div>
+    </div>
+
+    <div class="card">
+      <h3>🥩 오늘의 작업육 <span style="font-weight:400; font-size:12px; color:var(--muted);">— 품목명에 "작업" 포함된 부위, 거래처별 정리</span></h3>
+      <div id="processingToday"></div>
+    </div>
+
+    <div class="card">
+      <h3>최근 주문 / Recent Orders</h3>
+      <div id="recentOrders"></div>
+    </div>
+
+    <div class="card">
+      <h3>운영 가이드 / How It Works</h3>
+      <div class="notice">
+        <b>워크플로우 (구글 폼 ➝ 엑셀 합산 방식 참고):</b><br>
+        ① 거래처에 <b>카카오톡으로 고유 주문 링크 전송</b> (관리자 → 거래처 목록 → 링크 복사)<br>
+        ② 거래처가 링크 클릭 → 자주 쓰는 품목 즐겨찾기에서 빠르게 선택 → 박스/팩/중량 단위로 주문 → 제출<br>
+        ③ <b>작업장 직원</b>이 주문 목록 열어 품목 챙기고 실제 계근 (예: 삼겹살 1박스 → 15.6kg) 입력<br>
+        ④ <b>사무실</b>에서 계근 완료된 주문 확인 → 인보이스 발행/인쇄<br>
+        ⑤ 전화 주문 시 사무실 직원이 거래처 주문 페이지에 대신 입력 가능
+      </div>
+      <div class="notice" style="border-left-color: var(--info); background: #F0F5FB;">
+        <b>실 운영 시 데이터 동기화:</b> 이 데모는 브라우저(localStorage)에 저장됩니다.
+        여러 PC/스마트폰에서 동시에 쓰려면 ① 회사 PC에서 운영하고 ② <b>구글 시트 + Apps Script</b>를
+        백엔드로 연결하면 됩니다. 운영 단계 진입 시 백엔드 연동 코드를 추가하시면 됩니다.
+        (백업/복원 버튼으로 JSON 파일 주고받기도 가능)
+      </div>
+    </div>
+  `;
+  renderStats();
+  renderProcessingToday();
+  renderRecentOrders();
+}
+
+function renderProcessingToday() {
+  const div = document.getElementById('processingToday');
+  if (!div) return;
+  const today = new Date().toISOString().slice(0,10);
+
+  // Group items containing "작업)" by customer
+  const byCust = {};
+  DB.orders.forEach(o => {
+    if ((o.orderDate || '').slice(0,10) !== today) return;
+    o.items.forEach(it => {
+      const p = DB.products.find(x => x.id === it.productId);
+      if (!p) return;
+      if (!p.name.includes('작업')) return;
+      if (!byCust[o.customerId]) byCust[o.customerId] = [];
+      byCust[o.customerId].push({ product: p, item: it, order: o });
+    });
+  });
+
+  const custIds = Object.keys(byCust);
+  if (custIds.length === 0) {
+    div.innerHTML = `<div class="empty" style="padding:24px;"><div class="icon">🥩</div>오늘 작업할 품목이 없습니다.<br><small style="color:var(--muted);">품목명에 "작업"이 포함된 부위를 주문 받으면 여기에 거래처별로 정리됩니다.</small></div>`;
+    return;
+  }
+
+  // Totals across all customers
+  let totalItems = 0, totalKg = 0;
+  custIds.forEach(cid => {
+    byCust[cid].forEach(e => {
+      totalItems++;
+      if (e.item.actualWeightKg != null) totalKg += e.item.actualWeightKg;
+    });
+  });
+
+  let html = `
+    <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+      거래처 <b>${custIds.length}</b>곳 · 작업 품목 <b>${totalItems}</b>건 · 계근완료분 합계 <b>${totalKg.toFixed(2)} kg</b>
+    </div>
+  `;
+  custIds.forEach(cid => {
+    const c = DB.customers.find(x => x.id === cid);
+    const items = byCust[cid];
+    let custKg = 0;
+    items.forEach(e => { if (e.item.actualWeightKg != null) custKg += e.item.actualWeightKg; });
+    html += `
+      <div style="margin-bottom:12px; padding:12px 14px; background:#FBF8F4; border-radius:8px; border-left:4px solid var(--brand);">
+        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+          <b style="font-size:14px; color:var(--brand-dark);">🏪 ${c ? c.name : '(거래처 없음)'}</b>
+          <span style="font-size:12px; color:var(--muted);">${items.length}건 · ${custKg.toFixed(2)} kg</span>
+        </div>
+        <table style="width:100%; font-size:13px; border-collapse:collapse;">
+          <thead>
+            <tr style="color:var(--muted); font-size:11px;">
+              <th style="text-align:left; padding:4px 6px;">품목</th>
+              <th style="text-align:left; padding:4px 6px;">브랜드</th>
+              <th style="text-align:left; padding:4px 6px;">주문</th>
+              <th style="text-align:right; padding:4px 6px;">실측 중량</th>
+              <th style="text-align:center; padding:4px 6px;">상태</th>
+              <th style="text-align:center; padding:4px 6px;"></th>
+            </tr>
+          </thead>
+          <tbody>
+            ${items.map(({product, item, order}) => {
+              const w = item.actualWeightKg;
+              const orderDisp = item.unit === '작업중량' ? `${item.quantity} kg` : `${item.quantity} ${item.unit}`;
+              return `<tr style="border-top:1px solid #EDE3D6;">
+                <td style="padding:6px 6px;"><b>${product.name}</b>${item.notes ? '<br><small style="color:var(--muted);">' + item.notes + '</small>' : ''}</td>
+                <td style="padding:6px 6px;">${product.brand}</td>
+                <td style="padding:6px 6px;">${orderDisp}</td>
+                <td style="text-align:right; padding:6px 6px; font-weight:700; color:${w!=null?'var(--ok)':'var(--warn)'};">${w!=null ? w.toFixed(2)+' kg' : '대기'}</td>
+                <td style="text-align:center; padding:6px 6px;"><span class="pill ${order.status}" style="font-size:10px;">${statusLabel(order.status)}</span></td>
+                <td style="text-align:center; padding:6px 6px;"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${order.id}'">보기</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  });
+  div.innerHTML = html;
+}
+
+function renderStats() {
+  const now = new Date();
+  const today = now.toISOString().slice(0,10);
+  // 이번 주 월요일 계산
+  const dow = now.getDay(); // 0=일,1=월...6=토
+  const diffToMon = (dow === 0) ? -6 : 1 - dow;
+  const monday = new Date(now); monday.setDate(now.getDate() + diffToMon);
+  const weekStartStr = monday.toISOString().slice(0,10);
+  const monthStr = today.slice(0,7);
+
+  const dayCount   = DB.orders.filter(o => (o.orderDate||'').slice(0,10) === today).length;
+  const weekCount  = DB.orders.filter(o => { const d=(o.orderDate||'').slice(0,10); return d>=weekStartStr && d<=today; }).length;
+  const monthCount = DB.orders.filter(o => (o.orderDate||'').slice(0,7) === monthStr).length;
+
+  document.getElementById('stats').innerHTML = `
+    <div style="display:flex; align-items:center; gap:0; flex-wrap:wrap; padding:8px 0;">
+      <div style="text-align:center; padding:10px 32px; border-right:2px solid var(--line);">
+        <div style="font-size:44px; font-weight:800; color:var(--brand-dark); line-height:1;">${dayCount}</div>
+        <div style="font-size:12px; color:var(--muted); margin-top:4px; font-weight:600; letter-spacing:0.5px;">/ day</div>
+        <div style="font-size:10px; color:var(--muted); margin-top:2px;">오늘</div>
+      </div>
+      <div style="text-align:center; padding:10px 32px; border-right:2px solid var(--line);">
+        <div style="font-size:44px; font-weight:800; color:var(--warn); line-height:1;">${weekCount}</div>
+        <div style="font-size:12px; color:var(--muted); margin-top:4px; font-weight:600; letter-spacing:0.5px;">/ week</div>
+        <div style="font-size:10px; color:var(--muted); margin-top:2px;">이번 주</div>
+      </div>
+      <div style="text-align:center; padding:10px 32px;">
+        <div style="font-size:44px; font-weight:800; color:var(--ok); line-height:1;">${monthCount}</div>
+        <div style="font-size:12px; color:var(--muted); margin-top:4px; font-weight:600; letter-spacing:0.5px;">/ month</div>
+        <div style="font-size:10px; color:var(--muted); margin-top:2px;">이번 달</div>
+      </div>
+    </div>
+  `;
+}
+function renderRecentOrders() {
+  const div = document.getElementById('recentOrders');
+  const today = new Date().toISOString().slice(0,10);
+  const recent = [...DB.orders]
+    .filter(o => (o.orderDate||'').slice(0,10) === today)
+    .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
+  if (recent.length === 0) {
+    div.innerHTML = `<div class="empty"><div class="icon">📭</div>오늘 접수된 주문이 없습니다.</div>`;
+    return;
+  }
+  div.innerHTML = `
+    <table class="t">
+      <thead><tr>
+        <th>주문번호</th><th>거래처</th><th>품목수</th><th>상태</th><th>일자</th><th class="act"></th>
+      </tr></thead>
+      <tbody>
+        ${recent.map(o => {
+          const cust = DB.customers.find(c => c.id === o.customerId);
+          return `<tr>
+            <td><b>${o.orderNo}</b></td>
+            <td>${cust ? cust.name : '-'}</td>
+            <td>${o.items.length}개</td>
+            <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+            <td>${(o.orderDate||'').slice(0,10)}</td>
+            <td class="act">
+              <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+function statusLabel(s) {
+  return {new:'신규', weighing:'작업중', weighed:'계근완료', invoiced:'인보이스', delivered:'배송완료'}[s] || s;
+}
+
+// =========================================================================
+//  VIEW: ADMIN (Products, Customers, Favorites)
+// =========================================================================
+function viewAdmin(params) {
+  // Password gate
+  if (!ADMIN_UNLOCKED) { return showAdminLogin(); }
+
+  const tab = params.get('tab') || 'products';
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <h2 class="page-title">⚙️ 관리자
+      <span class="sub">품목 · 거래처 · 즐겨찾기 관리</span>
+      <button class="btn sm secondary" style="float:right; margin-top:6px;" onclick="adminLogout()">🔒 잠그기</button>
+    </h2>
+    <div class="card" style="padding:8px;">
+      <div class="btn-row">
+        <button class="btn ${tab==='products'?'':'secondary'}" onclick="location.hash='#admin?tab=products'">품목 (${DB.products.length})</button>
+        <button class="btn ${tab==='customers'?'':'secondary'}" onclick="location.hash='#admin?tab=customers'">거래처 (${DB.customers.length})</button>
+        <button class="btn ${tab==='favorites'?'':'secondary'}" onclick="location.hash='#admin?tab=favorites'">거래처별 즐겨찾기</button>
+        <button class="btn ${tab==='company'?'':'secondary'}" onclick="location.hash='#admin?tab=company'">회사 정보</button>
+        <button class="btn ${tab==='security'?'':'secondary'}" onclick="location.hash='#admin?tab=security'">🔑 보안</button>
+        <button class="btn ${tab==='backup'?'':'secondary'}" onclick="location.hash='#admin?tab=backup'">💾 데이터 백업</button>
+      </div>
+    </div>
+    <div id="adminBody"></div>
+  `;
+  if (tab === 'products') renderProductsAdmin();
+  else if (tab === 'customers') renderCustomersAdmin();
+  else if (tab === 'favorites') renderFavoritesAdmin(params);
+  else if (tab === 'company') renderCompanyAdmin();
+  else if (tab === 'security') renderSecurityAdmin();
+  else if (tab === 'backup') renderBackupAdmin();
+}
+
+function renderBackupAdmin() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = `
+    <div class="card">
+      <h3>📁 폴더 설정</h3>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7;">
+        💾 Backup(JSON)과 📄 인보이스 PDF가 저장될 폴더를 지정합니다.<br>
+        한 번 설정하면 이후 버튼 클릭 시 자동으로 해당 폴더에 저장됩니다.<br>
+        <span style="font-size:11px;">※ Chrome / Edge 전용. 브라우저 재시작 후 첫 저장 시 승인 팝업이 한 번 뜰 수 있습니다.</span>
+      </p>
+      <button class="btn" onclick="setBackupFolder()">📁 저장 폴더 지정</button>
+    </div>
+
+    <div class="card">
+      <h3>💾 데이터 백업 (JSON)</h3>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7;">
+        거래처·품목·주문·설정 전체를 JSON 파일로 저장합니다.<br>
+        데이터 분실 대비 또는 다른 PC로 이전할 때 사용하세요.
+      </p>
+      <button class="btn success" onclick="exportAll()">💾 지금 백업</button>
+    </div>
+
+    <div class="card">
+      <h3>📄 인보이스 PDF 저장</h3>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7;">
+        발행된 모든 인보이스를 PDF로 저장합니다.<br>
+        지정 폴더 안 <b>인보이스 / 날짜 / 거래처명</b> 구조로 정리됩니다.
+      </p>
+      <button class="btn" style="background:#B8860B;" onclick="exportInvoicePDFs()">📄 인보이스 PDF 저장</button>
+    </div>
+
+    <div class="card">
+      <h3>📂 데이터 복원 (Restore)</h3>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7;">
+        이전에 백업한 JSON 파일을 불러와 <b>현재 데이터 전체를 덮어씁니다.</b><br>
+        잘못된 복원은 되돌릴 수 없으니, 복원 전 반드시 현재 상태를 먼저 백업하세요.
+      </p>
+      <button class="btn secondary" onclick="importAll()">📂 백업 파일로 복원</button>
+    </div>
+  `;
+}
+
+function renderSecurityAdmin() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = `
+    <div class="card">
+      <h3>🔑 관리자 비밀번호 변경</h3>
+      <div class="field"><label>현재 비밀번호</label><input type="password" id="sec_old"></div>
+      <div class="field"><label>새 비밀번호 (최소 4자)</label><input type="password" id="sec_new"></div>
+      <div class="field"><label>새 비밀번호 확인</label><input type="password" id="sec_new2"></div>
+      <button class="btn" onclick="changeAdminPassword()">비밀번호 변경</button>
+    </div>
+    <div class="card">
+      <h3>세션</h3>
+      <p style="font-size:13px; color:var(--muted);">현재 관리자 권한이 활성화되어 있습니다. 브라우저를 닫거나 "잠그기" 버튼으로 잠금 가능합니다.</p>
+      <button class="btn secondary" onclick="adminLogout()">🔒 지금 잠그기</button>
+    </div>
+  `;
+}
+
+async function changeAdminPassword() {
+  const oldPw = val('sec_old'), newPw = val('sec_new'), newPw2 = val('sec_new2');
+  if (!oldPw) return alert('현재 비밀번호를 입력하세요.');
+  if (newPw.length < 4) return alert('새 비밀번호는 최소 4자입니다.');
+  if (newPw !== newPw2) return alert('새 비밀번호가 일치하지 않습니다.');
+  const oldH = await hashPw(oldPw);
+  if (oldH !== DB.settings.adminPasswordHash) return alert('현재 비밀번호가 틀렸습니다.');
+  DB.settings.adminPasswordHash = await hashPw(newPw);
+  saveDB();
+  alert('비밀번호가 변경되었습니다.');
+  route();
+}
+
+function renderProductsAdmin() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = `
+    <div class="card">
+      <h3>품목 마스터 (총 ${DB.products.length}종) — 부위/브랜드까지 분리</h3>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn success" onclick="editProduct()">+ 품목 추가</button>
+        <input id="prodSearch" placeholder="검색 (품목/부위/브랜드)" style="flex:1; min-width:200px; padding:9px; border:1px solid var(--line); border-radius:6px;">
+      </div>
+      <div id="prodList"></div>
+    </div>
+  `;
+  document.getElementById('prodSearch').oninput = e => renderProductList(e.target.value);
+  renderProductList('');
+}
+function renderProductList(q) {
+  const filt = DB.products.filter(p => {
+    if (!q) return true;
+    const s = (p.name + ' ' + p.cut + ' ' + p.brand).toLowerCase();
+    return s.includes(q.toLowerCase());
+  });
+  document.getElementById('prodList').innerHTML = `
+    <table class="t">
+      <thead><tr>
+        <th>부위</th><th>품목</th><th>브랜드</th>
+        <th class="num">단가/kg</th><th>상태</th><th class="act"></th>
+      </tr></thead>
+      <tbody>${filt.map(p => `
+        <tr>
+          <td><span class="chip">${p.cut}</span></td>
+          <td><b>${p.name}</b></td>
+          <td>${p.brand}</td>
+          <td class="num">$${(p.priceKg||0).toFixed(2)}</td>
+          <td>${p.active ? '✅' : '⛔'}</td>
+          <td class="act">
+            <button class="btn sm secondary" onclick="editProduct('${p.id}')">수정</button>
+            <button class="btn sm danger" onclick="delProduct('${p.id}')">삭제</button>
+          </td>
+        </tr>
+      `).join('')}</tbody>
+    </table>
+  `;
+}
+
+function updateProductField(prodId, field, value) {
+  const p = DB.products.find(x => x.id === prodId);
+  if (!p) return;
+  if (field === 'priceKg') {
+    const v = parseFloat(value);
+    p[field] = isNaN(v) ? 0 : v;
+  } else if (field === 'active') {
+    p[field] = !!value;
+  } else if (field === 'name') {
+    const trimmed = String(value || '').trim();
+    if (!trimmed) {
+      alert('품목명은 비울 수 없습니다.');
+      renderProductsAdmin(); // re-render to revert
+      return;
+    }
+    p[field] = trimmed;
+  } else {
+    p[field] = String(value || '').trim();
+  }
+  saveDB();
+}
+function editProduct(id) {
+  const p = id ? DB.products.find(x => x.id === id) : { id: uid('p'), name:'', cut:'소고기', brand:'', boxKg:0, packKg:0, priceKg:0, active:true };
+  openModal(`
+    <h3>${id?'품목 수정':'품목 추가'}</h3>
+    <div class="field"><label>품목명 *</label><input id="m_name" value="${p.name}"></div>
+    <div class="grid-2">
+      <div class="field"><label>부위 (분류)</label>
+        <select id="m_cut">
+          ${['소고기','와규','돼지고기','오리','가공육','공산품','기타'].map(c=>`<option ${c===p.cut?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </div>
+      <div class="field"><label>브랜드 / 원산지</label>
+        <input id="m_brand" value="${p.brand}" placeholder="호주산 / 한국산 / ATM 등">
+      </div>
+    </div>
+    <div class="field"><label>단가/kg (AUD)</label><input id="m_price" type="number" step="0.01" value="${p.priceKg}"></div>
+    <div class="field"><label><input type="checkbox" id="m_active" ${p.active?'checked':''}> 활성</label></div>
+    <div class="btn-row">
+      <button class="btn" onclick="saveProduct('${p.id}', ${id?'false':'true'})">저장</button>
+      <button class="btn secondary" onclick="closeModal()">취소</button>
+    </div>
+  `);
+}
+function saveProduct(id, isNew) {
+  const obj = {
+    id, name: val('m_name').trim(), cut: val('m_cut'), brand: val('m_brand').trim(),
+    boxKg: 0, packKg: 0, // deprecated, kept for schema compatibility
+    priceKg: parseFloat(val('m_price'))||0, active: document.getElementById('m_active').checked
+  };
+  if (!obj.name) return alert('품목명을 입력하세요.');
+  if (isNew === 'true' || isNew === true) DB.products.push(obj);
+  else {
+    const i = DB.products.findIndex(p => p.id === id);
+    DB.products[i] = obj;
+  }
+  saveDB(); closeModal(); renderProductsAdmin();
+}
+function delProduct(id) {
+  if (!confirm('이 품목을 삭제하시겠습니까?')) return;
+  DB.products = DB.products.filter(p => p.id !== id);
+  saveDB(); renderProductsAdmin();
+}
+
+function renderCustomersAdmin() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = `
+    <div class="card">
+      <h3>거래처 마스터 (총 ${DB.customers.length}곳)</h3>
+      <div class="btn-row" style="margin-bottom:10px;">
+        <button class="btn success" onclick="editCustomer()">+ 거래처 추가</button>
+        <input id="custSearch" placeholder="거래처명 검색" style="flex:1; min-width:200px; padding:9px; border:1px solid var(--line); border-radius:6px;">
+      </div>
+      <div id="custList"></div>
+    </div>
+  `;
+  document.getElementById('custSearch').oninput = e => renderCustomerList(e.target.value);
+  renderCustomerList('');
+}
+function renderCustomerList(q) {
+  const filt = DB.customers.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()));
+  document.getElementById('custList').innerHTML = `
+    <table class="t">
+      <thead><tr>
+        <th>코드</th><th>거래처명</th><th>담당자</th><th>전화</th><th>결제</th><th>즐겨찾기</th><th class="act">주문링크</th>
+      </tr></thead>
+      <tbody>${filt.map(c => `
+        <tr>
+          <td>${c.code}</td>
+          <td><b>${c.name}</b></td>
+          <td>${c.contact||'-'}</td>
+          <td>${c.phone||'-'}</td>
+          <td>${c.terms||'-'}</td>
+          <td>${(c.favoriteProductIds||[]).length}개</td>
+          <td class="act">
+            <button class="btn sm warn" onclick="copyOrderLink('${c.id}')">🔗 링크</button>
+            <button class="btn sm kakao" onclick="kakaoShare('${c.id}')">카톡</button>
+            <button class="btn sm secondary" onclick="location.hash='#admin?tab=favorites&c=${c.id}'">⭐</button>
+            <button class="btn sm secondary" onclick="editCustomer('${c.id}')">수정</button>
+            <button class="btn sm danger" onclick="delCustomer('${c.id}')">삭제</button>
+          </td>
+        </tr>
+      `).join('')}</tbody>
+    </table>
+  `;
+}
+function editCustomer(id) {
+  const c = id ? DB.customers.find(x => x.id === id) : { id: uid('c'), code: 'CUST'+String(DB.customers.length+1).padStart(3,'0'), name:'', contact:'', phone:'', email:'', address:'', favoriteProductIds:[], terms:'현금', active:true };
+  openModal(`
+    <h3>${id?'거래처 수정':'거래처 추가'}</h3>
+    <div class="grid-2">
+      <div class="field"><label>코드</label><input id="m_code" value="${c.code}"></div>
+      <div class="field"><label>거래처명 *</label><input id="m_name" value="${c.name}"></div>
+      <div class="field"><label>담당자</label><input id="m_contact" value="${c.contact||''}"></div>
+      <div class="field"><label>전화</label><input id="m_phone" value="${c.phone||''}"></div>
+      <div class="field"><label>이메일</label><input id="m_email" value="${c.email||''}"></div>
+      <div class="field"><label>결제조건</label>
+        <select id="m_terms">
+          ${['현금','계좌이체','7일 외상','14일 외상','30일 외상'].map(t=>`<option ${t===c.terms?'selected':''}>${t}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="field"><label>주소</label><textarea id="m_address">${c.address||''}</textarea></div>
+    <div class="btn-row">
+      <button class="btn" onclick="saveCustomer('${c.id}', ${id?'false':'true'}, ${JSON.stringify(c.favoriteProductIds||[]).replace(/"/g,'&quot;')})">저장</button>
+      <button class="btn secondary" onclick="closeModal()">취소</button>
+    </div>
+  `);
+}
+function saveCustomer(id, isNew, favs) {
+  const obj = {
+    id, code: val('m_code'), name: val('m_name'), contact: val('m_contact'),
+    phone: val('m_phone'), email: val('m_email'), terms: val('m_terms'),
+    address: val('m_address'), active: true,
+    favoriteProductIds: typeof favs === 'string' ? JSON.parse(favs) : favs
+  };
+  if (!obj.name) return alert('거래처명을 입력하세요.');
+  if (isNew === 'true' || isNew === true) DB.customers.push(obj);
+  else {
+    const i = DB.customers.findIndex(c => c.id === id);
+    obj.favoriteProductIds = DB.customers[i].favoriteProductIds || [];
+    DB.customers[i] = obj;
+  }
+  saveDB(); closeModal(); renderCustomersAdmin();
+}
+function delCustomer(id) {
+  if (!confirm('이 거래처를 삭제하시겠습니까? 관련 주문은 그대로 남습니다.')) return;
+  DB.customers = DB.customers.filter(c => c.id !== id);
+  saveDB(); renderCustomersAdmin();
+}
+function copyOrderLink(custId) {
+  const cust = DB.customers.find(c => c.id === custId);
+  const url = location.origin + location.pathname + '#enter';
+  const msg = `${cust ? cust.name + ' 사장님 — ' : ''}ATM 주문 페이지: ${url}\n진입 시 거래처 코드 「${cust ? cust.code : ''}」 또는 가게명 입력`;
+  navigator.clipboard.writeText(msg).then(() => alert('주문 링크 + 거래처 코드가 복사되었습니다!\n링크 자체는 익명이고, 거래처가 코드/가게명을 입력해야 본인 데이터에 접근합니다.\n\n' + msg));
+}
+function kakaoShare(custId) {
+  const cust = DB.customers.find(c => c.id === custId);
+  // 설정된 앱 URL 우선 사용, 없으면 현재 URL
+  const baseUrl = (DB.settings.appUrl || '').trim() || (location.protocol === 'file:' ? '' : (location.origin + location.pathname));
+  if (!baseUrl) {
+    alert('📲 카톡 링크를 보내려면 먼저 앱을 인터넷에 올린 후,\n관리자 → 회사 정보 → 「앱 공개 URL」에 주소를 입력하세요.\n\n추천: GitHub Pages (무료)\nhttps://pages.github.com');
+    return;
+  }
+  const url = baseUrl + '#enter';
+  const msg = '[ALL THAT MEAT] ' + cust.name + ' 사장님, 주문 페이지입니다.\n\n🔗 ' + url + '\n\n진입 시 다음 중 하나 입력:\n  ▸ 거래처 코드: ' + cust.code + '\n  ▸ 또는 정확한 가게명: ' + cust.name + '\n\n📞 문의: ' + (DB.company.phone || '');
+  navigator.clipboard.writeText(msg).then(function() {
+    alert('✅ 카카오톡 메시지가 복사되었습니다!\n카카오톡을 열고 ' + cust.name + ' 담당자에게 붙여넣기(Ctrl+V) 하세요.\n\n' + msg);
+  }).catch(function() {
+    prompt('아래 메시지를 복사해서 카카오톡에 붙여넣으세요:', msg);
+  });
+}
+
+function renderFavoritesAdmin(params) {
+  const body = document.getElementById('adminBody');
+  const custId = params.get('c') || (DB.customers[0] && DB.customers[0].id);
+  body.innerHTML = `
+    <div class="card">
+      <h3>거래처별 즐겨찾기 (자주 주문하는 품목 등록)</h3>
+      <div class="field">
+        <label>거래처 선택</label>
+        <select id="favCust" onchange="location.hash='#admin?tab=favorites&c='+this.value">
+          ${DB.customers.map(c=>`<option value="${c.id}" ${c.id===custId?'selected':''}>${c.name} (${c.code})</option>`).join('')}
+        </select>
+      </div>
+      <div id="favList"></div>
+    </div>
+  `;
+  renderFavoritesList(custId);
+}
+function renderFavoritesList(custId) {
+  const cust = DB.customers.find(c => c.id === custId);
+  if (!cust) return;
+  const favs = cust.favoriteProductIds || [];
+  const cuts = [...new Set(DB.products.map(p => p.cut))];
+  document.getElementById('favList').innerHTML = `
+    <div class="notice">
+      <b>${cust.name}</b>의 자주 주문 품목을 체크하세요. 거래처가 주문 페이지를 열면
+      체크된 품목이 <b>맨 위에 즐겨찾기로 표시</b>되어 빠르게 선택할 수 있습니다.<br>
+      현재 등록된 즐겨찾기: <b style="color:var(--brand);">${favs.length}개</b>
+    </div>
+    ${cuts.map(cut => `
+      <h4 style="margin-top:18px; color:var(--brand-dark);">${cut}</h4>
+      <div class="quick-add">
+        ${DB.products.filter(p => p.cut === cut).map(p => {
+          const isFav = favs.includes(p.id);
+          return `<span class="qa ${isFav?'fav':''}" onclick="toggleFav('${custId}','${p.id}')">
+            ${isFav?'⭐ ':''}${p.name} <small style="opacity:0.7">(${p.brand})</small>
+          </span>`;
+        }).join('')}
+      </div>
+    `).join('')}
+  `;
+}
+function toggleFav(custId, prodId) {
+  const cust = DB.customers.find(c => c.id === custId);
+  cust.favoriteProductIds = cust.favoriteProductIds || [];
+  if (cust.favoriteProductIds.includes(prodId))
+    cust.favoriteProductIds = cust.favoriteProductIds.filter(x => x !== prodId);
+  else cust.favoriteProductIds.push(prodId);
+  saveDB(); renderFavoritesList(custId);
+}
+
+function renderCompanyAdmin() {
+  const body = document.getElementById('adminBody');
+  const c = DB.company;
+  body.innerHTML = `
+    <div class="card">
+      <h3>회사 정보 / Company Details</h3>
+      <div class="grid-2">
+        <div class="field"><label>회사명</label><input id="co_name" value="${c.name||''}"></div>
+        <div class="field"><label>ABN</label><input id="co_abn" value="${c.abn||''}"></div>
+        <div class="field"><label>전화</label><input id="co_phone" value="${c.phone||''}"></div>
+        <div class="field"><label>이메일</label><input id="co_email" value="${c.email||''}"></div>
+        <div class="field" style="grid-column:1/-1;"><label>주소</label><textarea id="co_address">${c.address||''}</textarea></div>
+        <div class="field"><label>GST율</label><input id="co_gst" type="number" step="0.01" value="${c.gstRate}"></div>
+        <div class="field"><label>통화</label><input id="co_cur" value="${c.currency||'AUD'}"></div>
+        <div class="field" style="grid-column:1/-1;">
+          <label>📲 앱 공개 URL (카톡 링크용)</label>
+          <input id="co_appUrl" value="${DB.settings.appUrl||''}" placeholder="https://아이디.github.io/ATM_Order_System.html">
+          <small style="color:var(--muted); font-size:11px; margin-top:4px; display:block;">GitHub Pages 등 인터넷에 올린 주소. 입력하면 거래처 탭의 「카톡」 버튼이 이 URL로 링크를 만듭니다.</small>
+        </div>
+      </div>
+      <button class="btn" onclick="saveCompany()">저장</button>
+    </div>
+  `;
+}
+function saveCompany() {
+  const gstParsed = parseFloat(val('co_gst'));
+  DB.company = {
+    name: val('co_name'), abn: val('co_abn'), phone: val('co_phone'),
+    email: val('co_email'), address: val('co_address'),
+    gstRate: isNaN(gstParsed) ? 0 : gstParsed,
+    currency: val('co_cur')||'AUD'
+  };
+  const appUrl = val('co_appUrl').trim().replace(/#.*$/, '');
+  if (appUrl) DB.settings.appUrl = appUrl;
+  else delete DB.settings.appUrl;
+  saveDB(); alert('회사 정보가 저장되었습니다.');
+}
+
+// =========================================================================
+//  VIEW: ENTER — Customer self-identification (no customer list exposed)
+// =========================================================================
+function viewEnter(params) {
+  const app = document.getElementById('app');
+  const currentCust = CUSTOMER_MODE ? DB.customers.find(c => c.id === CUSTOMER_MODE) : null;
+  app.innerHTML = `
+    <h2 class="page-title">🥩 ALL THAT MEAT
+      <span class="sub">Customer Order Portal</span></h2>
+    <div class="card" style="max-width:480px; margin:30px auto;">
+      ${currentCust ? `
+        <div class="notice" style="border-left-color:var(--ok); background:#E8F5E9;">
+          You are logged in as <b>${currentCust.name}</b>.
+        </div>
+        <div class="btn-row" style="margin-top:14px;">
+          <button class="btn" onclick="location.hash='#myOrders'">📜 My Orders →</button>
+          <button class="btn secondary" onclick="location.hash='#order?c=${currentCust.id}'">🛒 New Order</button>
+        </div>
+        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
+          <p style="font-size:13px; color:var(--muted);">To switch to a different account, enter the new customer code below.</p>
+          <div class="field"><input id="entryCode" placeholder="Customer code or store name"
+            onkeydown="if(event.key==='Enter') submitEntry()"></div>
+          <button class="btn secondary sm" onclick="submitEntry()">Switch Account</button>
+        </div>
+      ` : `
+        <h3>Customer Verification</h3>
+        <p style="font-size:13px; color:var(--muted); margin:0 0 16px 0;">
+          Please verify your account before placing an order.<br>
+          Enter your <b>customer code</b> or <b>exact store name</b> provided by ATM.
+        </p>
+        <div class="field">
+          <label>Customer Code or Store Name</label>
+          <input id="entryCode" placeholder="e.g. CUST001 or Sydney BBQ" autofocus
+            onkeydown="if(event.key==='Enter') submitEntry()" autocomplete="off">
+        </div>
+        <button class="btn" onclick="submitEntry()" style="width:100%;">Verify → Go to Order Page</button>
+        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); line-height:1.7;">
+          ※ Your customer code is sent by ATM via KakaoTalk or SMS.<br>
+          ※ Your session stays active after verification — no need to re-enter on refresh.<br>
+          ※ Closing the browser will require you to verify again.<br>
+          ※ Enquiries: ${DB.company.phone || 'Please contact ATM office'}
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function submitEntry() {
+  const raw = (val('entryCode') || '').trim();
+  if (!raw) return alert('Please enter your customer code or store name.');
+  // Match: exact code (case-insensitive) or exact name (case-sensitive for safety)
+  const lower = raw.toLowerCase();
+  let match = DB.customers.find(c => (c.code || '').toLowerCase() === lower);
+  if (!match) match = DB.customers.find(c => c.name === raw);
+  if (!match) {
+    return alert('No matching customer found.\n' +
+      '· The customer code or store name must match exactly.\n' +
+      '· Enquiries: ' + (DB.company.phone || 'ATM office'));
+  }
+  setCustomerMode(match.id);
+  location.hash = '#order?c=' + match.id;
+}
+
+// =========================================================================
+//  VIEW: ORDER (Customer Entry — accessed via link)
+// =========================================================================
+let CART = []; // per-session order draft
+
+function viewOrder(params) {
+  const custId = params.get('c');
+  const cust = DB.customers.find(c => c.id === custId);
+  const app = document.getElementById('app');
+  app.classList?.add?.('narrow');
+
+  if (!cust) {
+    if (CUSTOMER_MODE) {
+      // Customer mode but customer record missing — show safe error, not the staff dropdown
+      app.innerHTML = `<div class="card"><div class="empty"><div class="icon">🔒</div>유효한 거래처 정보가 없습니다.<br>주문 링크를 다시 확인하시거나 ATM 사무실로 연락 주세요.</div></div>`;
+      return;
+    }
+    // No customer specified - let staff pick one (for in-house entry)
+    app.innerHTML = `
+      <h2 class="page-title">🛒 주문하기</h2>
+      <div class="card">
+        <h3>Select Customer (Staff Only)</h3>
+        <p style="font-size:13px; color:var(--muted);">
+          When taking phone orders, select the customer then enter items.<br>
+          To send a direct order link to a customer, use <b>Admin → Customers → KakaoTalk</b>.
+        </p>
+        <div class="field"><label>Customer / 거래처</label>
+          <select id="pickCust">
+            <option value="">— 선택 —</option>
+            ${DB.customers.map(c=>`<option value="${c.id}">${c.name} (${c.code})</option>`).join('')}
+          </select>
+        </div>
+        <button class="btn" onclick="if(document.getElementById('pickCust').value) location.hash='#order?c='+document.getElementById('pickCust').value">진입</button>
+      </div>
+    `;
+    return;
+  }
+
+  CART = []; // reset on entry
+  app.innerHTML = `
+    <h2 class="page-title">🛒 ${cust.name}
+      <span class="sub">Place Order / 주문 입력</span></h2>
+
+    <div class="card">
+      <div class="grid-2">
+        <div class="field"><label>Customer</label><input value="${cust.name}" readonly></div>
+        <div class="field"><label>Contact / 담당자</label><input value="${cust.contact||''}" readonly></div>
+        <div class="field"><label>Order Date / 주문일</label><input type="date" id="orderDate" value="${new Date().toISOString().slice(0,10)}"></div>
+        <div class="field" style="grid-column:1/-1;"><label>Special Requests / 배송 요청사항</label><textarea id="deliveryNotes" placeholder="e.g. Before 10am / 예: 오전 10시 이전"></textarea></div>
+      </div>
+    </div>
+
+    <div class="search-bar">
+      <input id="prodSearch" placeholder="🔍 품목 검색 (예: 삼겹살, 한국산, LA갈비...)">
+    </div>
+
+    <div class="card" id="favCard">
+      <h3>⭐ Favourites / 자주 주문 <span style="font-weight:400; color:var(--muted); font-size:12px;">— click an item to add to cart</span></h3>
+      <div id="favList"></div>
+    </div>
+
+    <div class="card">
+      <h3>Order Items / 주문 품목 <span id="cartCount" style="float:right; color:var(--muted); font-size:12px;">0 items / 0개</span></h3>
+      <div id="cart"></div>
+    </div>
+
+    <div class="card">
+      <h3>Product Catalogue / 전체 품목</h3>
+      <div id="catalog"></div>
+    </div>
+
+    <div class="summary-bar">
+      <div class="info">Total / 총 <b id="totalQty">0</b> items / 개 <small style="opacity:0.75;">· Exact weight &amp; price on invoice / 정확한 중량·금액은 계근 후 인보이스에</small></div>
+      <button onclick="submitOrder('${cust.id}')">Submit Order / 주문 제출</button>
+    </div>
+  `;
+  renderFavQuick(cust);
+  renderCart();
+  renderCatalog('', cust.id);
+  document.getElementById('prodSearch').oninput = e => renderCatalog(e.target.value, cust.id);
+}
+function renderFavQuick(cust) {
+  const div = document.getElementById('favList');
+  const card = document.getElementById('favCard');
+  const favs = (cust.favoriteProductIds || []).map(id => DB.products.find(p => p.id === id)).filter(Boolean);
+  if (favs.length === 0) {
+    if (card) card.style.display = 'none';
+    div.innerHTML = '';
+    return;
+  }
+  if (card) card.style.display = '';
+  div.innerHTML = favs.map(p => `
+    <div onclick="addToCart('${p.id}')"
+         onmouseover="this.style.background='#FFF5D6'"
+         onmouseout="this.style.background='transparent'"
+         style="cursor:pointer; padding:3px 4px; font-weight:700; font-size:14px; color:var(--brand-dark); text-align:left; line-height:1.4;">
+      ${p.name} <span style="font-weight:400; color:var(--muted); font-size:12px;">· ${p.brand}</span>
+    </div>
+  `).join('');
+}
+function renderCatalog(q, custId) {
+  const div = document.getElementById('catalog');
+  const filt = DB.products.filter(p => p.active && (!q || (p.name+' '+p.brand+' '+p.cut).toLowerCase().includes(q.toLowerCase())));
+  const cuts = [...new Set(filt.map(p => p.cut))];
+  const cust = custId ? DB.customers.find(c => c.id === custId) : null;
+  const isStaff = STAFF_UNLOCKED && !CUSTOMER_MODE;
+  div.innerHTML = cuts.map(cut => `
+    <h4 style="margin-top:14px; margin-bottom:4px; color:var(--brand); font-size:12px; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--line); padding-bottom:4px;">${cut}</h4>
+    <div>
+      ${filt.filter(p => p.cut === cut).map(p => {
+        const isFav = cust ? (cust.favoriteProductIds||[]).includes(p.id) : false;
+        const favBtn = (isStaff && custId)
+          ? `<button onclick="event.stopPropagation(); toggleCatalogFav('${custId}','${p.id}',this)"
+               title="${isFav ? 'Remove from Favourites / 자주 주문에서 제거' : 'Add to Favourites / 자주 주문에 추가'}"
+               style="background:none; border:none; cursor:pointer; font-size:16px; padding:0 4px 0 6px; color:${isFav?'#F0B400':'#bbb'}; vertical-align:middle;"
+             >${isFav ? '⭐' : '☆'}</button>`
+          : '';
+        return `<div onclick="addToCart('${p.id}')"
+              onmouseover="this.style.background='#F5E8DD'"
+              onmouseout="this.style.background='transparent'"
+              style="cursor:pointer; padding:3px 4px; font-weight:700; font-size:14px; color:var(--ink); text-align:left; line-height:1.4; display:flex; align-items:center; justify-content:space-between;">
+          <span>${p.name} <span style="font-weight:400; color:var(--muted); font-size:12px;">· ${p.brand}</span></span>
+          ${favBtn}
+        </div>`;
+      }).join('')}
+    </div>
+  `).join('') || `<div class="empty">검색 결과 없음</div>`;
+}
+function addToCart(prodId) {
+  const p = DB.products.find(x => x.id === prodId);
+  if (!p) return;
+  CART.push({
+    productId: prodId, unit: '박스', quantity: 1, actualWeightKg: null, notes: ''
+  });
+  renderCart();
+}
+
+// Staff: toggle a product into/out of the current customer's favourites from the catalogue
+function toggleCatalogFav(custId, prodId, btn) {
+  const cust = DB.customers.find(c => c.id === custId);
+  if (!cust) return;
+  cust.favoriteProductIds = cust.favoriteProductIds || [];
+  const isFav = cust.favoriteProductIds.includes(prodId);
+  if (isFav) {
+    cust.favoriteProductIds = cust.favoriteProductIds.filter(x => x !== prodId);
+    btn.textContent = '☆';
+    btn.title = 'Add to Favourites / 자주 주문에 추가';
+    btn.style.color = '#aaa';
+  } else {
+    cust.favoriteProductIds.push(prodId);
+    btn.textContent = '⭐';
+    btn.title = 'Remove from Favourites / 자주 주문에서 제거';
+    btn.style.color = '#F0B400';
+  }
+  saveDB();
+  // Refresh favourites panel without re-rendering whole page
+  const custObj = DB.customers.find(c => c.id === custId);
+  if (custObj) renderFavQuick(custObj);
+}
+function renderCart() {
+  const div = document.getElementById('cart');
+  if (CART.length === 0) {
+    div.innerHTML = `<div class="empty"><div class="icon">🛒</div>위에서 품목을 선택해 추가하세요.</div>`;
+  } else {
+    div.innerHTML = CART.map((item, idx) => {
+      const p = DB.products.find(x => x.id === item.productId);
+      const qtyLabel = item.unit === '작업중량'
+        ? '요청 중량 (kg) — 작업해서 배달'
+        : '수량 (' + item.unit + ')';
+      const qtyStep = item.unit === '작업중량' ? 0.1 : 1;
+      return `
+        <div class="cart-item">
+          <div class="top">
+            <div><span class="name">${p.name}</span><span class="brand-tag">(${p.brand})</span></div>
+            <button class="del" onclick="CART.splice(${idx},1); renderCart();">×</button>
+          </div>
+          <div class="unit-row">
+            ${['박스','팩','작업중량'].map(u =>
+              `<button class="${item.unit===u?'active':''}" onclick="CART[${idx}].unit='${u}'; renderCart();">${u}${u==='작업중량'?' (kg)':''}</button>`
+            ).join('')}
+          </div>
+          <div class="body" style="grid-template-columns:1fr;">
+            <div>
+              <label>${qtyLabel}</label>
+              <input type="number" min="0" step="${qtyStep}" value="${item.quantity}"
+                onchange="CART[${idx}].quantity=parseFloat(this.value)||0; renderCart();">
+            </div>
+          </div>
+          <div class="notes-row">
+            <input placeholder="요청사항 (예: 3mm 슬라이스, 진공포장, 비계 제거 등)" value="${item.notes||''}"
+              onchange="CART[${idx}].notes=this.value;">
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+  document.getElementById('cartCount').textContent = CART.length + '개';
+  document.getElementById('totalQty').textContent = CART.length;
+}
+function estWeight(item, p) {
+  if (item.unit === '박스') return (item.quantity||0) * p.boxKg;
+  if (item.unit === '팩') return (item.quantity||0) * p.packKg;
+  return (item.quantity||0); // 작업중량
+}
+function submitOrder(custId) {
+  if (CART.length === 0) return alert('주문 품목을 추가해주세요.');
+  const order = {
+    id: uid('o'),
+    orderNo: 'ATM-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + String(DB.settings.orderSeq++).padStart(3,'0'),
+    customerId: custId,
+    orderDate: new Date().toISOString(),
+    deliveryDate: val('deliveryDate'),
+    deliveryNotes: val('deliveryNotes'),
+    items: CART.map(i => ({...i, actualWeightKg: i.unit === '작업중량' ? i.quantity : null})),
+    status: 'new',
+    createdAt: new Date().toISOString()
+  };
+  DB.orders.push(order);
+
+  // Auto-add ordered products to customer favourites
+  const custForFav = DB.customers.find(c => c.id === custId);
+  if (custForFav) {
+    custForFav.favoriteProductIds = custForFav.favoriteProductIds || [];
+    CART.forEach(item => {
+      if (!custForFav.favoriteProductIds.includes(item.productId)) {
+        custForFav.favoriteProductIds.push(item.productId);
+      }
+    });
+  }
+
+  saveDB();
+  alert(`주문이 접수되었습니다!\n주문번호: ${order.orderNo}\n\n작업장에서 계근 후 인보이스가 발행됩니다.`);
+  CART = [];
+  location.hash = '#orderDetail?id=' + order.id;
+}
+
+// =========================================================================
+//  VIEW: WAREHOUSE (Weighing)
+// =========================================================================
+function viewWarehouse() {
+  const app = document.getElementById('app');
+  const pending = DB.orders.filter(o => o.status === 'new' || o.status === 'weighing')
+    .sort((a,b) => (a.orderDate||'').localeCompare(b.orderDate||''));
+  app.innerHTML = `
+    <h2 class="page-title">⚖️ 작업장 — 계근 입력
+      <span class="sub">박스/팩 챙기고 실제 중량 입력</span></h2>
+    <div class="card">
+      <h3>대기 주문 (${pending.length}건)</h3>
+      ${pending.length === 0 ? `<div class="empty"><div class="icon">✅</div>처리할 주문이 없습니다.</div>` : `
+      <table class="t">
+        <thead><tr><th>주문번호</th><th>거래처</th><th>품목수</th><th>상태</th><th>주문일시</th><th class="act"></th></tr></thead>
+        <tbody>
+          ${pending.map(o => {
+            const c = DB.customers.find(x=>x.id===o.customerId);
+            return `<tr>
+              <td><b>${o.orderNo}</b></td>
+              <td>${c?c.name:'-'}</td>
+              <td>${o.items.length}</td>
+              <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+              <td>${new Date(o.orderDate).toLocaleString('ko-KR')}</td>
+              <td class="act"><button class="btn sm" onclick="location.hash='#weigh?id=${o.id}'">계근하기 →</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+    </div>
+  `;
+}
+function viewWeigh(params) {
+  const id = params.get('id');
+  const order = DB.orders.find(o => o.id === id);
+  if (!order) return location.hash = '#warehouse';
+  const cust = DB.customers.find(c => c.id === order.customerId);
+  if (order.status === 'new') { order.status = 'weighing'; saveDB(); }
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <h2 class="page-title">⚖️ ${order.orderNo}
+      <span class="sub">${cust ? cust.name : ''}</span></h2>
+    <div class="card">
+      <div class="notice">
+        품목별 실제 계근 중량을 입력하세요. <br>
+        예: 삼겹살 1박스 주문 → 박스 계근 <b>15.6 kg</b> 입력 / 대패삼겹살 5kg 주문 → 작업 후 실제 <b>5.05 kg</b> 입력
+      </div>
+      <table class="t">
+        <thead><tr><th>품목</th><th>주문</th><th class="num">실제중량(kg) *</th><th>비고</th></tr></thead>
+        <tbody>
+          ${order.items.map((it, i) => {
+            const p = DB.products.find(x => x.id === it.productId);
+            const orderDisplay = it.unit === '작업중량'
+              ? `<b>${it.quantity} kg</b> <small style="color:var(--muted);">작업</small>`
+              : `${it.quantity} ${it.unit}`;
+            return `<tr>
+              <td><b>${p.name}</b><br><small style="color:var(--muted);">${p.brand} · ${p.cut}</small></td>
+              <td>${orderDisplay}</td>
+              <td class="num">
+                <input type="number" step="0.01" value="${it.actualWeightKg ?? ''}"
+                  style="width:110px; padding:8px; border:2px solid var(--warn); border-radius:5px; font-size:16px; text-align:right;"
+                  onchange="updateWeighing('${order.id}', ${i}, this.value)">
+              </td>
+              <td><small>${it.notes||''}</small></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+
+      <div id="weighingTotals" style="margin-top:14px; padding:14px 18px; background:var(--cream); border-radius:8px; display:flex; justify-content:space-between; align-items:center; font-size:15px;">
+        <span style="color:var(--muted);">계근 진행률 <b id="weighProgress">0/${order.items.length}</b>건</span>
+        <span style="font-size:13px;">총 중량 <b id="totalWeighedKg" style="font-size:24px; color:var(--brand-dark); margin-left:8px;">0.00</b> kg</span>
+      </div>
+
+      <div class="btn-row" style="margin-top:14px;">
+        <button class="btn success" onclick="completeWeighing('${order.id}')">✅ 계근 완료 → 사무실로 전송</button>
+        <button class="btn secondary" onclick="location.hash='#warehouse'">목록으로</button>
+      </div>
+    </div>
+  `;
+  renderWeighingTotal(order);
+}
+function completeWeighing(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  const missing = o.items.filter(i => i.actualWeightKg == null || i.actualWeightKg <= 0);
+  if (missing.length > 0) {
+    if (!confirm(`${missing.length}개 품목의 중량이 미입력입니다. 그래도 진행할까요?`)) return;
+  }
+  o.status = 'weighed';
+  o.weighedAt = new Date().toISOString();
+  saveDB();
+  alert('계근 완료! 사무실로 전송되었습니다.');
+  location.hash = '#warehouse';
+}
+
+function updateWeighing(orderId, idx, val) {
+  const o = DB.orders.find(x => x.id === orderId);
+  const v = parseFloat(val);
+  o.items[idx].actualWeightKg = (isNaN(v) || v <= 0) ? null : v;
+  saveDB();
+  renderWeighingTotal(o);
+}
+function renderWeighingTotal(o) {
+  let total = 0, weighed = 0;
+  o.items.forEach(it => {
+    if (it.actualWeightKg != null && it.actualWeightKg > 0) {
+      total += it.actualWeightKg;
+      weighed++;
+    }
+  });
+  const tEl = document.getElementById('totalWeighedKg');
+  const pEl = document.getElementById('weighProgress');
+  if (tEl) tEl.textContent = total.toFixed(2);
+  if (pEl) pEl.textContent = weighed + '/' + o.items.length;
+}
+
+// =========================================================================
+//  VIEW: OFFICE (Invoicing)
+// =========================================================================
+function viewOffice() {
+  const app = document.getElementById('app');
+  const ready = DB.orders.filter(o => o.status === 'weighed');
+  const all = DB.orders.filter(o => o.status === 'invoiced' || o.status === 'delivered');
+  app.innerHTML = `
+    <h2 class="page-title">📋 사무실 — 인보이스 발행
+      <button class="btn sm" style="float:right; background:var(--info);" onclick="location.hash='#history'">📊 주문 이력 / CSV →</button>
+    </h2>
+    <div class="card">
+      <h3>인보이스 발행 대기 (${ready.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); float:right;">거래처/주문번호 클릭 → 품목·단가 확인 → 발행</span></h3>
+      ${ready.length === 0 ? `<div class="empty"><div class="icon">📥</div>발행 대기 중인 주문이 없습니다.</div>` : `
+      <table class="t">
+        <thead><tr><th>주문번호</th><th>거래처</th><th>품목</th><th class="num">총중량</th><th class="num">예상금액(GST 포함)</th><th class="act"></th></tr></thead>
+        <tbody>
+          ${ready.map(o => {
+            const c = DB.customers.find(x=>x.id===o.customerId);
+            const totals = computeTotals(o);
+            return `<tr style="cursor:pointer;" onclick="location.hash='#invoicePrep?id=${o.id}'">
+              <td><b style="color:var(--brand);">${o.orderNo}</b></td>
+              <td><b>${c?c.name:'-'}</b>${c&&c.contact?`<br><small style="color:var(--muted);">${c.contact} · ${c.phone||''}</small>`:''}</td>
+              <td>${o.items.length}개</td>
+              <td class="num">${totals.totalKg.toFixed(1)} kg</td>
+              <td class="num">$${totals.grand.toFixed(2)}</td>
+              <td class="act">
+                <button class="btn sm" onclick="event.stopPropagation(); location.hash='#invoicePrep?id=${o.id}'">📂 펼쳐보기 →</button>
+              </td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+    </div>
+    <div class="card">
+      <h3>발행 완료 (${all.length}건)</h3>
+      ${all.length === 0 ? `<div class="empty">완료된 인보이스가 아직 없습니다.</div>` : `
+      <table class="t">
+        <thead><tr><th>인보이스#</th><th>주문번호</th><th>거래처</th><th class="num">금액</th><th>상태</th><th class="act"></th></tr></thead>
+        <tbody>
+          ${all.map(o => {
+            const c = DB.customers.find(x=>x.id===o.customerId);
+            return `<tr>
+              <td><b>${o.invoiceNo||'-'}</b></td>
+              <td>${o.orderNo}</td>
+              <td>${c?c.name:'-'}</td>
+              <td class="num">$${computeTotals(o).grand.toFixed(2)}</td>
+              <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+              <td class="act"><button class="btn sm secondary" onclick="location.hash='#invoice?id=${o.id}'">보기</button></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>`}
+    </div>
+  `;
+}
+function lineUnitPrice(it, p) {
+  // Per-line override (set during 인보이스 준비) falls back to product master price.
+  return (it.lineUnitPrice != null) ? it.lineUnitPrice : (p ? p.priceKg : 0);
+}
+function computeTotals(order) {
+  // Only weighed items contribute to totals — no fake estimates for 박스/팩.
+  let subtotal = 0, totalKg = 0, unweighedCount = 0;
+  order.items.forEach(it => {
+    const p = DB.products.find(x => x.id === it.productId);
+    if (it.actualWeightKg == null) { unweighedCount++; return; }
+    totalKg += it.actualWeightKg;
+    subtotal += it.actualWeightKg * lineUnitPrice(it, p);
+  });
+  // Treat priceKg as GST-inclusive (common AU wholesale convention)
+  const gst = subtotal * (DB.company.gstRate / (1 + DB.company.gstRate));
+  return { subtotal: subtotal - gst, gst, grand: subtotal, totalKg, unweighedCount };
+}
+
+// =========================================================================
+//  VIEW: HISTORY — date/customer/status filter + summary + CSV export
+// =========================================================================
+let HISTORY_FILTER = null;
+function initHistoryFilter() {
+  const today = new Date();
+  const first = new Date(today.getFullYear(), today.getMonth(), 1);
+  HISTORY_FILTER = {
+    dateFrom: first.toISOString().slice(0,10),
+    dateTo: today.toISOString().slice(0,10),
+    customerId: '',
+    status: ''
+  };
+}
+function viewHistory(params) {
+  if (!HISTORY_FILTER) initHistoryFilter();
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <h2 class="page-title">📊 주문 이력
+      <span class="sub">날짜·거래처·상태 조회 + CSV 내보내기</span>
+      <button class="btn sm secondary" style="float:right;" onclick="location.hash='#office'">← 사무실로</button>
+    </h2>
+
+    <div class="card">
+      <h3>필터</h3>
+      <div class="grid-3">
+        <div class="field">
+          <label>시작일</label>
+          <input type="date" id="histFrom" value="${HISTORY_FILTER.dateFrom}">
+        </div>
+        <div class="field">
+          <label>종료일</label>
+          <input type="date" id="histTo" value="${HISTORY_FILTER.dateTo}">
+        </div>
+        <div class="field">
+          <label>빠른 기간 선택</label>
+          <select id="histQuick" onchange="setHistQuickRange(this.value)">
+            <option value="">— 선택 —</option>
+            <option value="today">오늘</option>
+            <option value="yesterday">어제</option>
+            <option value="week">이번 주</option>
+            <option value="month">이번 달</option>
+            <option value="lastmonth">지난 달</option>
+            <option value="ytd">올해 누적</option>
+          </select>
+        </div>
+        <div class="field">
+          <label>거래처</label>
+          <select id="histCust">
+            <option value="">— 전체 —</option>
+            ${DB.customers.map(c => `<option value="${c.id}" ${c.id===HISTORY_FILTER.customerId?'selected':''}>${c.name} (${c.code})</option>`).join('')}
+          </select>
+        </div>
+        <div class="field">
+          <label>상태</label>
+          <select id="histStatus">
+            <option value="">— 전체 —</option>
+            <option value="new" ${HISTORY_FILTER.status==='new'?'selected':''}>신규</option>
+            <option value="weighing" ${HISTORY_FILTER.status==='weighing'?'selected':''}>작업중</option>
+            <option value="weighed" ${HISTORY_FILTER.status==='weighed'?'selected':''}>계근완료</option>
+            <option value="invoiced" ${HISTORY_FILTER.status==='invoiced'?'selected':''}>인보이스 발행</option>
+            <option value="delivered" ${HISTORY_FILTER.status==='delivered'?'selected':''}>배송완료</option>
+          </select>
+        </div>
+        <div class="field" style="display:flex; align-items:flex-end; gap:8px;">
+          <button class="btn" style="flex:1;" onclick="applyHistory()">🔍 조회</button>
+        </div>
+      </div>
+    </div>
+
+    <div id="historyResults"></div>
+  `;
+  renderHistoryResults();
+}
+
+function setHistQuickRange(range) {
+  if (!range) return;
+  const today = new Date();
+  let from, to;
+  switch(range) {
+    case 'today': from = to = today; break;
+    case 'yesterday':
+      from = to = new Date(today); from.setDate(today.getDate()-1); to = new Date(from); break;
+    case 'week':
+      from = new Date(today); from.setDate(today.getDate() - today.getDay()); to = today; break;
+    case 'month':
+      from = new Date(today.getFullYear(), today.getMonth(), 1); to = today; break;
+    case 'lastmonth':
+      from = new Date(today.getFullYear(), today.getMonth()-1, 1);
+      to = new Date(today.getFullYear(), today.getMonth(), 0); break;
+    case 'ytd':
+      from = new Date(today.getFullYear(), 0, 1); to = today; break;
+  }
+  document.getElementById('histFrom').value = from.toISOString().slice(0,10);
+  document.getElementById('histTo').value = to.toISOString().slice(0,10);
+}
+
+function applyHistory() {
+  HISTORY_FILTER.dateFrom = val('histFrom');
+  HISTORY_FILTER.dateTo = val('histTo');
+  HISTORY_FILTER.customerId = val('histCust');
+  HISTORY_FILTER.status = val('histStatus');
+  renderHistoryResults();
+}
+
+function getFilteredHistory() {
+  return DB.orders.filter(o => {
+    const date = (o.orderDate || '').slice(0, 10);
+    if (HISTORY_FILTER.dateFrom && date && date < HISTORY_FILTER.dateFrom) return false;
+    if (HISTORY_FILTER.dateTo && date && date > HISTORY_FILTER.dateTo) return false;
+    if (HISTORY_FILTER.customerId && o.customerId !== HISTORY_FILTER.customerId) return false;
+    if (HISTORY_FILTER.status && o.status !== HISTORY_FILTER.status) return false;
+    return true;
+  }).sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
+}
+
+function renderHistoryResults() {
+  const orders = getFilteredHistory();
+
+  let totalKg = 0, totalRevenue = 0, totalItems = 0;
+  const byCust = {};
+  const byStatus = {};
+  const byProduct = {};
+  orders.forEach(o => {
+    const t = computeTotals(o);
+    totalKg += t.totalKg;
+    totalRevenue += t.grand;
+    totalItems += o.items.length;
+    byCust[o.customerId] = (byCust[o.customerId] || 0) + t.grand;
+    byStatus[o.status] = (byStatus[o.status] || 0) + 1;
+    o.items.forEach(it => {
+      if (it.actualWeightKg == null) return;
+      const p = DB.products.find(x => x.id === it.productId);
+      const price = lineUnitPrice(it, p);
+      const key = p ? (p.name + ' / ' + p.brand) : '(unknown)';
+      byProduct[key] = (byProduct[key] || 0) + it.actualWeightKg * price;
+    });
+  });
+  const topCusts = Object.entries(byCust).sort((a,b) => b[1] - a[1]).slice(0, 5);
+  const topProds = Object.entries(byProduct).sort((a,b) => b[1] - a[1]).slice(0, 5);
+
+  const div = document.getElementById('historyResults');
+  div.innerHTML = `
+    <div class="card">
+      <h3>📈 요약 ${HISTORY_FILTER.dateFrom} ~ ${HISTORY_FILTER.dateTo}</h3>
+      <div class="grid-3" style="gap:10px;">
+        <div style="background:#FFF5E0; padding:16px; border-radius:8px; text-align:center;">
+          <div style="font-size:30px; font-weight:800; color:var(--brand-dark);">${orders.length}</div>
+          <div style="font-size:12px; color:var(--muted);">조회 주문 건수</div>
+        </div>
+        <div style="background:#DFF0E1; padding:16px; border-radius:8px; text-align:center;">
+          <div style="font-size:24px; font-weight:800; color:var(--ok);">$${totalRevenue.toFixed(2)}</div>
+          <div style="font-size:12px; color:var(--muted);">총 매출 (GST 포함, 계근완료분만 집계)</div>
+        </div>
+        <div style="background:#F0E5D8; padding:16px; border-radius:8px; text-align:center;">
+          <div style="font-size:24px; font-weight:800; color:var(--brand);">${totalKg.toFixed(1)} kg</div>
+          <div style="font-size:12px; color:var(--muted);">총 중량</div>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:18px;">
+        <div>
+          <h4 style="margin:0 0 8px 0; color:var(--brand-dark);">🏆 거래처별 매출 TOP 5</h4>
+          ${topCusts.length === 0 ? '<div style="font-size:13px; color:var(--muted);">데이터 없음</div>' : `
+          <table class="t" style="font-size:12px;">
+            <thead><tr><th>#</th><th>거래처</th><th class="num">매출</th></tr></thead>
+            <tbody>${topCusts.map((e, i) => {
+              const c = DB.customers.find(x => x.id === e[0]);
+              return `<tr><td>${i+1}</td><td>${c ? c.name : '(삭제됨)'}</td><td class="num">$${e[1].toFixed(2)}</td></tr>`;
+            }).join('')}</tbody>
+          </table>`}
+        </div>
+        <div>
+          <h4 style="margin:0 0 8px 0; color:var(--brand-dark);">🥩 품목별 매출 TOP 5</h4>
+          ${topProds.length === 0 ? '<div style="font-size:13px; color:var(--muted);">데이터 없음</div>' : `
+          <table class="t" style="font-size:12px;">
+            <thead><tr><th>#</th><th>품목 / 브랜드</th><th class="num">매출</th></tr></thead>
+            <tbody>${topProds.map((e, i) =>
+              `<tr><td>${i+1}</td><td>${e[0]}</td><td class="num">$${e[1].toFixed(2)}</td></tr>`).join('')}</tbody>
+          </table>`}
+        </div>
+      </div>
+
+      <div style="margin-top:14px; padding:10px 14px; background:#F8F4EE; border-radius:6px; font-size:12px; color:var(--muted);">
+        <b>상태별:</b> ${Object.entries(byStatus).map(([k,v]) => `${statusLabel(k)} ${v}건`).join(' · ') || '없음'}
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>📋 주문 목록 (${orders.length}건)
+        <span style="float:right;">
+          <button class="btn sm success" onclick="exportHistoryCSV(false)">📊 요약 CSV</button>
+          <button class="btn sm success" onclick="exportHistoryCSV(true)">📦 라인별 CSV</button>
+        </span>
+      </h3>
+      ${orders.length === 0 ? `<div class="empty"><div class="icon">📭</div>조건에 맞는 주문이 없습니다.</div>` : `
+        <div style="overflow-x:auto;">
+          <table class="t" style="font-size:12px;">
+            <thead><tr>
+              <th>주문일</th><th>주문번호</th><th>거래처</th><th>품목</th>
+              <th class="num">중량</th><th class="num">금액</th>
+              <th>상태</th><th>인보이스</th><th class="act"></th>
+            </tr></thead>
+            <tbody>
+              ${orders.map(o => {
+                const c = DB.customers.find(x => x.id === o.customerId);
+                const t = computeTotals(o);
+                return `<tr>
+                  <td>${(o.orderDate||'').slice(0,10)}</td>
+                  <td><b>${o.orderNo}</b></td>
+                  <td>${c ? c.name : '-'}</td>
+                  <td>${o.items.length}개</td>
+                  <td class="num">${t.totalKg.toFixed(1)}</td>
+                  <td class="num">$${t.grand.toFixed(2)}</td>
+                  <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+                  <td>${o.invoiceNo || '-'}</td>
+                  <td class="act"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button></td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `}
+    </div>
+  `;
+}
+
+function exportHistoryCSV(detailed) {
+  const orders = getFilteredHistory();
+  if (orders.length === 0) return alert('내보낼 데이터가 없습니다.');
+  const rows = [];
+  if (detailed) {
+    rows.push(['주문일','주문번호','거래처코드','거래처','상태','인보이스번호','발행일','품목','브랜드','분류','주문단위','주문수량','실측중량_kg','단가_per_kg','금액_GST포함','요청사항']);
+    orders.forEach(o => {
+      const c = DB.customers.find(x => x.id === o.customerId);
+      o.items.forEach(it => {
+        const p = DB.products.find(x => x.id === it.productId);
+        const price = lineUnitPrice(it, p);
+        const w = it.actualWeightKg;
+        const amt = (w != null) ? w * price : '';
+        rows.push([
+          (o.orderDate||'').slice(0,10),
+          o.orderNo,
+          c ? c.code : '',
+          c ? c.name : '',
+          statusLabel(o.status),
+          o.invoiceNo || '',
+          (o.invoicedAt||'').slice(0,10),
+          p ? p.name : '',
+          p ? p.brand : '',
+          p ? p.cut : '',
+          it.unit,
+          it.quantity,
+          w != null ? w.toFixed(2) : '',
+          price.toFixed(2),
+          amt !== '' ? amt.toFixed(2) : '',
+          (it.notes || '').replace(/[\r\n]+/g, ' ')
+        ]);
+      });
+    });
+  } else {
+    rows.push(['주문일','주문번호','거래처코드','거래처','품목수','총중량_kg','총금액_GST포함','상태','인보이스번호','희망배송일','배송요청사항']);
+    orders.forEach(o => {
+      const c = DB.customers.find(x => x.id === o.customerId);
+      const t = computeTotals(o);
+      rows.push([
+        (o.orderDate||'').slice(0,10),
+        o.orderNo,
+        c ? c.code : '',
+        c ? c.name : '',
+        o.items.length,
+        t.totalKg.toFixed(2),
+        t.grand.toFixed(2),
+        statusLabel(o.status),
+        o.invoiceNo || '',
+        o.deliveryDate || '',
+        (o.deliveryNotes || '').replace(/[\r\n]+/g, ' ')
+      ]);
+    });
+  }
+  // CSV with UTF-8 BOM for Excel/한글 호환
+  const csv = '﻿' + rows.map(row =>
+    row.map(cell => {
+      const s = String(cell == null ? '' : cell);
+      if (s.includes(',') || s.includes('"') || s.includes('\n')) {
+        return '"' + s.replace(/"/g, '""') + '"';
+      }
+      return s;
+    }).join(',')
+  ).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const tag = detailed ? 'detail' : 'summary';
+  const fname = `ATM_history_${HISTORY_FILTER.dateFrom||'all'}_${HISTORY_FILTER.dateTo||'all'}_${tag}.csv`;
+  a.href = url; a.download = fname; a.click();
+  URL.revokeObjectURL(url);
+}
+
+// =========================================================================
+//  VIEW: INVOICE PREP — expand all items, edit per-line unit prices, then issue
+// =========================================================================
+function viewInvoicePrep(params) {
+  const id = params.get('id');
+  const o = DB.orders.find(x => x.id === id);
+  if (!o) return location.hash = '#office';
+  if (o.status === 'invoiced' || o.status === 'delivered') {
+    // Already issued — open readonly invoice instead
+    location.hash = '#invoice?id=' + o.id; return;
+  }
+  const cust = DB.customers.find(c => c.id === o.customerId);
+
+  // Initialise per-line price defaults from product master if not yet set
+  o.items.forEach(it => {
+    if (it.lineUnitPrice == null) {
+      const p = DB.products.find(x => x.id === it.productId);
+      it.lineUnitPrice = p ? p.priceKg : 0;
+    }
+  });
+
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <h2 class="page-title">📋 인보이스 준비 — ${o.orderNo}
+      <span class="sub">${cust?cust.name:''}</span></h2>
+
+    <div class="card">
+      <div class="grid-3" style="font-size:13px;">
+        <div><b>Customer / 거래처</b><br>${cust?cust.name:'-'}<br><span style="color:var(--muted);">${cust?(cust.contact||''):''} ${cust?(cust.phone||''):''}</span></div>
+        <div><b>Order Date / 주문일</b><br>${(o.orderDate||'').slice(0,10)}<br><b>Requested Delivery / 희망 배송</b> ${o.deliveryDate||'-'}</div>
+        <div><b>Payment Terms / 결제조건</b><br>${cust?(cust.terms||'-'):'-'}<br><b>Address / 주소</b><br><small style="color:var(--muted);">${cust?(cust.address||'-'):'-'}</small></div>
+      </div>
+      ${o.deliveryNotes ? `<div class="notice" style="margin-top:10px;">📝 ${o.deliveryNotes}</div>` : ''}
+    </div>
+
+    <div class="card">
+      <h3>📂 Order Items / 주문 품목 — Review &amp; Adjust Prices / 단가 확인</h3>
+      <div class="notice" style="border-left-color:var(--info); background:#F0F5FB;">
+        Unit prices pre-filled from product master. Adjust if needed before issuing. <b>Changes apply to this order only / 이 주문에만 적용</b> — master price unchanged.
+      </div>
+      <table class="t" id="prepTable">
+        <thead><tr>
+          <th>Item / 품목</th><th>Brand / 브랜드</th><th>Order / 주문</th>
+          <th class="num">Weight / 실측 중량 (kg)</th><th class="num">Unit Price / 단가 (/kg)</th>
+          <th class="num">Amount / 금액</th>
+        </tr></thead>
+        <tbody>
+          ${o.items.map((it, i) => {
+            const p = DB.products.find(x => x.id === it.productId);
+            const w = it.actualWeightKg;
+            const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small>작업</small>` : `${it.quantity} ${it.unit}`;
+            const masterPrice = p ? p.priceKg : 0;
+            const priceDiffMarker = (Math.abs(it.lineUnitPrice - masterPrice) > 0.001)
+              ? `<small style="color:var(--warn); display:block;">Master: $${masterPrice.toFixed(2)}</small>` : '';
+            return `<tr data-idx="${i}">
+              <td><b>${p?p.name:'(품목 없음)'}</b>${it.notes?`<br><small style="color:var(--muted);">※ ${it.notes}</small>`:''}</td>
+              <td>${p?p.brand:''}</td>
+              <td>${orderDisplay}</td>
+              <td class="num">
+                <input type="number" step="0.01" value="${w!=null?w:''}"
+                  style="width:90px; padding:6px; border:1px solid var(--line); border-radius:4px; text-align:right;"
+                  onchange="updatePrepWeight('${o.id}', ${i}, this.value)">
+              </td>
+              <td class="num">
+                <input type="number" step="0.01" value="${it.lineUnitPrice.toFixed(2)}"
+                  style="width:90px; padding:6px; border:2px solid var(--warn); border-radius:4px; text-align:right; font-weight:600;"
+                  onchange="updatePrepPrice('${o.id}', ${i}, this.value)">
+                ${priceDiffMarker}
+              </td>
+              <td class="num"><b id="prep_amt_${i}">$${((w||0)*it.lineUnitPrice).toFixed(2)}</b></td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+
+      <div id="prepTotals" style="display:flex; justify-content:flex-end; margin-top:14px;"></div>
+
+      <div class="btn-row" style="margin-top:18px;">
+        <button class="btn success" onclick="issueInvoice('${o.id}')">✅ 인보이스 발행 확정</button>
+        <button class="btn secondary" onclick="resetPrepPricesToMaster('${o.id}')">🔄 단가를 마스터값으로 초기화</button>
+        <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
+      </div>
+    </div>
+  `;
+  renderPrepTotals(o);
+}
+
+function updatePrepWeight(orderId, idx, val) {
+  const o = DB.orders.find(x => x.id === orderId);
+  o.items[idx].actualWeightKg = parseFloat(val) || 0;
+  saveDB();
+  refreshPrepRow(o, idx);
+}
+function updatePrepPrice(orderId, idx, val) {
+  const o = DB.orders.find(x => x.id === orderId);
+  o.items[idx].lineUnitPrice = parseFloat(val) || 0;
+  saveDB();
+  refreshPrepRow(o, idx);
+}
+function refreshPrepRow(o, idx) {
+  const it = o.items[idx];
+  const amtEl = document.getElementById('prep_amt_' + idx);
+  if (amtEl) amtEl.textContent = '$' + ((it.actualWeightKg||0) * (it.lineUnitPrice||0)).toFixed(2);
+  renderPrepTotals(o);
+}
+function renderPrepTotals(o) {
+  const t = computeTotals(o);
+  const div = document.getElementById('prepTotals');
+  if (!div) return;
+  div.innerHTML = `
+    <div class="tot-box" style="min-width:280px; padding:14px 18px; background:var(--cream); border-radius:8px;">
+      <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>총 중량</span><b>${t.totalKg.toFixed(2)} kg</b></div>
+      <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>Subtotal (ex GST)</span><span>$${t.subtotal.toFixed(2)}</span></div>
+      <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>GST</span><span>$${t.gst.toFixed(2)}</span></div>
+      <div style="display:flex; justify-content:space-between; padding:10px 0 0; border-top:2px solid var(--brand); margin-top:6px; font-weight:700; font-size:18px; color:var(--brand-dark);"><span>TOTAL</span><span>$${t.grand.toFixed(2)}</span></div>
+      ${t.unweighedCount > 0 ? `<div style="color:var(--warn); margin-top:8px; font-size:12px;">⚠️ 계근 미입력 ${t.unweighedCount}건 — 발행 전 확인 필요</div>` : ''}
+    </div>
+  `;
+}
+function resetPrepPricesToMaster(orderId) {
+  if (!confirm('모든 라인 단가를 품목 마스터의 현재값으로 되돌릴까요?')) return;
+  const o = DB.orders.find(x => x.id === orderId);
+  o.items.forEach(it => {
+    const p = DB.products.find(x => x.id === it.productId);
+    it.lineUnitPrice = p ? p.priceKg : 0;
+  });
+  saveDB();
+  route(); // re-render
+}
+function issueInvoice(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  const t = computeTotals(o);
+  if (t.unweighedCount > 0) {
+    if (!confirm(`${t.unweighedCount}건의 품목이 계근되지 않았습니다.\n그래도 인보이스를 발행하시겠습니까?`)) return;
+  }
+  if (!confirm(`인보이스를 발행합니다.\n총액: $${t.grand.toFixed(2)} (GST 포함)\n\n발행 후에는 단가 수정이 불가합니다. 진행할까요?`)) return;
+  o.invoiceNo = 'INV-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + String(DB.settings.invoiceSeq++).padStart(3,'0');
+  o.status = 'invoiced';
+  o.invoicedAt = new Date().toISOString();
+  saveDB();
+  location.hash = '#invoice?id=' + orderId;
+}
+
+// =========================================================================
+//  VIEW: INVOICE / ORDER DETAIL
+// =========================================================================
+function viewInvoice(params) {
+  const id = params.get('id');
+  const o = DB.orders.find(x => x.id === id);
+  if (!o) return location.hash = '#office';
+  // If not yet issued, go to prep first
+  if (o.status === 'weighed' || o.status === 'new' || o.status === 'weighing') {
+    location.hash = '#invoicePrep?id=' + o.id; return;
+  }
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  const totals = computeTotals(o);
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="btn-row" style="margin-bottom:14px;">
+      <button class="btn" onclick="window.print()">🖨️ 인쇄 / PDF 저장</button>
+      <button class="btn kakao" onclick="sendInvoice('${o.id}')">📤 카톡/이메일 공유</button>
+      ${o.status==='invoiced' ? `<button class="btn secondary" onclick="markDelivered('${o.id}')">배송완료 처리</button>` : ''}
+      <button class="btn secondary" onclick="history.back()">← 뒤로</button>
+    </div>
+
+    <div class="invoice">
+      <div class="invoice-header">
+        <div>
+          <h1>${DB.company.name}</h1>
+          <div style="font-size:12px; color:var(--muted); margin-top:4px;">
+            ABN: ${DB.company.abn||'-'} · ${DB.company.phone||''}<br>
+            ${DB.company.address||''}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:28px; font-weight:800; color:var(--brand-dark); letter-spacing:3px;">TAX INVOICE</div>
+          <div style="margin-top:6px; font-size:13px;">
+            Invoice No: <b>${o.invoiceNo||'(대기)'}</b><br>
+            Order No: ${o.orderNo}<br>
+            Date: ${new Date(o.invoicedAt||o.orderDate).toLocaleDateString('en-AU')}
+          </div>
+        </div>
+      </div>
+
+      <div style="display:flex; justify-content:space-between; margin-bottom:14px;">
+        <div>
+          <div style="font-size:11px; color:var(--muted);">BILL TO</div>
+          <div style="font-weight:700; font-size:16px;">${cust.name}</div>
+          <div style="font-size:12px; color:var(--muted);">
+            ${cust.contact||''}<br>
+            ${cust.phone||''}<br>
+            ${cust.address||''}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:11px; color:var(--muted);">DELIVERY</div>
+          <div style="font-size:13px;">
+            Requested / 요청일: ${o.deliveryDate||'-'}<br>
+            Notes / 요청: ${o.deliveryNotes||'-'}<br>
+            Terms / 결제: ${cust.terms||'-'}
+          </div>
+        </div>
+      </div>
+
+      <table>
+        <thead><tr>
+          <th>Item / 품목</th><th>Brand / 브랜드</th><th>Order / 주문</th><th class="num">Weight / 중량 (kg)</th><th class="num">Unit Price / 단가</th><th class="num">Amount / 금액</th>
+        </tr></thead>
+        <tbody>
+          ${o.items.map(it => {
+            const p = DB.products.find(x => x.id === it.productId);
+            const w = it.actualWeightKg;
+            const price = lineUnitPrice(it, p);
+            const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small>작업</small>` : `${it.quantity} ${it.unit}`;
+            if (w == null) {
+              return `<tr><td><b>${p.name}</b></td><td>${p.brand}</td><td>${orderDisplay}</td>
+                <td class="num" colspan="3" style="color:var(--warn);">계근 대기</td></tr>`;
+            }
+            const amt = w * price;
+            return `<tr>
+              <td><b>${p.name}</b>${it.notes?`<br><small style="color:var(--muted);">※ ${it.notes}</small>`:''}</td>
+              <td>${p.brand}</td>
+              <td>${orderDisplay}</td>
+              <td class="num">${w.toFixed(2)}</td>
+              <td class="num">$${price.toFixed(2)}</td>
+              <td class="num">$${amt.toFixed(2)}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+
+      <div class="tot-block">
+        <div class="tot-box">
+          <div class="tot-row"><span>Total Weight / 총중량</span><span>${totals.totalKg.toFixed(2)} kg</span></div>
+          <div class="tot-row"><span>Subtotal (ex GST)</span><span>$${totals.subtotal.toFixed(2)}</span></div>
+          <div class="tot-row"><span>GST (${(DB.company.gstRate*100).toFixed(0)}%)</span><span>$${totals.gst.toFixed(2)}</span></div>
+          <div class="tot-row grand"><span>TOTAL</span><span>$${totals.grand.toFixed(2)}</span></div>
+        </div>
+      </div>
+
+      <div style="margin-top:30px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted);">
+        Thank you for your business. / ${DB.company.name}<br>
+        All prices in ${DB.company.currency}, GST inclusive.
+      </div>
+    </div>
+  `;
+}
+function markDelivered(id) {
+  const o = DB.orders.find(x => x.id === id);
+  o.status = 'delivered'; o.deliveredAt = new Date().toISOString();
+  saveDB(); alert('배송완료로 변경되었습니다.'); route();
+}
+function sendInvoice(id) {
+  const o = DB.orders.find(x => x.id === id);
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  const totals = computeTotals(o);
+  let msg = `[ALL THAT MEAT] ${cust.name} 사장님\n\n`;
+  msg += `인보이스 ${o.invoiceNo}\n`;
+  msg += `주문번호 ${o.orderNo}\n\n`;
+  msg += `--- 품목 ---\n`;
+  o.items.forEach(it => {
+    const p = DB.products.find(x => x.id === it.productId);
+    const w = it.actualWeightKg;
+    const price = lineUnitPrice(it, p);
+    const orderText = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity}${it.unit}`;
+    if (w == null) {
+      msg += `· ${p.name}(${p.brand}) ${orderText} → 계근 대기\n`;
+    } else {
+      msg += `· ${p.name}(${p.brand}) ${orderText} → ${w.toFixed(2)}kg × $${price.toFixed(2)} = $${(w*price).toFixed(2)}\n`;
+    }
+  });
+  msg += `\n총중량 ${totals.totalKg.toFixed(2)}kg\n`;
+  msg += `합계 $${totals.grand.toFixed(2)} (GST 포함)\n`;
+  if (navigator.share) navigator.share({title:'ATM Invoice', text:msg}).catch(()=>{});
+  else navigator.clipboard.writeText(msg).then(()=>alert('인보이스 내용이 복사되었습니다. 카톡/이메일에 붙여넣으세요.\n\n'+msg));
+}
+function shareOrder(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return;
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  let msg = '[ALL THAT MEAT] ' + (cust ? cust.name : '') + ' 사장님\n\n';
+  msg += '✅ 주문이 접수되었습니다!\n';
+  msg += '주문번호: ' + o.orderNo + '\n';
+  msg += '주문일: ' + (o.orderDate||'').slice(0,10) + '\n';
+  if (o.deliveryDate) msg += '희망 배송일: ' + o.deliveryDate + '\n';
+  msg += '\n--- 주문 품목 ---\n';
+  o.items.forEach(function(it) {
+    const p = DB.products.find(x => x.id === it.productId);
+    if (!p) return;
+    const display = it.unit === '작업중량' ? it.quantity + 'kg (작업)' : it.quantity + it.unit;
+    msg += '· ' + p.name + '(' + p.brand + ') ' + display;
+    if (it.notes) msg += ' — ' + it.notes;
+    msg += '\n';
+  });
+  if (o.deliveryNotes) msg += '\n요청사항: ' + o.deliveryNotes + '\n';
+  msg += '\n정확한 중량·금액은 작업 완료 후 인보이스로 안내드립니다.';
+  if (navigator.share) {
+    navigator.share({title: 'ATM 주문 ' + o.orderNo, text: msg}).catch(function(){});
+  } else {
+    navigator.clipboard.writeText(msg).then(function() {
+      alert('주문 내용이 복사되었습니다!\n카카오톡에 붙여넣으세요 😊\n\n' + msg);
+    });
+  }
+}
+
+// =========================================================================
+//  VIEW: MY ORDERS (Customer-only — shows only this customer's orders)
+// =========================================================================
+function viewMyOrders() {
+  const app = document.getElementById('app');
+  const cust = DB.customers.find(c => c.id === CUSTOMER_MODE);
+  if (!cust) {
+    app.innerHTML = `<div class="empty"><div class="icon">🔒</div>유효한 거래처 정보가 없습니다.<br>주문 링크를 다시 확인해주세요.</div>`;
+    return;
+  }
+  const orders = DB.orders.filter(o => o.customerId === CUSTOMER_MODE)
+    .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
+
+  app.innerHTML = `
+    <h2 class="page-title">👋 ${cust.name}
+      <span class="sub">내 주문 내역</span></h2>
+
+    <div class="card" style="background: linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%); color:#fff;">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
+        <div>
+          <h3 style="color:#fff; border-color:rgba(255,255,255,0.5); margin:0 0 6px 0;">새 주문하기</h3>
+          <p style="font-size:13px; opacity:0.85; margin:0;">자주 주문하는 품목을 빠르게 선택하고 제출하세요.</p>
+        </div>
+        <button class="btn" style="background:#F0B400; color:var(--ink); font-weight:700;"
+          onclick="location.hash='#order?c=${CUSTOMER_MODE}'">+ 주문 작성</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <h3>주문 내역 (${orders.length}건)</h3>
+      ${orders.length === 0 ? `<div class="empty"><div class="icon">📭</div>아직 주문 내역이 없습니다.<br><br><button class="btn" onclick="location.hash='#order?c=${CUSTOMER_MODE}'">+ 첫 주문 시작</button></div>` : `
+      <table class="t">
+        <thead><tr>
+          <th>주문번호</th><th>주문일</th><th>품목</th><th>희망 배송일</th><th>상태</th><th class="act"></th>
+        </tr></thead>
+        <tbody>
+          ${orders.map(o => `<tr>
+            <td><b>${o.orderNo}</b></td>
+            <td>${(o.orderDate||'').slice(0,10)}</td>
+            <td>${o.items.length}개</td>
+            <td>${o.deliveryDate||'-'}</td>
+            <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+            <td class="act"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button></td>
+          </tr>`).join('')}
+        </tbody>
+      </table>`}
+    </div>
+
+    <div class="card">
+      <h3>가게 정보</h3>
+      <div style="font-size:14px;">
+        <div><b>${cust.name}</b> <span style="color:var(--muted);">(${cust.code})</span></div>
+        <div style="color:var(--muted); margin-top:6px; line-height:1.7;">
+          ${cust.contact ? '담당: ' + cust.contact + '<br>' : ''}
+          ${cust.phone ? '📞 ' + cust.phone + '<br>' : ''}
+          ${cust.address ? '📍 ' + cust.address : ''}
+        </div>
+        <div style="font-size:11px; color:var(--muted); margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
+          정보 변경이 필요하시면 ATM 사무실로 연락주세요.
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// =========================================================================
+//  VIEW: ORDER DETAIL (read-only)
+// =========================================================================
+function viewOrderDetail(params) {
+  const id = params.get('id');
+  const o = DB.orders.find(x => x.id === id);
+  if (!o) return location.hash = '#home';
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  const isCustomer = !!CUSTOMER_MODE;
+  const app = document.getElementById('app');
+
+  // === Customer view: no prices, no staff actions, friendly status info ===
+  if (isCustomer) {
+    const statusMsg = {
+      new: '📥 주문이 접수되었습니다. 곧 작업이 시작됩니다.',
+      weighing: '⚖️ 작업장에서 품목을 챙기고 있습니다.',
+      weighed: '✅ 계근이 완료되어 사무실에서 인보이스를 준비 중입니다.',
+      invoiced: '📋 인보이스가 발행되었습니다. 곧 배송됩니다.',
+      delivered: '🚚 배송이 완료되었습니다. 이용해주셔서 감사합니다!'
+    }[o.status] || '';
+
+    app.innerHTML = `
+      <h2 class="page-title">📄 ${o.orderNo}
+        <span class="sub">주문 상세</span></h2>
+      <div class="card">
+        <div class="btn-row" style="margin-bottom:10px;">
+          <span class="pill ${o.status}" style="padding:6px 14px; font-size:13px;">${statusLabel(o.status)}</span>
+          <button class="btn secondary" onclick="location.hash='#myOrders'">← 내 주문으로</button>
+          <button style="background:#FEE500; color:#3A1D1D; border:none; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:700; font-family:inherit;" onclick="shareOrder('${o.id}')">💬 카톡 공유</button>
+        </div>
+        <div class="notice" style="border-left-color: var(--info); background: #F0F5FB;">${statusMsg}</div>
+
+        <table class="t">
+          <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th>비고</th><th>처리상태</th></tr></thead>
+          <tbody>
+            ${o.items.map(it => {
+              const p = DB.products.find(x => x.id === it.productId);
+              const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small style="color:var(--muted);">작업</small>` : `${it.quantity} ${it.unit}`;
+              const weightStatus = it.actualWeightKg != null
+                ? `<span style="color:var(--ok); font-weight:600;">✅ ${it.actualWeightKg.toFixed(2)} kg</span>`
+                : `<span style="color:var(--warn);">⏳ 작업 대기</span>`;
+              return `<tr>
+                <td><b>${p.name}</b></td>
+                <td>${p.brand}</td>
+                <td>${orderDisplay}</td>
+                <td><small>${it.notes||'-'}</small></td>
+                <td>${weightStatus}</td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+
+        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);">
+          ${o.deliveryDate ? '🚚 희망 배송일: <b>' + o.deliveryDate + '</b><br>' : ''}
+          ${o.deliveryNotes ? '📝 요청사항: ' + o.deliveryNotes + '<br>' : ''}
+          정확한 중량·금액은 작업 완료 후 정식 인보이스로 안내드립니다.
+        </div>
+      </div>
+    `;
+    return;
+  }
+
+  // === Staff view (full info with prices and actions) ===
+  const totals = computeTotals(o);
+  app.innerHTML = `
+    <h2 class="page-title">📄 ${o.orderNo}
+      <span class="sub">${cust ? cust.name : ''}</span></h2>
+    <div class="card">
+      <div class="btn-row" style="margin-bottom:10px;">
+        <span class="pill ${o.status}" style="padding:6px 14px; font-size:13px;">${statusLabel(o.status)}</span>
+        ${o.status==='new' || o.status==='weighing' ? `<button class="btn warn" onclick="location.hash='#weigh?id=${o.id}'">⚖️ 계근하기</button>` : ''}
+        ${o.status==='weighed' ? `<button class="btn success" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 발행</button>` : ''}
+        ${o.status==='invoiced' || o.status==='delivered' ? `<button class="btn" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 보기</button>` : ''}
+        <button class="btn danger" onclick="if(confirm('주문을 삭제할까요?')){DB.orders=DB.orders.filter(x=>x.id!=='${o.id}'); saveDB(); location.hash='#home';}">삭제</button>
+        <button style="background:#FEE500; color:#3A1D1D; border:none; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:700; font-family:inherit;" onclick="shareOrder('${o.id}')">💬 카톡 공유</button>
+      </div>
+      <table class="t">
+        <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th class="num">실측 중량</th><th class="num">금액</th></tr></thead>
+        <tbody>
+          ${o.items.map(it => {
+            const p = DB.products.find(x => x.id === it.productId);
+            const w = it.actualWeightKg;
+            const price = lineUnitPrice(it, p);
+            const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small style="color:var(--muted);">작업</small>` : `${it.quantity} ${it.unit}`;
+            return `<tr>
+              <td><b>${p.name}</b>${it.notes?`<br><small style="color:var(--muted);">${it.notes}</small>`:''}</td>
+              <td>${p.brand}</td>
+              <td>${orderDisplay}</td>
+              <td class="num"><b>${w!=null?w.toFixed(2)+' kg':'<span style="color:var(--warn);">계근 대기</span>'}</b></td>
+              <td class="num">${w!=null?'$'+(w*price).toFixed(2):'-'}</td>
+            </tr>`;
+          }).join('')}
+        </tbody>
+      </table>
+      <div style="display:flex; justify-content:flex-end; margin-top:14px;">
+        <div style="padding:12px 18px; background:var(--cream); border-radius:8px; font-size:14px;">
+          <span style="color:var(--muted);">총 중량 / Total Weight</span>
+          <b style="margin-left:16px; font-size:18px; color:var(--brand-dark);">${totals.totalKg.toFixed(2)} kg</b>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// =========================================================================
+//  UTILS
+// =========================================================================
+function val(id) { const e = document.getElementById(id); return e ? e.value : ''; }
+function openModal(html) {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg'; bg.id = 'modalBg';
+  bg.innerHTML = `<div class="modal">${html}</div>`;
+  bg.onclick = e => { if (e.target === bg) closeModal(); };
+  document.body.appendChild(bg);
+}
+function closeModal() { document.getElementById('modalBg')?.remove(); }
+
+// -------- IndexedDB helpers (for persisting directory handle) --------
+function idbOpen() {
+  return new Promise((res, rej) => {
+    const r = indexedDB.open('atm_app_meta', 1);
+    r.onupgradeneeded = e => e.target.result.createObjectStore('kv');
+    r.onsuccess = e => res(e.target.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbGet(key) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const r = db.transaction('kv','readonly').objectStore('kv').get(key);
+    r.onsuccess = () => res(r.result);
+    r.onerror = () => rej(r.error);
+  });
+}
+async function idbSet(key, value) {
+  const db = await idbOpen();
+  return new Promise((res, rej) => {
+    const r = db.transaction('kv','readwrite').objectStore('kv').put(value, key);
+    r.onsuccess = () => res();
+    r.onerror = () => rej(r.error);
+  });
+}
+
+let _backupDirHandle = null;
+
+// =========================================================================
+//  인보이스 PDF 백업 (날짜별·거래처별)
+// =========================================================================
+let _invoiceBackupDirHandle = null;
+
+async function getInvoiceBackupDirHandle() {
+  if (_invoiceBackupDirHandle) {
+    try {
+      const perm = await _invoiceBackupDirHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') return _invoiceBackupDirHandle;
+      const req = await _invoiceBackupDirHandle.requestPermission({ mode: 'readwrite' });
+      if (req === 'granted') return _invoiceBackupDirHandle;
+    } catch(e) {}
+  }
+  try {
+    const handle = await idbGet('invoiceBackupDirHandle');
+    if (handle) {
+      let perm = await handle.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') { _invoiceBackupDirHandle = handle; return handle; }
+    }
+  } catch(e) {}
+  return null;
+}
+
+async function setInvoiceBackupFolder() {
+  if (!window.showDirectoryPicker) {
+    return alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await idbSet('invoiceBackupDirHandle', handle);
+    _invoiceBackupDirHandle = handle;
+    alert('✅ 인보이스 PDF 저장 폴더 설정 완료!\n📁 ' + handle.name + '\n\n이제 📄 인보이스 PDF 클릭 시 이 폴더에 자동 저장됩니다.');
+  } catch(e) {
+    if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
+  }
+}
+
+function buildInvoiceHTML(o, cust, totals) {
+  const itemRows = o.items.map((it, idx) => {
+    const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
+    const w = it.actualWeightKg;
+    const price = lineUnitPrice(it, p);
+    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity} ${it.unit}`;
+    const bg = idx % 2 === 1 ? '#FAF6F1' : '#ffffff';
+    if (w == null) {
+      return `<tr style="background:${bg};">
+        <td style="padding:7px 8px;"><b>${p.name}</b></td>
+        <td style="padding:7px 8px;">${p.brand}</td>
+        <td style="padding:7px 8px;">${orderDisplay}</td>
+        <td colspan="3" style="padding:7px 8px; color:#B8860B; text-align:right;">계근 대기</td>
+      </tr>`;
+    }
+    return `<tr style="background:${bg};">
+      <td style="padding:7px 8px;"><b>${p.name}</b>${it.notes ? `<br><small style="color:#888;font-size:10px;">※ ${it.notes}</small>` : ''}</td>
+      <td style="padding:7px 8px;">${p.brand}</td>
+      <td style="padding:7px 8px;">${orderDisplay}</td>
+      <td style="padding:7px 8px; text-align:right;">${w.toFixed(2)}</td>
+      <td style="padding:7px 8px; text-align:right;">$${price.toFixed(2)}</td>
+      <td style="padding:7px 8px; text-align:right;">$${(w * price).toFixed(2)}</td>
+    </tr>`;
+  }).join('');
+
+  return `
+    <div style="font-family:'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue',Arial,sans-serif;
+                padding:32px; background:#fff; color:#2A1A1A; width:740px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px;">
+        <div>
+          <div style="font-size:22px; font-weight:800; color:#5C0F0F;">${DB.company.name}</div>
+          <div style="font-size:11px; color:#6B5B5B; margin-top:4px; line-height:1.6;">
+            ABN: ${DB.company.abn||'-'} · ${DB.company.phone||''}<br>${DB.company.address||''}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:24px; font-weight:800; color:#14145A; letter-spacing:2px;">TAX INVOICE</div>
+          <div style="margin-top:6px; font-size:12px; line-height:1.7;">
+            Invoice No: <b>${o.invoiceNo||'(대기)'}</b><br>
+            Order No: ${o.orderNo}<br>
+            Date: ${new Date(o.invoicedAt||o.orderDate).toLocaleDateString('en-AU')}
+          </div>
+        </div>
+      </div>
+
+      <div style="border-top:2px solid #8B1A1A; margin-bottom:16px;"></div>
+
+      <div style="display:flex; justify-content:space-between; margin-bottom:20px;">
+        <div>
+          <div style="font-size:9px; color:#aaa; text-transform:uppercase; margin-bottom:4px;">Bill To</div>
+          <div style="font-weight:700; font-size:15px;">${cust.name}</div>
+          <div style="font-size:11px; color:#6B5B5B; line-height:1.6;">
+            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}
+          </div>
+        </div>
+        <div style="text-align:right; font-size:12px; color:#6B5B5B; line-height:1.7;">
+          <div style="font-size:9px; color:#aaa; text-transform:uppercase; margin-bottom:4px;">Delivery</div>
+          Requested: ${o.deliveryDate||'-'}<br>
+          Notes: ${o.deliveryNotes||'-'}<br>
+          Terms: ${cust.terms||'-'}
+        </div>
+      </div>
+
+      <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:20px;">
+        <thead>
+          <tr style="background:#8B1A1A; color:#fff;">
+            <th style="text-align:left; padding:8px 8px; font-weight:700;">Item / 품목</th>
+            <th style="text-align:left; padding:8px 8px; font-weight:700;">Brand</th>
+            <th style="text-align:left; padding:8px 8px; font-weight:700;">Order</th>
+            <th style="text-align:right; padding:8px 8px; font-weight:700;">Weight (kg)</th>
+            <th style="text-align:right; padding:8px 8px; font-weight:700;">Unit Price</th>
+            <th style="text-align:right; padding:8px 8px; font-weight:700;">Amount</th>
+          </tr>
+        </thead>
+        <tbody>${itemRows}</tbody>
+      </table>
+
+      <div style="display:flex; justify-content:flex-end;">
+        <div style="min-width:280px; padding:16px 20px; border:1px solid #E5DCD3; border-radius:8px; background:#FAF6F1; font-size:13px;">
+          <div style="display:flex; justify-content:space-between; padding:3px 0;"><span>Total Weight / 총중량</span><b>${totals.totalKg.toFixed(2)} kg</b></div>
+          <div style="display:flex; justify-content:space-between; padding:3px 0;"><span>Subtotal (ex GST)</span><span>$${totals.subtotal.toFixed(2)}</span></div>
+          <div style="display:flex; justify-content:space-between; padding:3px 0;"><span>GST (${(DB.company.gstRate*100).toFixed(0)}%)</span><span>$${totals.gst.toFixed(2)}</span></div>
+          <div style="display:flex; justify-content:space-between; padding:10px 0 0; border-top:2px solid #8B1A1A; margin-top:8px; font-weight:800; font-size:16px; color:#5C0F0F;">
+            <span>TOTAL</span><span>$${totals.grand.toFixed(2)}</span>
+          </div>
+        </div>
+      </div>
+
+      <div style="margin-top:28px; padding-top:12px; border-top:1px solid #E5DCD3; font-size:10px; color:#999; line-height:1.6;">
+        Thank you for your business. / ${DB.company.name}<br>
+        All prices in ${DB.company.currency||'AUD'}, GST inclusive.
+      </div>
+    </div>`;
+}
+
+async function exportInvoicePDFs() {
+  const invoicedOrders = DB.orders.filter(o => ['invoiced', 'delivered'].includes(o.status));
+  if (invoicedOrders.length === 0) {
+    return alert('저장할 인보이스가 없습니다.\n(발행된 인보이스가 없습니다)');
+  }
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+    return alert('PDF 라이브러리를 불러오는 중입니다.\n잠시 후 다시 시도해 주세요.');
+  }
+
+  let dirHandle = await getBackupDirHandle();
+  if (!dirHandle) {
+    if (!window.showDirectoryPicker) {
+      return alert('폴더 저장은 Chrome/Edge에서만 지원됩니다.\n📁 폴더 설정 버튼으로 먼저 설정해 주세요.');
+    }
+    if (!confirm(`인보이스 PDF를 저장할 폴더를 선택해주세요.\n(💾 Backup과 같은 폴더를 사용합니다)\n\n권장: 문서 > 거래처 백업`)) return;
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      await idbSet('backupDirHandle', handle);
+      _backupDirHandle = handle;
+      dirHandle = handle;
+    } catch(e) {
+      if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
+      return;
+    }
+  }
+
+  const { jsPDF } = window.jspdf;
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed; left:-9999px; top:0; width:780px; background:#fff; z-index:-1; pointer-events:none;';
+  document.body.appendChild(container);
+
+  let saved = 0, failed = 0;
+  for (const o of invoicedOrders) {
+    try {
+      const cust = DB.customers.find(c => c.id === o.customerId) || { name: '미확인', contact:'', phone:'', address:'', terms:'' };
+      const totals = computeTotals(o);
+      const dateStr = (o.invoicedAt || o.orderDate || '').slice(0, 10) || '날짜없음';
+      const custName = cust.name.replace(/[\\/:*?"<>|]/g, '_');
+
+      container.innerHTML = buildInvoiceHTML(o, cust, totals);
+      await new Promise(r => setTimeout(r, 80));
+
+      const canvas = await html2canvas(container.firstElementChild, {
+        scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+      });
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      const pageW = 210, pageH = 297;
+      const imgH = canvas.height * pageW / canvas.width;
+      const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+
+      if (imgH <= pageH) {
+        doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+      } else {
+        let yOff = 0;
+        while (yOff < imgH) {
+          if (yOff > 0) doc.addPage();
+          doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+          yOff += pageH;
+        }
+      }
+
+      const pdfBytes = doc.output('arraybuffer');
+      const invoiceRootHandle = await dirHandle.getDirectoryHandle('인보이스', { create: true });
+      const dateFolderHandle = await invoiceRootHandle.getDirectoryHandle(dateStr, { create: true });
+      const custFolderHandle = await dateFolderHandle.getDirectoryHandle(custName, { create: true });
+      const filename = `${o.invoiceNo || o.orderNo}.pdf`;
+      const fileHandle = await custFolderHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(pdfBytes);
+      await writable.close();
+      saved++;
+    } catch(e) {
+      console.error('인보이스 PDF 저장 실패:', o.orderNo, e);
+      failed++;
+    }
+  }
+
+  document.body.removeChild(container);
+  const msg = failed > 0
+    ? `✅ 인보이스 PDF 저장 완료!\n저장: ${saved}건 / 실패: ${failed}건\n\n📁 ${dirHandle.name}`
+    : `✅ 인보이스 PDF ${saved}건 저장 완료!\n\n📁 ${dirHandle.name}\n거래처별·날짜별 폴더로 정리되었습니다.`;
+  alert(msg);
+}
+
+async function getBackupDirHandle() {
+  if (_backupDirHandle) {
+    try {
+      const perm = await _backupDirHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') return _backupDirHandle;
+      const req = await _backupDirHandle.requestPermission({ mode: 'readwrite' });
+      if (req === 'granted') return _backupDirHandle;
+    } catch(e) {}
+  }
+  try {
+    const handle = await idbGet('backupDirHandle');
+    if (handle) {
+      let perm = await handle.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') { _backupDirHandle = handle; return handle; }
+    }
+  } catch(e) {}
+  return null;
+}
+
+async function setBackupFolder() {
+  if (!window.showDirectoryPicker) {
+    return alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await idbSet('backupDirHandle', handle);
+    _backupDirHandle = handle;
+    alert('✅ 백업 폴더 설정 완료!\n📁 ' + handle.name + '\n\n이제 💾 Backup 클릭 시 이 폴더에 자동 저장됩니다.');
+  } catch(e) {
+    if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
+  }
+}
+
+async function exportAll() {
+  const json = JSON.stringify(DB, null, 2);
+  const filename = `ATM_backup_${new Date().toISOString().slice(0,10)}.json`;
+  const dirHandle = await getBackupDirHandle();
+  if (dirHandle) {
+    try {
+      const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(json);
+      await writable.close();
+      alert('✅ 백업 완료!\n📁 ' + dirHandle.name + ' / ' + filename);
+      return;
+    } catch(e) {
+      console.warn('폴더 저장 실패, 다운로드로 전환:', e);
+    }
+  }
+  // Fallback: browser download
+  const blob = new Blob([json], {type:'application/json'});
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename; a.click();
+  URL.revokeObjectURL(url);
+}
+function importAll() {
+  const input = document.createElement('input');
+  input.type = 'file'; input.accept = 'application/json';
+  input.onchange = e => {
+    const f = e.target.files[0]; if (!f) return;
+    if (!confirm('현재 데이터를 덮어씁니다. 진행할까요?')) return;
+    const r = new FileReader();
+    r.onload = ev => {
+      try {
+        DB = JSON.parse(ev.target.result);
+        saveDB(); alert('복원 완료!'); route();
+      } catch (err) { alert('파일을 읽을 수 없습니다: ' + err.message); }
+    };
+    r.readAsText(f);
+  };
+  input.click();
+}
+
+// =========================================================================
+//  ROUTER TABLE & INIT
+// =========================================================================
+const ROUTES = {
+  'home': viewHome,
+  'admin': viewAdmin,
+  'enter': viewEnter,
+  'order': viewOrder,
+  'orderDetail': viewOrderDetail,
+  'myOrders': viewMyOrders,
+  'warehouse': viewWarehouse,
+  'weigh': viewWeigh,
+  'office': viewOffice,
+  'invoicePrep': viewInvoicePrep,
+  'invoice': viewInvoice,
+  'history': viewHistory
+};
+
+document.querySelectorAll('.nav .tab').forEach(t => {
+  t.onclick = () => { location.hash = t.dataset.route; };
+});
+
+// Bootstrap
+// -------- App Initialisation --------
+function initApp(data) {
+  if (data) {
+    DB = data;
+  } else {
+    // Nothing in Firebase yet — migrate from localStorage or start fresh
+    DB = loadLocalDB() || seed();
+    saveDB(); // push existing data up to Firebase
+  }
+  route();
+}
+
+if (FIREBASE_READY && DB_REF) {
+  // Show loading screen while connecting
+  document.getElementById('app').innerHTML = `
+    <div style="text-align:center; padding:80px 20px; color:var(--muted);">
+      <div style="font-size:56px;">🥩</div>
+      <div style="margin-top:16px; font-size:16px; font-weight:700; color:var(--brand-dark);">ALL THAT MEAT</div>
+      <div style="margin-top:8px; font-size:13px;">실시간 연결 중... / Connecting...</div>
+    </div>`;
+
+  let _firstLoad = true;
+  DB_REF.on('value', snapshot => {
+    const isSelf = (Date.now() - _lastSaveTime) < 3000;
+    const data = snapshot.val();
+
+    if (_firstLoad) {
+      _firstLoad = false;
+      initApp(data);
+      return;
+    }
+
+    // External update from another device
+    if (!isSelf) {
+      if (data) DB = data;
+      saveLocalDB(); // keep local cache in sync
+      if (!_isOrderEntry) {
+        route(); // re-render current view with new data
+      } else {
+        // User is actively ordering — show a subtle banner instead
+        const banner = document.getElementById('sync-banner');
+        if (!banner) {
+          const b = document.createElement('div');
+          b.id = 'sync-banner';
+          b.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#2E5C8A;color:#fff;text-align:center;padding:6px;font-size:12px;z-index:200;';
+          b.textContent = '🔄 다른 기기에서 데이터가 업데이트됐습니다. 주문 완료 후 자동 반영됩니다.';
+          document.body.appendChild(b);
+          setTimeout(() => b.remove(), 6000);
+        }
+      }
+    }
+  });
+} else {
+  // No Firebase — use localStorage only
+  DB = loadLocalDB() || seed();
+  if (!FIREBASE_READY) {
+    console.info('Firebase 미설정 — localStorage 모드로 실행 중');
+  }
+  route();
+}
+</script>
+
+</body>
+</html>
