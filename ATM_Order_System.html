@@ -806,6 +806,7 @@ function renderProcessingToday() {
 }
 
 function renderStats() {
+  ensureDB();
   const today = new Date().toISOString().slice(0,10);
   const today_orders = DB.orders.filter(o => (o.orderDate || '').slice(0,10) === today);
   const pending = DB.orders.filter(o => o.status === 'new' || o.status === 'weighing');
@@ -826,6 +827,7 @@ function renderStats() {
   `;
 }
 function renderRecentOrders() {
+  ensureDB();
   const div = document.getElementById('recentOrders');
   const recent = [...DB.orders].sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||'')).slice(0,8);
   if (recent.length === 0) {
@@ -923,6 +925,7 @@ async function changeAdminPassword() {
 }
 
 function renderProductsAdmin() {
+  ensureDB();
   const body = document.getElementById('adminBody');
   body.innerHTML = `
     <div class="card">
@@ -1031,6 +1034,7 @@ function delProduct(id) {
 }
 
 function renderCustomersAdmin() {
+  ensureDB();
   const body = document.getElementById('adminBody');
   body.innerHTML = `
     <div class="card">
@@ -1391,6 +1395,7 @@ function renderFavQuick(cust) {
   `).join('');
 }
 function renderCatalog(q, custId) {
+  ensureDB();
   const div = document.getElementById('catalog');
   const filt = DB.products.filter(p => p.active && (!q || (p.name+' '+p.brand+' '+p.cut).toLowerCase().includes(q.toLowerCase())));
   const cuts = [...new Set(filt.map(p => p.cut))];
@@ -1530,6 +1535,7 @@ function submitOrder(custId) {
 //  VIEW: WAREHOUSE (Weighing)
 // =========================================================================
 function viewWarehouse() {
+  ensureDB();
   const app = document.getElementById('app');
   const pending = DB.orders.filter(o => o.status === 'new' || o.status === 'weighing')
     .sort((a,b) => (a.orderDate||'').localeCompare(b.orderDate||''));
@@ -1646,6 +1652,7 @@ function renderWeighingTotal(o) {
 //  VIEW: OFFICE (Invoicing)
 // =========================================================================
 function viewOffice() {
+  ensureDB();
   const app = document.getElementById('app');
   const ready = DB.orders.filter(o => o.status === 'weighed');
   const all = DB.orders.filter(o => o.status === 'invoiced' || o.status === 'delivered');
@@ -2324,6 +2331,7 @@ function shareOrder(orderId) {
 //  VIEW: MY ORDERS (Customer-only — shows only this customer's orders)
 // =========================================================================
 function viewMyOrders() {
+  ensureDB();
   const app = document.getElementById('app');
   const cust = DB.customers.find(c => c.id === CUSTOMER_MODE);
   if (!cust) {
@@ -2389,6 +2397,7 @@ function viewMyOrders() {
 //  VIEW: ORDER DETAIL (read-only)
 // =========================================================================
 function viewOrderDetail(params) {
+  ensureDB();
   const id = params.get('id');
   const o = DB.orders.find(x => x.id === id);
   if (!o) return location.hash = '#home';
@@ -2631,9 +2640,43 @@ document.querySelectorAll('.nav .tab').forEach(t => {
 
 // Bootstrap
 // -------- App Initialisation --------
+// Firebase stores arrays as objects with numeric keys — convert back to real arrays
+function toArr(v) {
+  if (!v) return [];
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'object') return Object.values(v).filter(x => x != null);
+  return [];
+}
+function fixArrays(db) {
+  if (!db || typeof db !== 'object') return db;
+  db.products  = toArr(db.products);
+  db.customers = toArr(db.customers);
+  db.orders    = toArr(db.orders);
+  db.customers.forEach(c => {
+    if (c) c.favoriteProductIds = toArr(c.favoriteProductIds);
+  });
+  db.orders.forEach(o => {
+    if (o) o.items = toArr(o.items);
+  });
+  return db;
+}
+// Call before any view that reads DB arrays — guards against timing/Firebase issues
+function ensureDB() {
+  if (!DB) return;
+  if (!Array.isArray(DB.orders))    DB.orders    = toArr(DB.orders);
+  if (!Array.isArray(DB.products))  DB.products  = toArr(DB.products);
+  if (!Array.isArray(DB.customers)) DB.customers = toArr(DB.customers);
+  DB.customers.forEach(c => {
+    if (c && !Array.isArray(c.favoriteProductIds)) c.favoriteProductIds = toArr(c.favoriteProductIds);
+  });
+  DB.orders.forEach(o => {
+    if (o && !Array.isArray(o.items)) o.items = toArr(o.items);
+  });
+}
+
 function initApp(data) {
   if (data) {
-    DB = data;
+    DB = fixArrays(data);
   } else {
     // Nothing in Firebase yet — migrate from localStorage or start fresh
     DB = loadLocalDB() || seed();
@@ -2664,7 +2707,7 @@ if (FIREBASE_READY && DB_REF) {
 
     // External update from another device
     if (!isSelf) {
-      if (data) DB = data;
+      if (data) DB = fixArrays(data);
       saveLocalDB(); // keep local cache in sync
       if (!_isOrderEntry) {
         route(); // re-render current view with new data
