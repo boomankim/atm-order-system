@@ -1475,41 +1475,43 @@ function viewOrder(params) {
   }
 
   CART = []; // reset on entry
+  const todayStr = new Date().toISOString().slice(0,10);
+  const todayDisplay = new Date().toLocaleDateString('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'short'});
   app.innerHTML = `
     <h2 class="page-title">🛒 ${cust.name}
-      <span class="sub">Place Order / 주문 입력</span></h2>
+      <span style="font-size:12px; font-weight:400; color:var(--muted); margin-left:10px;">${todayDisplay}</span></h2>
 
-    <div class="card">
-      <div class="grid-2">
-        <div class="field"><label>Customer</label><input value="${cust.name}" readonly></div>
-        <div class="field"><label>Contact / 담당자</label><input value="${cust.contact||''}" readonly></div>
-        <div class="field"><label>Order Date / 주문일</label><input type="date" id="orderDate" value="${new Date().toISOString().slice(0,10)}"></div>
-        <div class="field" style="grid-column:1/-1;"><label>Special Requests / 배송 요청사항</label><textarea id="deliveryNotes" placeholder="e.g. Before 10am / 예: 오전 10시 이전"></textarea></div>
+    <input type="hidden" id="orderDate" value="${todayStr}">
+
+    <div class="card" style="padding:10px 18px; margin-bottom:10px; max-width:360px;">
+      <div class="field" style="margin-bottom:0;">
+        <label>배송 요청사항 / Special Requests</label>
+        <textarea id="deliveryNotes" placeholder="예: 오전 10시 이전 / Before 10am" style="height:48px; font-size:13px;"></textarea>
       </div>
     </div>
 
-    <div class="search-bar">
-      <input id="prodSearch" placeholder="🔍 품목 검색 (예: 삼겹살, 한국산, LA갈비...)">
-    </div>
-
-    <div class="card" id="favCard">
-      <h3>⭐ Favourites / 자주 주문 <span style="font-weight:400; color:var(--muted); font-size:12px;">— click an item to add to cart</span></h3>
-      <div id="favList"></div>
-    </div>
-
     <div class="card">
-      <h3>Order Items / 주문 품목 <span id="cartCount" style="float:right; color:var(--muted); font-size:12px;">0 items / 0개</span></h3>
+      <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--muted); font-size:12px; font-weight:400;">0개</span></h3>
       <div id="cart"></div>
     </div>
 
+    <div class="card" id="favCard">
+      <h3>⭐ 잦은 주문 품목 / Frequent Orders <span style="font-weight:400; color:var(--muted); font-size:12px;">— 클릭하면 추가됩니다 / Click to add</span></h3>
+      <div id="favList"></div>
+    </div>
+
+    <div class="search-bar">
+      <input id="prodSearch" placeholder="🔍 품목 검색 / Search (예: 삼겹살, LA갈비, 꼬리...)">
+    </div>
+
     <div class="card">
-      <h3>Product Catalogue / 전체 품목</h3>
+      <h3>전체 품목 / All Products</h3>
       <div id="catalog"></div>
     </div>
 
     <div class="summary-bar">
-      <div class="info">Total / 총 <b id="totalQty">0</b> items / 개 <small style="opacity:0.75;">· Exact weight &amp; price on invoice / 정확한 중량·금액은 계근 후 인보이스에</small></div>
-      <button onclick="submitOrder('${cust.id}')">Submit Order / 주문 제출</button>
+      <div class="info">총 <b id="totalQty">0</b>개 <small style="opacity:0.75;">· 정확한 중량·금액은 계근 후 인보이스에</small></div>
+      <button onclick="submitOrder('${cust.id}')">주문 제출 / Submit Order</button>
     </div>
   `;
   renderFavQuick(cust);
@@ -1598,7 +1600,7 @@ function toggleCatalogFav(custId, prodId, btn) {
 function renderCart() {
   const div = document.getElementById('cart');
   if (CART.length === 0) {
-    div.innerHTML = `<div class="empty"><div class="icon">🛒</div>위에서 품목을 선택해 추가하세요.</div>`;
+    div.innerHTML = `<div class="empty"><div class="icon">🛒</div>아래에서 품목을 선택해 추가하세요.<br><small style="font-weight:400; opacity:0.7;">Select items below to add / Click to add</small></div>`;
   } else {
     div.innerHTML = CART.map((item, idx) => {
       const p = DB.products.find(x => x.id === item.productId);
@@ -2513,52 +2515,33 @@ function viewMyOrders() {
 
   app.innerHTML = `
     <h2 class="page-title">👋 ${cust.name}
-      <span class="sub">내 주문 내역</span></h2>
-
-    <div class="card" style="background: linear-gradient(135deg, var(--brand) 0%, var(--brand-dark) 100%); color:#fff;">
-      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:12px;">
-        <div>
-          <h3 style="color:#fff; border-color:rgba(255,255,255,0.5); margin:0 0 6px 0;">새 주문하기</h3>
-          <p style="font-size:13px; opacity:0.85; margin:0;">자주 주문하는 품목을 빠르게 선택하고 제출하세요.</p>
-        </div>
-        <button class="btn" style="background:#F0B400; color:var(--ink); font-weight:700;"
-          onclick="location.hash='#order?c=${CUSTOMER_MODE}'">+ 주문 작성</button>
-      </div>
-    </div>
+      <span class="sub">주문 내역 / Order History</span></h2>
 
     <div class="card">
-      <h3>주문 내역 (${orders.length}건)</h3>
-      ${orders.length === 0 ? `<div class="empty"><div class="icon">📭</div>아직 주문 내역이 없습니다.<br><br><button class="btn" onclick="location.hash='#order?c=${CUSTOMER_MODE}'">+ 첫 주문 시작</button></div>` : `
-      <table class="t">
-        <thead><tr>
-          <th>주문번호</th><th>주문일</th><th>품목</th><th>희망 배송일</th><th>상태</th><th class="act"></th>
-        </tr></thead>
-        <tbody>
-          ${orders.map(o => `<tr>
-            <td><b>${o.orderNo}</b></td>
-            <td>${(o.orderDate||'').slice(0,10)}</td>
-            <td>${o.items.length}개</td>
-            <td>${o.deliveryDate||'-'}</td>
-            <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
-            <td class="act"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button></td>
-          </tr>`).join('')}
-        </tbody>
-      </table>`}
-    </div>
-
-    <div class="card">
-      <h3>가게 정보</h3>
-      <div style="font-size:14px;">
-        <div><b>${cust.name}</b> <span style="color:var(--muted);">(${cust.code})</span></div>
-        <div style="color:var(--muted); margin-top:6px; line-height:1.7;">
-          ${cust.contact ? '담당: ' + cust.contact + '<br>' : ''}
-          ${cust.phone ? '📞 ' + cust.phone + '<br>' : ''}
-          ${cust.address ? '📍 ' + cust.address : ''}
-        </div>
-        <div style="font-size:11px; color:var(--muted); margin-top:10px; padding-top:10px; border-top:1px solid var(--line);">
-          정보 변경이 필요하시면 ATM 사무실로 연락주세요.
-        </div>
-      </div>
+      <h3>주문 내역 / Order History <span style="font-weight:400; color:var(--muted); font-size:12px;">(${orders.length}건 / ${orders.length} orders)</span></h3>
+      ${orders.length === 0
+        ? `<div class="empty"><div class="icon">📭</div>
+             아직 주문 내역이 없습니다.<br>
+             <small style="opacity:0.7;">No orders yet.</small>
+           </div>`
+        : `<table class="t">
+             <thead><tr>
+               <th>주문번호 / Order No</th>
+               <th>주문일 / Date</th>
+               <th>품목 / Items</th>
+               <th>상태 / Status</th>
+               <th class="act"></th>
+             </tr></thead>
+             <tbody>
+               ${orders.map(o => `<tr>
+                 <td><b>${o.orderNo}</b></td>
+                 <td>${(o.orderDate||'').slice(0,10)}</td>
+                 <td>${o.items.length}개</td>
+                 <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+                 <td class="act"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기 / View</button></td>
+               </tr>`).join('')}
+             </tbody>
+           </table>`}
     </div>
   `;
 }
