@@ -61,6 +61,8 @@
   }
   h2.page-title .sub { font-size: 13px; color: var(--muted); font-weight: 400; margin-left: 10px; }
 
+
+   
   .card {
     background: #fff; border-radius: 10px;
     box-shadow: 0 2px 10px rgba(0,0,0,0.06);
@@ -107,6 +109,10 @@
   .btn.kakao { background: #FEE500; color: #391B1B; }
   .btn.kakao:hover { background: #FFD600; }
   .btn.sm { padding: 6px 10px; font-size: 12px; }
+  .inline-edit { border: 1px solid transparent; background: transparent; padding: 2px 5px; border-radius: 4px; font-size: inherit; font-family: inherit; width: 100%; box-sizing: border-box; }
+  .inline-edit:hover { border-color: var(--line); background: #fdfaf7; }
+  .inline-edit:focus { border-color: var(--brand); background: #fff; outline: none; box-shadow: 0 0 0 2px rgba(139,26,26,0.12); }
+  .inline-edit.num { text-align: right; }
   .btn-row { display: flex; gap: 8px; flex-wrap: wrap; }
 
   /* Table */
@@ -390,6 +396,7 @@ function seed() {
         terms: '14일 외상', active: true },
     ],
     orders: [],
+    payments: [],
     settings: {
       orderSeq: 1,
       invoiceSeq: 1
@@ -1022,8 +1029,8 @@ function renderProductList(q) {
         <tr>
           <td><span class="chip">${p.cut}</span></td>
           <td><b>${p.name}</b></td>
-          <td>${p.brand}</td>
-          <td class="num">$${(p.priceKg||0).toFixed(2)}</td>
+          <td><input class="inline-edit" type="text" value="${p.brand.replace(/"/g,'&quot;')}" onblur="updateProductField('${p.id}','brand',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
+          <td class="num"><input class="inline-edit num" type="number" step="0.01" min="0" value="${(p.priceKg||0).toFixed(2)}" onblur="updateProductField('${p.id}','priceKg',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
           <td>${p.active ? '✅' : '⛔'}</td>
           <td class="act">
             <button class="btn sm secondary" onclick="editProduct('${p.id}')">수정</button>
@@ -1765,6 +1772,37 @@ function viewOffice() {
         </tbody>
       </table>`}
     </div>
+    <div class="card">
+      <h3>💰 거래처별 미수금</h3>
+      ${(() => {
+        const custs = DB.customers.filter(c => c.active !== false);
+        const rows = custs.map(c => {
+          const invoiced = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === c.id)
+            .reduce((s, o) => s + computeTotals(o).grand, 0);
+          const paid = DB.payments.filter(p => p.customerId === c.id)
+            .reduce((s, p) => s + p.amount, 0);
+          const balance = invoiced - paid;
+          return { c, invoiced, paid, balance };
+        }).filter(r => r.invoiced > 0 || r.balance !== 0);
+        rows.sort((a, b) => b.balance - a.balance);
+        if (rows.length === 0) return '<div class="empty">인보이스된 주문이 없습니다.</div>';
+        return `<table class="t">
+          <thead><tr><th>거래처</th><th class="num">총 인보이스</th><th class="num">총 입금</th><th class="num">미수금</th><th class="act"></th></tr></thead>
+          <tbody>
+            ${rows.map(({c, invoiced, paid, balance}) => `<tr style="${balance <= 0 ? 'color:var(--muted);' : ''}">
+              <td><b>${c.name}</b>${c.contact ? `<br><small style="color:var(--muted);">${c.contact}</small>` : ''}</td>
+              <td class="num">$${invoiced.toFixed(2)}</td>
+              <td class="num">$${paid.toFixed(2)}</td>
+              <td class="num" style="font-weight:700; color:${balance > 0 ? 'var(--warn)' : 'var(--success)'};">$${balance.toFixed(2)}</td>
+              <td class="act" style="white-space:nowrap;">
+                <button class="btn sm" onclick="location.hash='#payment?cid=${c.id}'">💳 입금 처리</button>
+                <button class="btn sm secondary" onclick="location.hash='#statement?cid=${c.id}'" style="margin-left:4px;">📄 스테이트먼트</button>
+              </td>
+            </tr>`).join('')}
+          </tbody>
+        </table>`;
+      })()}
+    </div>
   `;
 }
 function lineUnitPrice(it, p) {
@@ -2213,7 +2251,7 @@ function resetPrepPricesToMaster(orderId) {
   saveDB();
   route(); // re-render
 }
-function issueInvoice(orderId) {
+async function issueInvoice(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   const t = computeTotals(o);
   if (t.unweighedCount > 0) {
@@ -2225,6 +2263,7 @@ function issueInvoice(orderId) {
   o.invoicedAt = new Date().toISOString();
   saveDB();
   location.hash = '#invoice?id=' + orderId;
+  autoSaveInvoice(orderId).catch(e => console.warn('autoSaveInvoice error:', e));
 }
 
 // =========================================================================
@@ -2734,49 +2773,26 @@ function buildInvoiceHTML(o, cust, totals) {
 }
 
 async function exportInvoicePDFs(silent = false) {
-  const invoicedOrders = DB.orders.filter(o => ['invoiced', 'delivered'].includes(o.status));
+  const invoicedOrders = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status));
   if (invoicedOrders.length === 0) {
-    if (!silent) alert('저장할 인보이스가 없습니다.\n(발행된 인보이스가 없습니다)');
+    if (!silent) alert('저장할 인보이스가 없습니다.');
     return { saved: 0, failed: 0, skipped: '인보이스 없음' };
   }
   if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
     if (!silent) alert('PDF 라이브러리를 불러오는 중입니다.\n잠시 후 다시 시도해 주세요.');
     return { saved: 0, failed: 0, skipped: 'PDF 라이브러리 로딩 중' };
   }
-
-  let dirHandle = await getBackupDirHandle();
-  if (!dirHandle) {
-    if (!window.showDirectoryPicker) {
-      return alert('폴더 저장은 Chrome/Edge에서만 지원됩니다.\n📁 폴더 설정 버튼으로 먼저 설정해 주세요.');
-    }
-    if (!confirm(`인보이스 PDF를 저장할 폴더를 선택해주세요.\n(💾 Backup과 같은 폴더를 사용합니다)\n\n권장: 문서 > 거래처 백업`)) return;
-    try {
-      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-      await idbSet('backupDirHandle', handle);
-      _backupDirHandle = handle;
-      dirHandle = handle;
-    } catch(e) {
-      if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
-      return;
-    }
-  }
-
   const { jsPDF } = window.jspdf;
   const container = document.createElement('div');
-  container.style.cssText = 'position:fixed; left:-9999px; top:0; width:780px; background:#fff; z-index:-1; pointer-events:none;';
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
   document.body.appendChild(container);
-
   let saved = 0, failed = 0;
   for (const o of invoicedOrders) {
     try {
-      const cust = DB.customers.find(c => c.id === o.customerId) || { name: '미확인', contact:'', phone:'', address:'', terms:'' };
+      const cust = DB.customers.find(c => c.id === o.customerId) || { name:'미확인', contact:'', phone:'', address:'', terms:'' };
       const totals = computeTotals(o);
-      const dateStr = (o.invoicedAt || o.orderDate || '').slice(0, 10) || '날짜없음';
-      const custName = cust.name.replace(/[\\/:*?"<>|]/g, '_');
-
       container.innerHTML = buildInvoiceHTML(o, cust, totals);
       await new Promise(r => setTimeout(r, 80));
-
       const canvas = await html2canvas(container.firstElementChild, {
         scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
       });
@@ -2784,7 +2800,6 @@ async function exportInvoicePDFs(silent = false) {
       const pageW = 210, pageH = 297;
       const imgH = canvas.height * pageW / canvas.width;
       const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
-
       if (imgH <= pageH) {
         doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
       } else {
@@ -2795,28 +2810,22 @@ async function exportInvoicePDFs(silent = false) {
           yOff += pageH;
         }
       }
-
-      const pdfBytes = doc.output('arraybuffer');
-      const invoiceRootHandle = await dirHandle.getDirectoryHandle('인보이스', { create: true });
-      const dateFolderHandle = await invoiceRootHandle.getDirectoryHandle(dateStr, { create: true });
-      const custFolderHandle = await dateFolderHandle.getDirectoryHandle(custName, { create: true });
-      const filename = `${o.invoiceNo || o.orderNo}.pdf`;
-      const fileHandle = await custFolderHandle.getFileHandle(filename, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(pdfBytes);
-      await writable.close();
+      const dateStr = (o.invoicedAt || o.orderDate || '').slice(0,10);
+      const custName = cust.name.replace(/[\\/:*?"<>|]/g, '_');
+      doc.save(`${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`);
       saved++;
+      await new Promise(r => setTimeout(r, 300));
     } catch(e) {
-      console.error('인보이스 PDF 저장 실패:', o.orderNo, e);
+      console.error('PDF 저장 실패:', o.orderNo, e);
       failed++;
     }
   }
-
   document.body.removeChild(container);
-  const msg = failed > 0
-    ? `✅ 인보이스 PDF 저장 완료!\n저장: ${saved}건 / 실패: ${failed}건\n\n📁 ${dirHandle.name}`
-    : `✅ 인보이스 PDF ${saved}건 저장 완료!\n\n📁 ${dirHandle.name}\n거래처별·날짜별 폴더로 정리되었습니다.`;
-  if (!silent) alert(msg);
+  if (!silent) {
+    alert(failed > 0
+      ? `✅ PDF ${saved}건 다운로드 완료 / ${failed}건 실패`
+      : `✅ PDF ${saved}건 다운로드 완료`);
+  }
   return { saved, failed };
 }
 
@@ -2857,25 +2866,12 @@ async function setBackupFolder() {
 async function exportAll(silent = false) {
   const json = JSON.stringify(DB, null, 2);
   const filename = `ATM_backup_${new Date().toISOString().slice(0,10)}.json`;
-  const dirHandle = await getBackupDirHandle();
-  if (dirHandle) {
-    try {
-      const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(json);
-      await writable.close();
-      if (!silent) alert('✅ 백업 완료!\n📁 ' + dirHandle.name + ' / ' + filename);
-      return { success: true, filename, folder: dirHandle.name };
-    } catch(e) {
-      console.warn('폴더 저장 실패, 다운로드로 전환:', e);
-    }
-  }
-  // Fallback: browser download
   const blob = new Blob([json], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
+  if (!silent) alert('💾 JSON 백업 다운로드 완료!\n파일명: ' + filename);
   return { success: true, filename, folder: null };
 }
 async function exportAllFull() {
@@ -2916,6 +2912,257 @@ function importAll() {
 }
 
 // =========================================================================
+//  VIEW: PAYMENT — record a payment against a customer
+// =========================================================================
+function viewPayment(params) {
+  if (!ADMIN_UNLOCKED && !STAFF_UNLOCKED) { showStaffLogin(); return; }
+  const app = document.getElementById('app');
+  const preCid = (params && params.cid) ? params.cid : '';
+  const today = new Date().toISOString().slice(0, 10);
+
+  function balanceFor(cid) {
+    if (!cid) return null;
+    const invoiced = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid)
+      .reduce((s, o) => s + computeTotals(o).grand, 0);
+    const paid = DB.payments.filter(p => p.customerId === cid)
+      .reduce((s, p) => s + p.amount, 0);
+    return invoiced - paid;
+  }
+
+  function renderBalance(cid) {
+    const bal = balanceFor(cid);
+    if (bal === null) return '';
+    return `<div style="margin-top:8px; padding:10px 14px; background:var(--surface); border-radius:6px; border:1px solid var(--line);">
+      현재 미수금: <b style="color:${bal > 0 ? 'var(--warn)' : 'var(--success)'};">$${bal.toFixed(2)}</b>
+    </div>`;
+  }
+
+  app.innerHTML = `
+    <h2 class="page-title">💳 입금 처리
+      <button class="btn sm secondary" style="float:right;" onclick="history.back()">← 뒤로</button>
+    </h2>
+    <div class="card" style="max-width:560px;">
+      <div class="field">
+        <label>거래처</label>
+        <select id="payCustomer" onchange="document.getElementById('payBalanceBox').innerHTML=renderPaymentBalance(this.value)">
+          <option value="">— 선택하세요 —</option>
+          ${DB.customers.filter(c => c.active !== false).map(c =>
+            `<option value="${c.id}" ${c.id === preCid ? 'selected' : ''}>${c.name} (${c.code})</option>`
+          ).join('')}
+        </select>
+        <div id="payBalanceBox">${renderBalance(preCid)}</div>
+      </div>
+      <div class="field">
+        <label>입금일</label>
+        <input type="date" id="payDate" value="${today}">
+      </div>
+      <div class="field">
+        <label>금액 ($)</label>
+        <input type="number" id="payAmount" min="0" step="0.01" placeholder="0.00">
+      </div>
+      <div class="field">
+        <label>입금 방법</label>
+        <select id="payMethod">
+          <option value="cash">현금</option>
+          <option value="cheque">체크</option>
+          <option value="bank">은행이체</option>
+        </select>
+      </div>
+      <div class="field">
+        <label>참조번호 (체크번호 / 은행 참조)</label>
+        <input type="text" id="payRef" placeholder="선택 입력">
+      </div>
+      <div class="field">
+        <label>메모</label>
+        <input type="text" id="payNotes" placeholder="선택 입력">
+      </div>
+      <div style="margin-top:16px; display:flex; gap:8px;">
+        <button class="btn success" onclick="savePayment()">💾 저장</button>
+        <button class="btn secondary" onclick="history.back()">취소</button>
+      </div>
+      <div id="paySuccess" style="display:none; margin-top:12px; padding:10px 14px; background:#e6f9ee; border-radius:6px; color:#1a6b3a; font-weight:600;">
+        ✅ 입금이 기록됐습니다.
+      </div>
+    </div>
+  `;
+  // Expose helpers to global for inline handlers
+  window.renderPaymentBalance = function(cid) { return renderBalance(cid); };
+}
+
+window.savePayment = function() {
+  const cid = document.getElementById('payCustomer').value;
+  const date = document.getElementById('payDate').value;
+  const amount = parseFloat(document.getElementById('payAmount').value);
+  const method = document.getElementById('payMethod').value;
+  const ref = document.getElementById('payRef').value.trim();
+  const notes = document.getElementById('payNotes').value.trim();
+
+  if (!cid) { alert('거래처를 선택하세요.'); return; }
+  if (!date) { alert('입금일을 입력하세요.'); return; }
+  if (isNaN(amount) || amount <= 0) { alert('올바른 금액을 입력하세요.'); return; }
+
+  const payment = {
+    id: uid('pay'),
+    customerId: cid,
+    date,
+    amount,
+    method,
+    reference: ref,
+    notes,
+    createdAt: new Date().toISOString()
+  };
+  DB.payments.push(payment);
+  saveDB();
+
+  // Show success, reset amount/ref/notes for next entry
+  document.getElementById('payAmount').value = '';
+  document.getElementById('payRef').value = '';
+  document.getElementById('payNotes').value = '';
+  const succ = document.getElementById('paySuccess');
+  succ.style.display = 'block';
+  setTimeout(() => { succ.style.display = 'none'; }, 3000);
+  // Refresh balance display
+  id2 = document.getElementById('payCustomer').value;
+  document.getElementById('payBalanceBox').innerHTML = window.renderPaymentBalance(cid2);
+};
+
+// =========================================================================
+//  VIEW: STATEMENT — customer account statement
+// =========================================================================
+function viewStatement(params) {
+  if (!ADMIN_UNLOCKED && !STAFF_UNLOCKED) { showStaffLogin(); return; }
+  const app = document.getElementById('app');
+  const cid = params && params.cid;
+  if (!cid) {
+    app.innerHTML = '<div class="card"><p style="color:var(--warn);">거래처 ID가 없습니다. 사무실 화면에서 거래처를 선택하세요.</p>' +
+      '<button class="btn secondary" onclick="history.back()">← 뒤로</button></div>';
+    return;
+  }
+  const cust = DB.customers.find(c => c.id === cid);
+  if (!cust) {
+    app.innerHTML = '<div class="card"><p style="color:var(--warn);">거래처를 찾을 수 없습니다.</p>' +
+      '<button class="btn secondary" onclick="history.back()">← 뒤로</button></div>';
+    return;
+  }
+
+  const today = new Date().toISOString().slice(0, 10);
+  const firstDate = '2000-01-01';
+  const methodLabel = { cash: '현금', cheque: '체크', bank: '은행이체' };
+
+  function buildStatement(dateFrom, dateTo) {
+    const invoices = DB.orders.filter(o =>
+      ['invoiced','delivered'].includes(o.status) &&
+      o.customerId === cid &&
+      (o.invoicedAt || o.orderDate || '').slice(0,10) >= dateFrom &&
+      (o.invoicedAt || o.orderDate || '').slice(0,10) <= dateTo
+    ).sort((a,b) => (a.invoicedAt||a.orderDate||'') > (b.invoicedAt||b.orderDate||'') ? 1 : -1);
+
+    const payments = DB.payments.filter(p =>
+      p.customerId === cid && p.date >= dateFrom && p.date <= dateTo
+    ).sort((a,b) => a.date > b.date ? 1 : -1);
+
+    const totalInvoiced = invoices.reduce((s, o) => s + computeTotals(o).grand, 0);
+    const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
+    const balance = totalInvoiced - totalPaid;
+
+    const invRows = invoices.map(o =>
+      '<tr><td>' + (o.invoicedAt||o.orderDate||'').slice(0,10) + '</td><td>' + (o.invoiceNo||'-') + '</td><td>' + o.orderNo + '</td><td class="num">$' + computeTotals(o).grand.toFixed(2) + '</td><td><span class="pill ' + o.status + '">' + statusLabel(o.status) + '</span></td></tr>'
+    ).join('');
+    const payRows = payments.map(p =>
+      '<tr><td>' + p.date + '</td><td>' + (methodLabel[p.method]||p.method) + '</td><td>' + (p.reference||'-') + '</td><td>' + (p.notes||'-') + '</td><td class="num">$' + p.amount.toFixed(2) + '</td></tr>'
+    ).join('');
+
+    const balColor = balance > 0 ? 'var(--warn)' : 'var(--success)';
+
+    return '<div id="statementPrintArea">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">' +
+        '<div>' +
+          '<div style="font-size:20px;font-weight:800;color:var(--brand-dark);">' + cust.name + '</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-top:2px;">거래내역서 · 기준일: ' + today + '</div>' +
+          (cust.contact ? '<div style="font-size:12px;color:var(--muted);">' + cust.contact + ' · ' + (cust.phone||'') + '</div>' : '') +
+        '</div>' +
+        '<div style="text-align:right;font-size:12px;color:var(--muted);">' +
+          '<div>ALL THAT MEAT WHOLESALE PTY LTD</div>' +
+          '<div>기간: ' + dateFrom + ' ~ ' + dateTo + '</div>' +
+        '</div>' +
+      '</div>' +
+      '<h4 style="margin:16px 0 8px;color:var(--brand-dark);">인보이스 내역</h4>' +
+      (invoices.length === 0 ? '<p style="color:var(--muted);font-size:13px;">해당 기간 인보이스 없음</p>' :
+        '<table class="t"><thead><tr><th>날짜</th><th>인보이스#</th><th>주문번호</th><th class="num">금액</th><th>상태</th></tr></thead><tbody>' + invRows + '</tbody></table>') +
+      '<h4 style="margin:20px 0 8px;color:var(--brand-dark);">입금 내역</h4>' +
+      (payments.length === 0 ? '<p style="color:var(--muted);font-size:13px;">해당 기간 입금 없음</p>' :
+        '<table class="t"><thead><tr><th>날짜</th><th>방법</th><th>참조번호</th><th>메모</th><th class="num">금액</th></tr></thead><tbody>' + payRows + '</tbody></table>') +
+      '<div style="margin-top:20px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
+        '<div><span style="color:var(--muted);font-size:12px;">총 인보이스</span><br><b style="font-size:18px;">$' + totalInvoiced.toFixed(2) + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">총 입금</span><br><b style="font-size:18px;color:var(--success);">$' + totalPaid.toFixed(2) + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">미수금</span><br><b style="font-size:20px;color:' + balColor + ';">$' + balance.toFixed(2) + '</b></div>' +
+      '</div></div>' +
+      '<div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap;" class="no-print">' +
+        '<button class="btn" onclick="window.print()">🖨️ 인쇄 / PDF</button>' +
+        '<button class="btn secondary" onclick="shareStatementKakao(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📤 카톡/이메일 공유</button>' +
+        '<button class="btn secondary" onclick="history.back()">← 뒤로</button>' +
+      '</div>';
+  }
+
+  app.innerHTML =
+    '<h2 class="page-title">📄 거래내역서 — ' + cust.name +
+      '<button class="btn sm secondary" style="float:right;" onclick="history.back()">← 뒤로</button></h2>' +
+    '<div class="card no-print" style="margin-bottom:12px;">' +
+      '<div class="grid-3" style="align-items:flex-end;">' +
+        '<div class="field"><label>시작일</label><input type="date" id="stmtFrom" value="' + firstDate + '"></div>' +
+        '<div class="field"><label>종료일</label><input type="date" id="stmtTo" value="' + today + '"></div>' +
+        '<div><button class="btn sm" onclick="refreshStatement()">조회</button></div>' +
+      '</div></div>' +
+    '<div class="card" id="stmtBody">' + buildStatement(firstDate, today) + '</div>';
+
+  window.refreshStatement = function() {
+    const from = document.getElementById('stmtFrom').value || firstDate;
+    const to = document.getElementById('stmtTo').value || today;
+    document.getElementById('stmtBody').innerHTML = buildStatement(from, to);
+  };
+}
+
+window.shareStatementKakao = function(cid, dateFrom, dateTo) {
+  const cust = DB.customers.find(c => c.id === cid);
+  const custName = cust ? cust.name : cid;
+  const today = new Date().toISOString().slice(0, 10);
+  const methodLabel = { cash: '현금', cheque: '체크', bank: '은행이체' };
+
+  const invoices = DB.orders.filter(o =>
+    ['invoiced','delivered'].includes(o.status) &&
+    o.customerId === cid &&
+    (o.invoicedAt || o.orderDate || '').slice(0,10) >= dateFrom &&
+    (o.invoicedAt || o.orderDate || '').slice(0,10) <= dateTo
+  ).sort((a,b) => (a.invoicedAt||a.orderDate||'') > (b.invoicedAt||b.orderDate||'') ? 1 : -1);
+
+  const payments = DB.payments.filter(p =>
+    p.customerId === cid && p.date >= dateFrom && p.date <= dateTo
+  ).sort((a,b) => a.date > b.date ? 1 : -1);
+
+  const totalInvoiced = invoices.reduce((s, o) => s + computeTotals(o).grand, 0);
+  const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
+  const balance = totalInvoiced - totalPaid;
+
+  let txt = '[ALL THAT MEAT] ' + custName + ' 거래내역서\n기준일: ' + today + '\n';
+  if (dateFrom !== '2000-01-01' || dateTo !== today) txt += '기간: ' + dateFrom + ' ~ ' + dateTo + '\n';
+  txt += '\n--- 인보이스 ---\n';
+  if (invoices.length === 0) { txt += '(없음)\n'; }
+  else { invoices.forEach(function(o) { txt += (o.invoicedAt||o.orderDate||'').slice(0,10) + ' ' + (o.invoiceNo||o.orderNo) + ' $' + computeTotals(o).grand.toFixed(2) + '\n'; }); }
+  txt += '\n--- 입금 ---\n';
+  if (payments.length === 0) { txt += '(없음)\n'; }
+  else { payments.forEach(function(p) { txt += p.date + ' ' + (methodLabel[p.method]||p.method) + ' $' + p.amount.toFixed(2) + (p.reference ? ' (' + p.reference + ')' : '') + '\n'; }); }
+  txt += '\n미수금: $' + balance.toFixed(2);
+
+  if (navigator.clipboard) {
+    navigator.clipboard.writeText(txt).then(function() {
+      alert('거래내역이 클립보드에 복사됐습니다.\n카카오톡 또는 이메일에 붙여넣기 하세요.\n\n' + txt);
+    }).catch(function() { prompt('아래 내용을 복사하세요 (Ctrl+A → Ctrl+C):', txt); });
+  } else {
+    prompt('아래 내용을 복사하세요 (Ctrl+A → Ctrl+C):', txt);
+  }
+};
+
+// =========================================================================
 //  ROUTER TABLE & INIT
 // =========================================================================
 const ROUTES = {
@@ -2930,7 +3177,9 @@ const ROUTES = {
   'office': viewOffice,
   'invoicePrep': viewInvoicePrep,
   'invoice': viewInvoice,
-  'history': viewHistory
+  'history': viewHistory,
+  'payment': viewPayment,
+  'statement': viewStatement
 };
 
 document.querySelectorAll('.nav .tab').forEach(t => {
@@ -2947,7 +3196,78 @@ function initApp(data) {
     DB = loadLocalDB() || seed();
     saveDB(); // push existing data up to Firebase
   }
+  if (!DB.payments) DB.payments = [];
   route();
+}
+
+// =========================================================================
+//  TOAST NOTIFICATION
+// =========================================================================
+function showToast(msg, duration = 4000) {
+  const el = document.createElement('div');
+  el.textContent = msg;
+  el.style.cssText = 'position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a3a1a;color:#e8f5e8;padding:10px 20px;border-radius:8px;font-size:13px;z-index:9999;white-space:nowrap;box-shadow:0 4px 16px rgba(0,0,0,0.35);pointer-events:none;';
+  document.body.appendChild(el);
+  setTimeout(() => { el.style.opacity = '0'; el.style.transition = 'opacity 0.5s'; setTimeout(() => el.remove(), 500); }, duration);
+}
+
+// =========================================================================
+//  AUTO-SAVE: 인보이스 발행 시 OneDrive 폴더에 JSON + PDF 자동 저장
+// =========================================================================
+async function autoSaveInvoice(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return;
+
+  // 1. JSON 백업 다운로드
+  try {
+    const json = JSON.stringify(DB, null, 2);
+    const jsonFilename = `ATM_backup_${new Date().toISOString().slice(0,10)}.json`;
+    const blob = new Blob([json], {type:'application/json'});
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url; a.download = jsonFilename; a.click();
+    URL.revokeObjectURL(url);
+  } catch(e) { console.warn('JSON 백업 실패:', e); }
+
+  // 2. 인보이스 PDF 다운로드
+  if (typeof window.jspdf !== 'undefined' && typeof window.html2canvas !== 'undefined') {
+    try {
+      const cust = DB.customers.find(c => c.id === o.customerId) || { name:'미확인', contact:'', phone:'', address:'', terms:'' };
+      const totals = computeTotals(o);
+      const container = document.createElement('div');
+      container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
+      document.body.appendChild(container);
+      container.innerHTML = buildInvoiceHTML(o, cust, totals);
+      await new Promise(r => setTimeout(r, 120));
+      const { jsPDF } = window.jspdf;
+      const canvas = await html2canvas(container.firstElementChild, {
+        scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+      });
+      document.body.removeChild(container);
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      const pageW = 210, pageH = 297;
+      const imgH = canvas.height * pageW / canvas.width;
+      const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      if (imgH <= pageH) {
+        doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+      } else {
+        let yOff = 0;
+        while (yOff < imgH) {
+          if (yOff > 0) doc.addPage();
+          doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+          yOff += pageH;
+        }
+      }
+      const custName = cust.name.replace(/[\/:*?"<>|]/g, '_');
+      doc.save(`${o.invoiceNo || o.orderNo}_${custName}.pdf`);
+      showToast('💾 JSON + PDF 다운로드 완료');
+    } catch(e) {
+      console.warn('PDF 자동 저장 실패:', e);
+      showToast('💾 JSON 백업 다운로드 완료');
+    }
+  } else {
+    showToast('💾 JSON 백업 다운로드 완료');
+  }
 }
 
 if (FIREBASE_READY && DB_REF) {
@@ -2993,6 +3313,7 @@ if (FIREBASE_READY && DB_REF) {
 } else {
   // No Firebase — use localStorage only
   DB = loadLocalDB() || seed();
+  if (!DB.payments) DB.payments = [];
   if (!FIREBASE_READY) {
     console.info('Firebase 미설정 — localStorage 모드로 실행 중');
   }
