@@ -680,12 +680,7 @@ function viewHome() {
         </button>
         <div style="font-size:12px; color:var(--muted); margin-top:8px;">주문 코드를 입력해 주문을 시작하세요</div>
 
-        <div style="margin-top:60px;">
-          <button class="btn secondary" style="font-size:12px; padding:6px 16px; opacity:0.6;"
-            onclick="showStaffLogin()">
-            🔑 직원 로그인
-          </button>
-        </div>
+
       </div>
     `;
     return;
@@ -1341,56 +1336,101 @@ function viewEnter(params) {
   const currentCust = CUSTOMER_MODE ? DB.customers.find(c => c.id === CUSTOMER_MODE) : null;
   app.innerHTML = `
     <h2 class="page-title">🥩 ALL THAT MEAT
-      <span class="sub">Customer Order Portal</span></h2>
+      <span class="sub">거래처 주문 포털 / Customer Order Portal</span></h2>
     <div class="card" style="max-width:480px; margin:30px auto;">
       ${currentCust ? `
         <div class="notice" style="border-left-color:var(--ok); background:#E8F5E9;">
-          You are logged in as <b>${currentCust.name}</b>.
+          <b>${currentCust.name}</b>으로 로그인되어 있습니다.<br>
+          <span style="font-size:12px; color:var(--muted);">Logged in as <b>${currentCust.name}</b></span>
         </div>
         <div class="btn-row" style="margin-top:14px;">
-          <button class="btn" onclick="location.hash='#myOrders'">📜 My Orders →</button>
-          <button class="btn secondary" onclick="location.hash='#order?c=${currentCust.id}'">🛒 New Order</button>
+          <button class="btn" onclick="location.hash='#myOrders'">📜 내 주문 내역 / My Orders →</button>
+          <button class="btn secondary" onclick="location.hash='#order?c=${currentCust.id}'">🛒 새 주문 / New Order</button>
         </div>
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
-          <p style="font-size:13px; color:var(--muted);">To switch to a different account, enter the new customer code below.</p>
-          <div class="field"><input id="entryCode" placeholder="Customer code or store name"
+          <p style="font-size:13px; color:var(--muted);">다른 계정으로 변경하려면 아래에 코드를 입력하세요.<br><span style="font-size:11px;">To switch account, enter the new code below.</span></p>
+          <div class="field"><input id="entryCode" placeholder="거래처 코드 또는 상호명 / Customer code or store name"
             onkeydown="if(event.key==='Enter') submitEntry()"></div>
-          <button class="btn secondary sm" onclick="submitEntry()">Switch Account</button>
+          <button class="btn secondary sm" onclick="submitEntry()">계정 변경 / Switch Account</button>
         </div>
       ` : `
-        <h3>Customer Verification</h3>
+        <h3>거래처 확인 / Customer Verification</h3>
         <p style="font-size:13px; color:var(--muted); margin:0 0 16px 0;">
-          Please verify your account before placing an order.<br>
-          Enter your <b>customer code</b> or <b>exact store name</b> provided by ATM.
+          주문 전 거래처 코드 또는 상호명을 입력해 주세요.<br>
+          <span style="font-size:12px;">Please enter your <b>customer code</b> or <b>store name</b> provided by ATM.</span>
         </p>
         <div class="field">
-          <label>Customer Code or Store Name</label>
-          <input id="entryCode" placeholder="e.g. CUST001 or Sydney BBQ" autofocus
+          <label>거래처 코드 또는 상호명 / Customer Code or Store Name</label>
+          <input id="entryCode" placeholder="예: CUST001 또는 Sydney BBQ" autofocus
             onkeydown="if(event.key==='Enter') submitEntry()" autocomplete="off">
         </div>
-        <button class="btn" onclick="submitEntry()" style="width:100%;">Verify → Go to Order Page</button>
-        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); line-height:1.7;">
-          ※ Your customer code is sent by ATM via KakaoTalk or SMS.<br>
-          ※ Your session stays active after verification — no need to re-enter on refresh.<br>
-          ※ Closing the browser will require you to verify again.<br>
-          ※ Enquiries: ${DB.company.phone || 'Please contact ATM office'}
+        <button class="btn" onclick="submitEntry()" style="width:100%; font-size:16px; padding:14px;">✅ 확인 후 주문하기 / Verify &amp; Order</button>
+        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); line-height:1.9;">
+          ※ 거래처 코드는 ATM에서 카카오톡으로 전달해 드린 코드입니다.<br>
+          ※ Your customer code is sent by ATM via KakaoTalk.<br>
+          ※ 확인 후 브라우저를 새로고침해도 세션이 유지됩니다.<br>
+          ※ 브라우저를 닫으면 다시 입력이 필요합니다.<br>
+          ※ 문의: ${DB.company.phone || 'ATM 사무실로 연락 주세요'}
         </div>
       `}
     </div>
   `;
 }
 
+function normalizeSearch(s) {
+  // 1. 소문자 + 공백 제거
+  let n = (s || '').toLowerCase().replace(/\s+/g, '');
+  // 2. 한/영 동의어 치환 (양방향)
+  const pairs = [
+    ['bbq','바베큐'], ['bar','바'], ['chicken','치킨'], ['house','하우스'],
+    ['garden','가든'], ['mart','마트'], ['market','마켓'], ['king','킹'],
+    ['star','스타'], ['cafe','카페'], ['coffee','커피'], ['korean','한국'],
+    ['restaurant','레스토랑'], ['shop','샵'], ['food','푸드'], ['fresh','프레쉬'],
+    ['plus','플러스'], ['super','슈퍼'], ['happy','해피'], ['big','빅']
+  ];
+  // 영→한, 한→영 두 버전 모두 생성
+  let variants = new Set([n]);
+  for (const [en, ko] of pairs) {
+    for (const v of [...variants]) {
+      if (v.includes(en)) variants.add(v.replace(new RegExp(en,'g'), ko));
+      if (v.includes(ko)) variants.add(v.replace(new RegExp(ko,'g'), en));
+    }
+  }
+  return variants;
+}
+
+function findCustomerMatch(input) {
+  const inpVariants = normalizeSearch(input);
+  // 1순위: 코드 일치
+  let m = DB.customers.find(c => {
+    const code = (c.code || '').toLowerCase().replace(/\s+/g, '');
+    return [...inpVariants].some(v => v === code);
+  });
+  if (m) return m;
+  // 2순위: 상호명 완전 일치 (공백·대소문자·한영 무시)
+  m = DB.customers.find(c => {
+    const nameVariants = normalizeSearch(c.name);
+    return [...inpVariants].some(iv => [...nameVariants].some(nv => iv === nv));
+  });
+  if (m) return m;
+  // 3순위: 포함 검색 (입력값이 상호명에 포함되거나 상호명이 입력값에 포함)
+  m = DB.customers.find(c => {
+    const nameVariants = normalizeSearch(c.name);
+    return [...inpVariants].some(iv =>
+      [...nameVariants].some(nv => nv.includes(iv) || iv.includes(nv))
+    );
+  });
+  return m || null;
+}
+
 function submitEntry() {
   const raw = (val('entryCode') || '').trim();
-  if (!raw) return alert('Please enter your customer code or store name.');
-  // Match: exact code (case-insensitive) or exact name (case-sensitive for safety)
-  const lower = raw.toLowerCase();
-  let match = DB.customers.find(c => (c.code || '').toLowerCase() === lower);
-  if (!match) match = DB.customers.find(c => c.name === raw);
+  if (!raw) return alert('거래처 코드 또는 상호명을 입력해 주세요.\nPlease enter your customer code or store name.');
+  const match = findCustomerMatch(raw);
   if (!match) {
-    return alert('No matching customer found.\n' +
-      '· The customer code or store name must match exactly.\n' +
-      '· Enquiries: ' + (DB.company.phone || 'ATM office'));
+    return alert('일치하는 거래처를 찾을 수 없습니다.\nNo matching customer found.\n\n' +
+      '· 띄어쓰기, 대소문자는 달라도 괜찮습니다.\n' +
+      '· 문의: ' + (DB.company.phone || 'ATM 사무실'));
   }
   setCustomerMode(match.id);
   location.hash = '#order?c=' + match.id;
