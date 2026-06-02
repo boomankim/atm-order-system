@@ -662,6 +662,33 @@ window.addEventListener('hashchange', route);
 // =========================================================================
 function viewHome() {
   const app = document.getElementById('app');
+
+  // ── 직원 미로그인 → 거래처용 랜딩 페이지 ─────────────────
+  if (!STAFF_UNLOCKED) {
+    app.innerHTML = `
+      <div style="min-height:80vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px 20px; text-align:center;">
+        <div style="font-size:56px; margin-bottom:12px;">🥩</div>
+        <div style="font-size:24px; font-weight:800; color:var(--brand-dark); letter-spacing:1px; margin-bottom:6px;">ALL THAT MEAT</div>
+        <div style="font-size:13px; color:var(--muted); margin-bottom:40px;">WHOLESALE PTY LTD</div>
+
+        <button class="btn success" style="font-size:18px; padding:16px 48px; border-radius:12px; margin-bottom:16px;"
+          onclick="location.hash='#enter'">
+          🛒 거래처 주문하기
+        </button>
+        <div style="font-size:12px; color:var(--muted); margin-top:8px;">주문 코드를 입력해 주문을 시작하세요</div>
+
+        <div style="margin-top:60px;">
+          <button class="btn secondary" style="font-size:12px; padding:6px 16px; opacity:0.6;"
+            onclick="showStaffLogin()">
+            🔑 직원 로그인
+          </button>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  // ─────────────────────────────────────────────────────────
+
   app.innerHTML = `
     <h2 class="page-title">ALL THAT MEAT 통합 주문관리 시스템
       <span class="sub">데모 / Prototype</span></h2>
