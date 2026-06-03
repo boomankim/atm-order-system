@@ -571,8 +571,8 @@ function updateNav() {
     const cust = DB.customers.find(c => c.id === CUSTOMER_MODE);
     nav.innerHTML = `
       <span class="logo">🥩 ALL THAT MEAT</span>
-      <button class="tab" data-route="#order?c=${CUSTOMER_MODE}">🛒 Place Order</button>
-      <button class="tab" data-route="#myOrders">📜 My Orders</button>
+      <button class="tab" data-route="#order?c=${CUSTOMER_MODE}" style="background:#fff; color:var(--brand-dark); font-size:15px; font-weight:800; padding:8px 18px; border-radius:8px; letter-spacing:0.5px; box-shadow:0 2px 6px rgba(0,0,0,0.18);">🛒 주문/ORDER</button>
+      <button class="tab" data-route="#myOrders">📋 주문내용/orders</button>
       <span class="spacer"></span>
       <span style="font-size:12px; color:rgba(255,255,255,0.85); margin-right:8px; white-space:nowrap;">👤 ${cust ? cust.name : '거래처'}</span>
       <button class="util" onclick="exitCustomerMode()" style="background:#fff;">Logout</button>
@@ -1344,7 +1344,7 @@ function viewEnter(params) {
           <span style="font-size:12px; color:var(--muted);">Logged in as <b>${currentCust.name}</b></span>
         </div>
         <div class="btn-row" style="margin-top:14px;">
-          <button class="btn" onclick="location.hash='#myOrders'">📜 내 주문 내역 / My Orders →</button>
+          <button class="btn" onclick="location.hash='#myOrders'">📋 주문내용/orders →</button>
           <button class="btn secondary" onclick="location.hash='#order?c=${currentCust.id}'">🛒 새 주문 / New Order</button>
         </div>
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
