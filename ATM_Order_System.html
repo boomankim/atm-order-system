@@ -2293,8 +2293,9 @@ function viewInvoicePrep(params) {
   const cust = DB.customers.find(c => c.id === o.customerId);
 
   // Initialise per-line price defaults from product master if not yet set
+  // (null 또는 0이면 마스터 단가로 채움 — 관리자에서 단가 입력 후 반영)
   o.items.forEach(it => {
-    if (it.lineUnitPrice == null) {
+    if (it.lineUnitPrice == null || it.lineUnitPrice === 0) {
       const p = DB.products.find(x => x.id === it.productId);
       it.lineUnitPrice = p ? p.priceKg : 0;
     }
