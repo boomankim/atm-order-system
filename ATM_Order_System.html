@@ -367,6 +367,7 @@ function loadLocalDB() {
 function saveLocalDB() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); } catch(e) {}
 }
+function getInvoiceItems(o) { return o.invoiceItems || o.items; }
 
 
 function migrateProducts() {
@@ -1972,7 +1973,7 @@ function lineUnitPrice(it, p) {
 function computeTotals(order) {
   // Only weighed items contribute to totals — no fake estimates for 박스/팩.
   let subtotal = 0, totalKg = 0, unweighedCount = 0;
-  order.items.forEach(it => {
+  getInvoiceItems(order).forEach(it => {
     const p = DB.products.find(x => x.id === it.productId);
     if (it.actualWeightKg == null) { unweighedCount++; return; }
     totalKg += it.actualWeightKg;
@@ -2295,11 +2296,16 @@ function viewInvoicePrep(params) {
   }
   const cust = DB.customers.find(c => c.id === o.customerId);
 
-  // Initialise per-line price defaults from product master if not yet set
-  // (null 또는 0이면 마스터 단가로 채움 — 관리자에서 단가 입력 후 반영)
-  o.items.forEach(it => {
+  // invoiceItems 초기화 — 원본 o.items 절대 수정 안 함
+  if (!o.invoiceItems) {
+    o.invoiceItems = o.items.map(function(it) {
+      return Object.assign({}, it, {_source: 'original'});
+    });
+  }
+  // 마스터 단가 채우기 (0인 경우)
+  o.invoiceItems.forEach(function(it) {
     if (it.lineUnitPrice == null || it.lineUnitPrice === 0) {
-      const p = DB.products.find(x => x.id === it.productId);
+      var p = DB.products.find(function(x) { return x.id === it.productId; });
       it.lineUnitPrice = p ? p.priceKg : 0;
     }
   });
@@ -2323,42 +2329,25 @@ function viewInvoicePrep(params) {
       <div class="notice" style="border-left-color:var(--info); background:#F0F5FB;">
         Unit prices pre-filled from product master. Adjust if needed before issuing. <b>Changes apply to this order only / 이 주문에만 적용</b> — master price unchanged.
       </div>
+      <div id="invoiceChangeNotice"></div>
       <table class="t" id="prepTable">
         <thead><tr>
-          <th>Item / 품목</th><th>Brand / 브랜드</th><th>Order / 주문</th>
-          <th class="num">Weight / 실측 중량 (kg)</th><th class="num">Unit Price / 단가 (/kg)</th>
-          <th class="num">Amount / 금액</th>
+          <th>품목</th><th>구분</th><th>주문</th>
+          <th class="num">실측중량(kg)</th><th class="num">단가(/kg)</th>
+          <th class="num">금액</th><th style="width:32px;"></th>
         </tr></thead>
-        <tbody>
-          ${o.items.map((it, i) => {
-            const p = DB.products.find(x => x.id === it.productId);
-            const w = it.actualWeightKg;
-            const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small>작업</small>` : `${it.quantity} ${it.unit}`;
-            const masterPrice = p ? p.priceKg : 0;
-            const priceDiffMarker = (Math.abs(it.lineUnitPrice - masterPrice) > 0.001)
-              ? `<small style="color:var(--warn); display:block;">Master: $${masterPrice.toFixed(2)}</small>` : '';
-            return `<tr data-idx="${i}">
-              <td><b>${p?p.name:'(품목 없음)'}</b>${it.notes?`<br><small style="color:var(--muted);">※ ${it.notes}</small>`:''}</td>
-              <td>${p?p.brand:''}</td>
-              <td>${orderDisplay}</td>
-              <td class="num">
-                <input type="number" step="0.01" value="${w!=null?w:''}"
-                  style="width:90px; padding:6px; border:1px solid var(--line); border-radius:4px; text-align:right;"
-                  onchange="updatePrepWeight('${o.id}', ${i}, this.value)">
-              </td>
-              <td class="num">
-                <input type="number" step="0.01" value="${it.lineUnitPrice.toFixed(2)}"
-                  style="width:90px; padding:6px; border:2px solid var(--warn); border-radius:4px; text-align:right; font-weight:600;"
-                  onchange="updatePrepPrice('${o.id}', ${i}, this.value)">
-                ${priceDiffMarker}
-              </td>
-              <td class="num"><b id="prep_amt_${i}">$${((w||0)*it.lineUnitPrice).toFixed(2)}</b></td>
-            </tr>`;
-          }).join('')}
-        </tbody>
+        <tbody id="prepTbody"></tbody>
       </table>
 
       <div id="prepTotals" style="display:flex; justify-content:flex-end; margin-top:14px;"></div>
+
+      <div style="margin-top:16px; padding:12px 14px; background:#F8F8F8; border-radius:8px; border:1px dashed var(--brand);">
+        <div style="font-weight:700; font-size:13px; color:var(--brand); margin-bottom:8px;">➕ 품목 추가 / Add Item</div>
+        <input id="prepAddSearch" type="text" placeholder="🔍 품목명 검색 후 클릭해서 추가..."
+          style="width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:14px; box-sizing:border-box;"
+          oninput="renderPrepAddResults('${o.id}', this.value)">
+        <div id="prepAddResults" style="margin-top:6px; max-height:180px; overflow-y:auto;"></div>
+      </div>
 
       <div class="btn-row" style="margin-top:18px;">
         <button class="btn success" onclick="issueInvoice('${o.id}')">✅ 인보이스 발행 확정</button>
@@ -2367,45 +2356,148 @@ function viewInvoicePrep(params) {
       </div>
     </div>
   `;
+  renderPrepTbody(o);
   renderPrepTotals(o);
+  renderInvoiceChangeNotice(o);
 }
 
-function updatePrepWeight(orderId, idx, val) {
-  const o = DB.orders.find(x => x.id === orderId);
-  o.items[idx].actualWeightKg = parseFloat(val) || 0;
-  saveDB();
-  refreshPrepRow(o, idx);
+function renderInvoiceChangeNotice(o) {
+  var el = document.getElementById('invoiceChangeNotice');
+  if (!el) return;
+  var items = getInvoiceItems(o);
+  var added   = items.filter(function(it){ return it._source === 'added'; }).length;
+  var removed = o.items.length - items.length + added;
+  if (added > 0 || removed > 0) {
+    el.innerHTML = '<div class="notice" style="border-left-color:#E67E22;background:#FEF9F0;margin-bottom:12px;">'
+      + '⚠️ 원본 주문과 인보이스 품목이 다릅니다'
+      + (added   ? ' &nbsp;|&nbsp; <span style="color:#27AE60;">+추가 ' + added + '건</span>'   : '')
+      + (removed ? ' &nbsp;|&nbsp; <span style="color:#E74C3C;">-제외 ' + removed + '건</span>' : '')
+      + ' &nbsp;&nbsp;<button onclick="resetInvoiceItems(document.querySelector(\"[data-oid]\").dataset.oid)"'
+      + ' style="background:none;border:1px solid #E67E22;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px;">원본으로 되돌리기</button></div>';
+    document.getElementById('prepTable').setAttribute('data-oid', o.id);
+  } else {
+    el.innerHTML = '';
+  }
 }
-function updatePrepPrice(orderId, idx, val) {
-  const o = DB.orders.find(x => x.id === orderId);
-  o.items[idx].lineUnitPrice = parseFloat(val) || 0;
-  saveDB();
-  refreshPrepRow(o, idx);
+
+function renderPrepTbody(o) {
+  var tbody = document.getElementById('prepTbody');
+  if (!tbody) return;
+  var items = getInvoiceItems(o);
+  var html = '';
+  for (var i = 0; i < items.length; i++) {
+    var it = items[i];
+    var p  = DB.products.find(function(x){ return x.id === it.productId; });
+    var w  = it.actualWeightKg;
+    var orderDisplay = it.unit === '작업중량'
+      ? it.quantity + ' kg <small>작업</small>'
+      : it.quantity + ' ' + it.unit;
+    var isAdded  = it._source === 'added';
+    var rowBg    = isAdded ? 'background:#F0FAF0;' : '';
+    var badge    = isAdded ? '<span style="background:#27AE60;color:#fff;font-size:10px;border-radius:4px;padding:1px 5px;margin-right:4px;">+추가</span>' : '';
+    var addNote  = it._addNote ? '<br><small style="color:var(--muted);">📝 ' + it._addNote + '</small>' : '';
+    var itemNote = it.notes    ? '<br><small style="color:var(--muted);">※ '  + it.notes    + '</small>' : '';
+    var pName    = p ? p.name         : '(품목없음)';
+    var pBrand   = p ? (p.brand || '') : '';
+    var masterP  = p ? p.priceKg : 0;
+    var lineP    = it.lineUnitPrice || 0;
+    var priceDiff = Math.abs(lineP - masterP) > 0.001
+      ? '<small style="color:var(--warn);display:block;">Master: $' + masterP.toFixed(2) + '</small>' : '';
+    var oid = o.id;
+    html += '<tr style="' + rowBg + '">'
+      + '<td>' + badge + '<b>' + pName + '</b>' + addNote + itemNote + '</td>'
+      + '<td style="font-size:11px;color:var(--muted);">' + pBrand + '</td>'
+      + '<td>' + orderDisplay + '</td>'
+      + '<td class="num"><input type="number" step="0.01" value="' + (w != null ? w : '') + '"'
+      +   ' style="width:90px;padding:6px;border:1px solid var(--line);border-radius:4px;text-align:right;"'
+      +   ' onchange="updatePrepWeight(this.closest(\'table\').dataset.oid,' + i + ',this.value)"></td>'
+      + '<td class="num"><input type="number" step="0.01" value="' + lineP.toFixed(2) + '"'
+      +   ' style="width:90px;padding:6px;border:2px solid var(--warn);border-radius:4px;text-align:right;font-weight:600;"'
+      +   ' onchange="updatePrepPrice(this.closest(\'table\').dataset.oid,' + i + ',this.value)">' + priceDiff + '</td>'
+      + '<td class="num"><b id="prep_amt_' + i + '">$' + ((w || 0) * lineP).toFixed(2) + '</b></td>'
+      + '<td style="text-align:center;"><button onclick="removeInvoiceItem(this.closest(\'table\').dataset.oid,' + i + ')"'
+      +   ' title="인보이스에서 제외" style="background:none;border:none;cursor:pointer;font-size:15px;color:#E74C3C;">❌</button></td>'
+      + '</tr>';
+  }
+  tbody.innerHTML = html;
+  document.getElementById('prepTable').setAttribute('data-oid', o.id);
 }
-function refreshPrepRow(o, idx) {
-  const it = o.items[idx];
-  const amtEl = document.getElementById('prep_amt_' + idx);
-  if (amtEl) amtEl.textContent = '$' + ((it.actualWeightKg||0) * (it.lineUnitPrice||0)).toFixed(2);
+
+function removeInvoiceItem(orderId, idx) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  var item = getInvoiceItems(o)[idx];
+  var p    = DB.products.find(function(x){ return x.id === item.productId; });
+  var name = p ? p.name : '해당 품목';
+  var reason = prompt('"' + name + '" 을(를) 인보이스에서 제외합니다.\n사유 입력 (예: 재고없음, 고객취소):');
+  if (reason === null) return;
+  o.invoiceItems = getInvoiceItems(o).filter(function(_, i){ return i !== idx; });
+  saveDB();
+  renderPrepTbody(o);
   renderPrepTotals(o);
+  renderInvoiceChangeNotice(o);
 }
-function renderPrepTotals(o) {
-  const t = computeTotals(o);
-  const div = document.getElementById('prepTotals');
-  if (!div) return;
-  div.innerHTML = `
-    <div class="tot-box" style="min-width:280px; padding:14px 18px; background:var(--cream); border-radius:8px;">
-      <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>총 중량</span><b>${t.totalKg.toFixed(2)} kg</b></div>
-      <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>Subtotal (ex GST)</span><span>$${t.subtotal.toFixed(2)}</span></div>
-      <div style="display:flex; justify-content:space-between; padding:4px 0;"><span>GST</span><span>$${t.gst.toFixed(2)}</span></div>
-      <div style="display:flex; justify-content:space-between; padding:10px 0 0; border-top:2px solid var(--brand); margin-top:6px; font-weight:700; font-size:18px; color:var(--brand-dark);"><span>TOTAL</span><span>$${t.grand.toFixed(2)}</span></div>
-      ${t.unweighedCount > 0 ? `<div style="color:var(--warn); margin-top:8px; font-size:12px;">⚠️ 계근 미입력 ${t.unweighedCount}건 — 발행 전 확인 필요</div>` : ''}
-    </div>
-  `;
+
+function addInvoiceItem(orderId, productId, note) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  var p = DB.products.find(function(x){ return x.id === productId; });
+  if (!o || !p) return;
+  if (!o.invoiceItems) {
+    o.invoiceItems = o.items.map(function(it){
+      return Object.assign({}, it, {_source: 'original'});
+    });
+  }
+  o.invoiceItems.push({
+    productId: productId, unit: '박스', quantity: 1,
+    actualWeightKg: null, notes: '',
+    lineUnitPrice: p.priceKg || 0,
+    _source: 'added', _addNote: note || ''
+  });
+  saveDB();
+  document.getElementById('prepAddSearch').value = '';
+  document.getElementById('prepAddResults').innerHTML = '';
+  renderPrepTbody(o);
+  renderPrepTotals(o);
+  renderInvoiceChangeNotice(o);
 }
+
+function renderPrepAddResults(orderId, q) {
+  var div = document.getElementById('prepAddResults');
+  if (!q || q.length < 1) { div.innerHTML = ''; return; }
+  var results = DB.products.filter(function(p){
+    return p.active && (p.name + ' ' + p.cut).toLowerCase().indexOf(q.toLowerCase()) >= 0;
+  }).slice(0, 20);
+  if (!results.length) {
+    div.innerHTML = '<div style="color:var(--muted);padding:6px;font-size:13px;">결과 없음</div>';
+    return;
+  }
+  var html = '';
+  for (var j = 0; j < results.length; j++) {
+    var p   = results[j];
+    var lbl = CUT_DISPLAY[p.cut] || p.cut;
+    var pid = p.id;
+    html += '<div'
+      + ' onclick="var n=prompt(\'추가 사유 (예: 긴급 전화 추가주문):\') || \'\';addInvoiceItem(\'' + orderId + '\',\'' + pid + '\',n)"'
+      + ' onmouseover="this.style.background=\'#FFF5D6\'"'
+      + ' onmouseout="this.style.background=\'transparent\'"'
+      + ' style="cursor:pointer;padding:6px 8px;font-size:13px;border-bottom:1px solid var(--line);">'
+      + '<span style="color:var(--brand);font-size:11px;">' + lbl + '</span>'
+      + ' <b>' + p.name + '</b></div>';
+  }
+  div.innerHTML = html;
+}
+
+function resetInvoiceItems(orderId) {
+  if (!confirm('인보이스 품목을 원본 주문으로 되돌릴까요?')) return;
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  delete o.invoiceItems;
+  saveDB();
+  route();
+}
+
 function resetPrepPricesToMaster(orderId) {
   if (!confirm('모든 라인 단가를 품목 마스터의 현재값으로 되돌릴까요?')) return;
   const o = DB.orders.find(x => x.id === orderId);
-  o.items.forEach(it => {
+  getInvoiceItems(o).forEach(it => {
     const p = DB.products.find(x => x.id === it.productId);
     it.lineUnitPrice = p ? p.priceKg : 0;
   });
