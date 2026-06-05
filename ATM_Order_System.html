@@ -311,7 +311,7 @@
 
 const STORAGE_KEY = 'atm_order_system_v3';
 const OLD_STORAGE_KEYS = ['atm_order_system_v2', 'atm_order_system_v1'];
-const PRODUCTS_VERSION = '20260605_v2';
+const PRODUCTS_VERSION = '20260605_v3';
 let DB = null;
 
 // =====================================================================
@@ -363,9 +363,15 @@ function migrateProducts() {
   if (DB.productsVersion !== PRODUCTS_VERSION) {
     DB.products = seed().products;
     DB.productsVersion = PRODUCTS_VERSION;
+    // Clean up stale favoriteProductIds in all customers
+    const validIds = new Set(DB.products.map(p => p.id));
+    (DB.customers || []).forEach(c => {
+      if (c.favoriteProductIds) {
+        c.favoriteProductIds = c.favoriteProductIds.filter(id => validIds.has(id));
+      }
+    });
     saveDB();  // localStorage + Firebase 모두 저장
     console.info('품목 마스터 업데이트 완료 (' + PRODUCTS_VERSION + ')');
-    // 업데이트 토스트는 showToast 정의 후 호출
     setTimeout(() => {
       if (typeof showToast === 'function') showToast('✅ 품목 마스터가 최신 목록으로 업데이트됐습니다 (' + DB.products.length + '개)');
     }, 500);
@@ -1510,7 +1516,7 @@ function viewOrder(params) {
     </div>
 
     <div class="card" id="favCard">
-      <h3>⭐ 잦은 주문 품목 / Frequent Orders <span style="font-weight:400; color:var(--muted); font-size:12px;">— 클릭하면 추가됩니다 / Click to add</span></h3>
+      <h3>⭐ 즐겨찾는 품목 / Favourite Items <span style="font-weight:400; color:var(--muted); font-size:12px;">— 클릭하면 추가됩니다 / Click to add</span></h3>
       <div id="favList"></div>
     </div>
 
@@ -1536,19 +1542,23 @@ function viewOrder(params) {
 function renderFavQuick(cust) {
   const div = document.getElementById('favList');
   const card = document.getElementById('favCard');
-  const favs = (cust.favoriteProductIds || []).map(id => DB.products.find(p => p.id === id)).filter(Boolean);
+  // Filter to only valid (currently active) products
+  const favs = (cust.favoriteProductIds || [])
+    .map(id => DB.products.find(p => p.id === id))
+    .filter(Boolean);
+  if (card) card.style.display = '';  // always show the card
   if (favs.length === 0) {
-    if (card) card.style.display = 'none';
-    div.innerHTML = '';
+    div.innerHTML = `<div style="color:var(--muted); font-size:13px; padding:6px 4px;">
+      주문하면 자동으로 여기에 추가됩니다. / Items you order will appear here automatically.
+    </div>`;
     return;
   }
-  if (card) card.style.display = '';
   div.innerHTML = favs.map(p => `
     <div onclick="addToCart('${p.id}')"
          onmouseover="this.style.background='#FFF5D6'"
          onmouseout="this.style.background='transparent'"
          style="cursor:pointer; padding:3px 4px; font-weight:700; font-size:14px; color:var(--brand-dark); text-align:left; line-height:1.4;">
-      ${p.name} <span style="font-weight:400; color:var(--muted); font-size:12px;">· ${p.brand}</span>
+      ${p.name}${p.brand ? ' <span style=\"font-weight:400; color:var(--muted); font-size:12px;\">· ' + p.brand + '</span>' : ''}
     </div>
   `).join('');
 }
