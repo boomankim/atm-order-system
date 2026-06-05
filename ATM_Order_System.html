@@ -312,15 +312,15 @@
 const STORAGE_KEY = 'atm_order_system_v3';
 const OLD_STORAGE_KEYS = ['atm_order_system_v2', 'atm_order_system_v1'];
 const PRODUCTS_VERSION = '20260605_v3';
-const CUT_EN = {
-  '와규':   'Wagyu',
-  '소고기': 'Beef',
-  '돼지고기':'Pork',
-  '오리':   'Duck',
-  'LAMB':   'Lamb',
-  '작업육': 'Processed',
-  '가공품': 'Packaged',
-  '공산품': 'Supplies'
+const CUT_DISPLAY = {
+  '와규':    'Wagyu',           // 한글 제거, 영문만
+  '소고기':  'Beef',            // 한글 제거, 영문만
+  '돼지고기':'Pork',            // 한글 제거, 영문만
+  '오리':    'Duck',            // 한글 제거, 영문만
+  'LAMB':    'Lamb',
+  '작업육':  '작업육/Processed',
+  '가공품':  '가공품/Packaged',
+  '공산품':  '공산품/Supplies'
 };
 let DB = null;
 
@@ -1564,8 +1564,7 @@ function renderFavQuick(cust) {
     return;
   }
   div.innerHTML = favs.map(p => {
-    const cutEn = CUT_EN[p.cut] || '';
-    const cutLabel = cutEn ? p.cut + '/' + cutEn : p.cut;
+    const cutLabel = CUT_DISPLAY[p.cut] || p.cut;
     return `<div onclick="addToCart('${p.id}')"
          onmouseover="this.style.background='#FFF5D6'"
          onmouseout="this.style.background='transparent'"
@@ -1583,7 +1582,7 @@ function renderCatalog(q, custId) {
   const cust = custId ? DB.customers.find(c => c.id === custId) : null;
   const isStaff = STAFF_UNLOCKED && !CUSTOMER_MODE;
   div.innerHTML = cuts.map(cut => `
-    <h4 style="margin-top:14px; margin-bottom:4px; color:var(--brand); font-size:12px; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--line); padding-bottom:4px;">${cut}</h4>
+    <h4 style="margin-top:14px; margin-bottom:4px; color:var(--brand); font-size:12px; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--line); padding-bottom:4px;">${CUT_DISPLAY[cut] || cut}</h4>
     <div>
       ${filt.filter(p => p.cut === cut).map(p => {
         const isFav = cust ? (cust.favoriteProductIds||[]).includes(p.id) : false;
@@ -1593,8 +1592,7 @@ function renderCatalog(q, custId) {
                style="background:none; border:none; cursor:pointer; font-size:16px; padding:0 4px 0 6px; color:${isFav?'#F0B400':'#bbb'}; vertical-align:middle;"
              >${isFav ? '⭐' : '☆'}</button>`
           : '';
-        const cutEn = CUT_EN[p.cut] || '';
-        const cutLabel = cutEn ? p.cut + '/' + cutEn : p.cut;
+        const cutLabel = CUT_DISPLAY[p.cut] || p.cut;
         return `<div onclick="addToCart('${p.id}')"
               onmouseover="this.style.background='#F5E8DD'"
               onmouseout="this.style.background='transparent'"
