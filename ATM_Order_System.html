@@ -1084,7 +1084,7 @@ function renderProductList(q) {
           <td><span class="chip">${p.cut}</span></td>
           <td><b>${p.name}</b></td>
           <td><input class="inline-edit" type="text" value="${p.brand.replace(/"/g,'&quot;')}" onblur="updateProductField('${p.id}','brand',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
-          <td class="num"><input class="inline-edit num" type="number" step="0.01" min="0" value="${(p.priceKg||0).toFixed(2)}" onblur="updateProductField('${p.id}','priceKg',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
+          <td class="num"><input class="inline-edit num" type="number" step="0.01" min="0" value="${(p.priceKg||0).toFixed(2)}" onblur="this.value=parseFloat(this.value||0).toFixed(2); updateProductField('${p.id}','priceKg',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
           <td>${p.active ? '✅' : '⛔'}</td>
           <td class="act">
             <button class="btn sm secondary" onclick="editProduct('${p.id}')">수정</button>
@@ -1132,7 +1132,7 @@ function editProduct(id) {
         <input id="m_brand" value="${p.brand}" placeholder="호주산 / 한국산 / ATM 등">
       </div>
     </div>
-    <div class="field"><label>단가/kg (AUD)</label><input id="m_price" type="number" step="0.01" value="${p.priceKg}"></div>
+    <div class="field"><label>단가/kg (AUD)</label><input id="m_price" type="number" step="0.01" value="${(p.priceKg||0).toFixed(2)}" onblur="this.value=parseFloat(this.value||0).toFixed(2)"></div>
     <div class="field"><label><input type="checkbox" id="m_active" ${p.active?'checked':''}> 활성</label></div>
     <div class="btn-row">
       <button class="btn" onclick="saveProduct('${p.id}', ${id?'false':'true'})">저장</button>
