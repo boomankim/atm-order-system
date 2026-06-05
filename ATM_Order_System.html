@@ -1764,7 +1764,7 @@ function submitOrder(custId) {
 // =========================================================================
 function viewWarehouse() {
   const app = document.getElementById('app');
-  const pending = DB.orders.filter(o => o.status === 'new' || o.status === 'weighing')
+  const pending = (DB.orders||[]).filter(o => o.status === 'new' || o.status === 'weighing')
     .sort((a,b) => (a.orderDate||'').localeCompare(b.orderDate||''));
   app.innerHTML = `
     <h2 class="page-title">⚖️ 작업장 — 계근 입력
@@ -1814,8 +1814,11 @@ function viewWeigh(params) {
             const orderDisplay = it.unit === '작업중량'
               ? `<b>${it.quantity} kg</b> <small style="color:var(--muted);">작업</small>`
               : `${it.quantity} ${it.unit}`;
+            const pName  = p ? p.name  : `(ID: ${it.productId.slice(0,12)}…)`;
+            const pBrand = p ? p.brand : '';
+            const pCut   = p ? p.cut   : '';
             return `<tr>
-              <td><b>${p.name}</b><br><small style="color:var(--muted);">${p.brand} · ${p.cut}</small></td>
+              <td><b>${pName}</b><br><small style="color:var(--muted);">${pBrand}${pBrand&&pCut?' · ':''}${pCut}</small></td>
               <td>${orderDisplay}</td>
               <td class="num">
                 <input type="number" step="0.01" value="${it.actualWeightKg ?? ''}"
@@ -3335,8 +3338,14 @@ function initApp(data) {
     DB = loadLocalDB() || seed();
     saveDB(); // push existing data up to Firebase
   }
+  // 방어적 배열 초기화 — Firebase 데이터 누락 필드 보완
+  if (!DB.products)  DB.products  = seed().products;
+  if (!DB.customers) DB.customers = [];
+  if (!DB.orders)    DB.orders    = [];
+  if (!DB.payments)  DB.payments  = [];
+  if (!DB.settings)  DB.settings  = seed().settings;
+  if (!DB.company)   DB.company   = seed().company;
   migrateProducts();
-  if (!DB.payments) DB.payments = [];
   route();
 }
 
@@ -3441,8 +3450,12 @@ if (FIREBASE_READY && DB_REF) {
       _firstLoad = false;
       if (DB_REF) { DB_REF.off(); DB_REF = null; }
       DB = loadLocalDB() || seed();
+      if (!DB.products)  DB.products  = seed().products;
+      if (!DB.customers) DB.customers = [];
+      if (!DB.orders)    DB.orders    = [];
+      if (!DB.payments)  DB.payments  = [];
+      if (!DB.settings)  DB.settings  = seed().settings;
       migrateProducts();
-      if (!DB.payments) DB.payments = [];
       route();
     }
   }
