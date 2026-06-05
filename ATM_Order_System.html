@@ -2497,6 +2497,39 @@ function resetInvoiceItems(orderId) {
   route();
 }
 
+function updatePrepWeight(orderId, idx, val) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  if (!o) return;
+  getInvoiceItems(o)[idx].actualWeightKg = parseFloat(val) || 0;
+  saveDB();
+  // Re-render the amount cell directly
+  var amtEl = document.getElementById('prep_amt_' + idx);
+  var it = getInvoiceItems(o)[idx];
+  if (amtEl) amtEl.textContent = '$' + ((it.actualWeightKg||0) * (it.lineUnitPrice||0)).toFixed(2);
+  renderPrepTotals(o);
+}
+function updatePrepPrice(orderId, idx, val) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  if (!o) return;
+  getInvoiceItems(o)[idx].lineUnitPrice = parseFloat(val) || 0;
+  saveDB();
+  var amtEl = document.getElementById('prep_amt_' + idx);
+  var it = getInvoiceItems(o)[idx];
+  if (amtEl) amtEl.textContent = '$' + ((it.actualWeightKg||0) * (it.lineUnitPrice||0)).toFixed(2);
+  renderPrepTotals(o);
+}
+function renderPrepTotals(o) {
+  var t = computeTotals(o);
+  var div = document.getElementById('prepTotals');
+  if (!div) return;
+  div.innerHTML = '<div class="tot-box" style="min-width:280px;padding:14px 18px;background:var(--cream);border-radius:8px;">'
+    + '<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>총 중량</span><b>' + t.totalKg.toFixed(2) + ' kg</b></div>'
+    + '<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>Subtotal (ex GST)</span><span>$' + t.subtotal.toFixed(2) + '</span></div>'
+    + '<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>GST</span><span>$' + t.gst.toFixed(2) + '</span></div>'
+    + '<div style="display:flex;justify-content:space-between;padding:10px 0 0;border-top:2px solid var(--brand);margin-top:6px;font-weight:700;font-size:18px;color:var(--brand-dark);"><span>TOTAL</span><span>$' + t.grand.toFixed(2) + '</span></div>'
+    + (t.unweighedCount > 0 ? '<div style="color:var(--warn);margin-top:8px;font-size:12px;">⚠️ 계근 미입력 ' + t.unweighedCount + '건 — 발행 전 확인 필요</div>' : '')
+    + '</div>';
+}
 function resetPrepPricesToMaster(orderId) {
   if (!confirm('모든 라인 단가를 품목 마스터의 현재값으로 되돌릴까요?')) return;
   const o = DB.orders.find(x => x.id === orderId);
