@@ -1289,34 +1289,78 @@ function renderFavoritesAdmin(params) {
 function renderFavoritesList(custId) {
   const cust = DB.customers.find(c => c.id === custId);
   if (!cust) return;
-  const favs = cust.favoriteProductIds || [];
-  const cuts = [...new Set(DB.products.map(p => p.cut))];
+  const cuts = [...new Set(DB.products.filter(p => p.active).map(p => p.cut))];
   document.getElementById('favList').innerHTML = `
-    <div class="notice">
-      <b>${cust.name}</b>의 자주 주문 품목을 체크하세요. 거래처가 주문 페이지를 열면
-      체크된 품목이 <b>맨 위에 즐겨찾기로 표시</b>되어 빠르게 선택할 수 있습니다.<br>
-      현재 등록된 즐겨찾기: <b style="color:var(--brand);">${favs.length}개</b>
+    <div id="favChipsPanel" style="position:sticky; top:52px; z-index:20; background:var(--bg,#fff);
+         border:2px solid var(--brand); border-radius:10px; padding:12px 14px; margin-bottom:16px;
+         box-shadow:0 2px 8px rgba(0,0,0,0.08);">
+      <div style="font-size:12px; font-weight:700; color:var(--brand); margin-bottom:8px;">
+        ⭐ 즐겨찾는 품목 / Favourite Items &nbsp;
+        <span id="favCount" style="background:var(--brand); color:#fff; border-radius:10px; padding:1px 8px; font-size:11px;">0개</span>
+        <span style="font-weight:400; color:var(--muted); font-size:11px;"> · 칩을 클릭하면 제거 / Click chip to remove</span>
+      </div>
+      <div id="favChips" style="display:flex; flex-wrap:wrap; gap:6px; min-height:26px;"></div>
+    </div>
+    <div class="notice" style="margin-bottom:12px;">
+      <b>${cust.name}</b> — 아래 품목을 클릭해 즐겨찾기에 추가/제거하세요.<br>
+      거래처가 주문 페이지를 열면 즐겨찾기 품목이 맨 위에 먼저 표시됩니다.
     </div>
     ${cuts.map(cut => `
-      <h4 style="margin-top:18px; color:var(--brand-dark);">${cut}</h4>
+      <h4 style="margin-top:18px; color:var(--brand-dark);">${CUT_DISPLAY[cut]||cut}</h4>
       <div class="quick-add">
-        ${DB.products.filter(p => p.cut === cut).map(p => {
-          const isFav = favs.includes(p.id);
-          return `<span class="qa ${isFav?'fav':''}" onclick="toggleFav('${custId}','${p.id}')">
-            ${isFav?'⭐ ':''}${p.name} <small style="opacity:0.7">(${p.brand})</small>
+        ${DB.products.filter(p => p.active && p.cut === cut).map(p => {
+          const isFav = (cust.favoriteProductIds||[]).includes(p.id);
+          return `<span class="qa ${isFav?'fav':''}" id="qa_${p.id}"
+                       onclick="toggleFav('${custId}','${p.id}')">
+            ${isFav?'⭐ ':''}${p.name}
           </span>`;
         }).join('')}
       </div>
     `).join('')}
   `;
+  renderFavChips(custId);
+}
+
+function renderFavChips(custId) {
+  const cust = DB.customers.find(c => c.id === custId);
+  const chipsEl = document.getElementById('favChips');
+  const countEl = document.getElementById('favCount');
+  if (!cust || !chipsEl) return;
+  const favs = (cust.favoriteProductIds || [])
+    .map(id => DB.products.find(p => p.id === id)).filter(Boolean);
+  countEl.textContent = favs.length + '개';
+  chipsEl.innerHTML = favs.length === 0
+    ? `<span style="color:var(--muted); font-size:13px;">없음 — 아래 품목을 클릭해 추가하세요 / None yet</span>`
+    : favs.map(p => {
+        const lbl = CUT_DISPLAY[p.cut] || p.cut;
+        return `<span onclick="toggleFav('${custId}','${p.id}')"
+          style="background:var(--brand); color:#fff; border-radius:20px; padding:5px 12px;
+                 font-size:12px; font-weight:600; cursor:pointer; display:inline-flex;
+                 align-items:center; gap:5px; user-select:none;"
+          title="클릭하면 제거">
+          <span style="opacity:0.75; font-size:10px;">${lbl}</span>${p.name}&nbsp;×
+        </span>`;
+      }).join('');
 }
 function toggleFav(custId, prodId) {
   const cust = DB.customers.find(c => c.id === custId);
   cust.favoriteProductIds = cust.favoriteProductIds || [];
-  if (cust.favoriteProductIds.includes(prodId))
+  const wasFav = cust.favoriteProductIds.includes(prodId);
+  if (wasFav)
     cust.favoriteProductIds = cust.favoriteProductIds.filter(x => x !== prodId);
-  else cust.favoriteProductIds.push(prodId);
-  saveDB(); renderFavoritesList(custId);
+  else
+    cust.favoriteProductIds.push(prodId);
+  saveDB();
+  // Update chip panel (instant, no scroll jump)
+  renderFavChips(custId);
+  // Update the clicked item badge in the list
+  const el = document.getElementById('qa_' + prodId);
+  if (el) {
+    const nowFav = !wasFav;
+    el.className = 'qa' + (nowFav ? ' fav' : '');
+    const p = DB.products.find(x => x.id === prodId);
+    el.textContent = (nowFav ? '⭐ ' : '') + (p ? p.name : prodId);
+  }
 }
 
 function renderCompanyAdmin() {
