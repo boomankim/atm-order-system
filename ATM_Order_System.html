@@ -312,6 +312,16 @@
 const STORAGE_KEY = 'atm_order_system_v3';
 const OLD_STORAGE_KEYS = ['atm_order_system_v2', 'atm_order_system_v1'];
 const PRODUCTS_VERSION = '20260605_v3';
+const CUT_EN = {
+  '와규':   'Wagyu',
+  '소고기': 'Beef',
+  '돼지고기':'Pork',
+  '오리':   'Duck',
+  'LAMB':   'Lamb',
+  '작업육': 'Processed',
+  '가공품': 'Packaged',
+  '공산품': 'Supplies'
+};
 let DB = null;
 
 // =====================================================================
@@ -1553,14 +1563,18 @@ function renderFavQuick(cust) {
     </div>`;
     return;
   }
-  div.innerHTML = favs.map(p => `
-    <div onclick="addToCart('${p.id}')"
+  div.innerHTML = favs.map(p => {
+    const cutEn = CUT_EN[p.cut] || '';
+    const cutLabel = cutEn ? p.cut + '/' + cutEn : p.cut;
+    return `<div onclick="addToCart('${p.id}')"
          onmouseover="this.style.background='#FFF5D6'"
          onmouseout="this.style.background='transparent'"
-         style="cursor:pointer; padding:3px 4px; font-weight:700; font-size:14px; color:var(--brand-dark); text-align:left; line-height:1.4;">
-      ${p.name}${p.brand ? ' <span style=\"font-weight:400; color:var(--muted); font-size:12px;\">· ' + p.brand + '</span>' : ''}
-    </div>
-  `).join('');
+         style="cursor:pointer; padding:3px 4px; font-size:14px; text-align:left; line-height:1.5;">
+      <span style="color:var(--brand); font-weight:600; font-size:11px; letter-spacing:0.3px;">${cutLabel}</span>
+      <span style="color:var(--ink); font-weight:700;"> ${p.name}</span>
+      ${p.brand ? '<span style="font-weight:400; color:var(--muted); font-size:12px;"> · ' + p.brand + '</span>' : ''}
+    </div>`;
+  }).join('');
 }
 function renderCatalog(q, custId) {
   const div = document.getElementById('catalog');
@@ -1579,11 +1593,17 @@ function renderCatalog(q, custId) {
                style="background:none; border:none; cursor:pointer; font-size:16px; padding:0 4px 0 6px; color:${isFav?'#F0B400':'#bbb'}; vertical-align:middle;"
              >${isFav ? '⭐' : '☆'}</button>`
           : '';
+        const cutEn = CUT_EN[p.cut] || '';
+        const cutLabel = cutEn ? p.cut + '/' + cutEn : p.cut;
         return `<div onclick="addToCart('${p.id}')"
               onmouseover="this.style.background='#F5E8DD'"
               onmouseout="this.style.background='transparent'"
-              style="cursor:pointer; padding:3px 4px; font-weight:700; font-size:14px; color:var(--ink); text-align:left; line-height:1.4; display:flex; align-items:center; justify-content:space-between;">
-          <span>${p.name} <span style="font-weight:400; color:var(--muted); font-size:12px;">· ${p.brand}</span></span>
+              style="cursor:pointer; padding:3px 4px; font-size:14px; color:var(--ink); text-align:left; line-height:1.5; display:flex; align-items:center; justify-content:space-between;">
+          <span>
+            <span style="color:var(--brand); font-weight:600; font-size:11px; letter-spacing:0.3px;">${cutLabel}</span>
+            <span style="color:var(--ink); font-weight:700;"> ${p.name}</span>
+            ${p.brand ? `<span style="font-weight:400; color:var(--muted); font-size:12px;"> · ${p.brand}</span>` : ''}
+          </span>
           ${favBtn}
         </div>`;
       }).join('')}
