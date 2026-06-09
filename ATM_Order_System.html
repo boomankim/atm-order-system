@@ -3267,6 +3267,8 @@ async function exportInvoicePDFs(silent = false) {
   const container = document.createElement('div');
   container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
   document.body.appendChild(container);
+  const pad = n => String(n).padStart(2,'0');
+  const dirHandle = await getBackupDirHandle();
   let saved = 0, failed = 0;
   for (const o of invoicedOrders) {
     try {
@@ -3292,8 +3294,24 @@ async function exportInvoicePDFs(silent = false) {
         }
       }
       const dateStr = (o.invoicedAt || o.orderDate || '').slice(0,10);
-      const custName = cust.name.replace(/[\\/:*?"<>|]/g, '_');
-      doc.save(`${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`);
+      const custName = cust.name.replace(/[\/:*?"<>|]/g, '_');
+      const pdfFilename = `${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`;
+      if (dirHandle) {
+        try {
+          const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
+          const dateFolder = await atmFolder.getDirectoryHandle(dateStr || 'unknown', { create: true });
+          const custFolder = await dateFolder.getDirectoryHandle(custName, { create: true });
+          const fileHandle = await custFolder.getFileHandle(pdfFilename, { create: true });
+          const writable   = await fileHandle.createWritable();
+          await writable.write(doc.output('arraybuffer'));
+          await writable.close();
+        } catch(e) {
+          console.warn('PDF 폴더 저장 실패, 다운로드 대체:', e);
+          doc.save(pdfFilename);
+        }
+      } else {
+        doc.save(pdfFilename);
+      }
       saved++;
       await new Promise(r => setTimeout(r, 300));
     } catch(e) {
@@ -3303,9 +3321,10 @@ async function exportInvoicePDFs(silent = false) {
   }
   document.body.removeChild(container);
   if (!silent) {
-    alert(failed > 0
-      ? `✅ PDF ${saved}건 다운로드 완료 / ${failed}건 실패`
-      : `✅ PDF ${saved}건 다운로드 완료`);
+    const msg = dirHandle
+      ? `✅ PDF ${saved}건 → 📁 ATM Invoice/날짜/거래처/ 저장` + (failed > 0 ? ` / ${failed}건 실패` : '')
+      : `✅ PDF ${saved}건 다운로드 완료` + (failed > 0 ? ` / ${failed}건 실패` : '');
+    alert(msg);
   }
   return { saved, failed };
 }
@@ -3370,36 +3389,30 @@ async function getBackupDirHandle() {
 }
 
 async function exportAll(silent = false) {
-  // 날짜/시간 형식: YYYYMMDD_HHMM
   const now = new Date();
   const pad = n => String(n).padStart(2,'0');
   const ts = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
   const filename = `ATM_backup_${ts}.json`;
   const json = JSON.stringify(DB, null, 2);
-
-  // 저장된 백업 폴더로 직접 저장 시도
   const dirHandle = await getBackupDirHandle();
   if (dirHandle) {
     try {
-      const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
-      const writable = await fileHandle.createWritable();
+      const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
+      const dateFolder = await atmFolder.getDirectoryHandle(dateStr, { create: true });
+      const fileHandle = await dateFolder.getFileHandle(filename, { create: true });
+      const writable   = await fileHandle.createWritable();
       await writable.write(json);
       await writable.close();
-      if (!silent) showToast(`✅ 백업 저장 완료 — 📁 ${dirHandle.name} / ${filename}`);
-      return { success: true, filename, folder: dirHandle.name };
-    } catch(e) {
-      // 저장 실패 시 다운로드로 폴백
-      console.warn('폴더 저장 실패, 다운로드로 대체:', e);
-    }
+      if (!silent) showToast(`✅ 백업 저장 완료 — 📁 ATM Invoice/${dateStr}/${filename}`);
+      return { success: true, filename, folder: `ATM Invoice/${dateStr}` };
+    } catch(e) { console.warn('폴더 저장 실패, 다운로드로 대체:', e); }
   } else {
-    // 폴더 미설정 → 설정 안내 후 폴더 선택
     if (!silent) {
       const go = confirm('💡 백업 저장 폴더가 설정되지 않았습니다.\n\n지금 폴더를 선택하시겠습니까?\n\n(취소 시 다운로드 폴더로 저장됩니다)');
       if (go) { await setBackupFolder(); return await exportAll(silent); }
     }
   }
-
-  // 폴더 없을 때 기본 다운로드 폴백
   const blob = new Blob([json], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
@@ -3408,6 +3421,7 @@ async function exportAll(silent = false) {
   if (!silent) showToast(`💾 백업 다운로드 완료 — ${filename}`);
   return { success: true, filename, folder: null };
 }
+
 async function exportAllFull() {
   const jsonResult = await exportAll(true);
   const pdfResult = await exportInvoicePDFs(true);
@@ -3758,19 +3772,33 @@ function showToast(msg, duration = 4000) {
 async function autoSaveInvoice(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   if (!o) return;
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const ts = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
+  const dirHandle = await getBackupDirHandle();
 
-  // 1. JSON 백업 다운로드
+  // 1. JSON 백업
   try {
     const json = JSON.stringify(DB, null, 2);
-    const jsonFilename = `ATM_backup_${new Date().toISOString().slice(0,10)}.json`;
-    const blob = new Blob([json], {type:'application/json'});
-    const url = URL.createObjectURL(blob);
-    const a = document.createElement('a');
-    a.href = url; a.download = jsonFilename; a.click();
-    URL.revokeObjectURL(url);
+    const jsonFilename = `ATM_backup_${ts}.json`;
+    if (dirHandle) {
+      const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
+      const dateFolder = await atmFolder.getDirectoryHandle(dateStr, { create: true });
+      const fileHandle = await dateFolder.getFileHandle(jsonFilename, { create: true });
+      const writable   = await fileHandle.createWritable();
+      await writable.write(json);
+      await writable.close();
+    } else {
+      const blob = new Blob([json], {type:'application/json'});
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url; a.download = jsonFilename; a.click();
+      URL.revokeObjectURL(url);
+    }
   } catch(e) { console.warn('JSON 백업 실패:', e); }
 
-  // 2. 인보이스 PDF 다운로드
+  // 2. 인보이스 PDF
   if (typeof window.jspdf !== 'undefined' && typeof window.html2canvas !== 'undefined') {
     try {
       const cust = DB.customers.find(c => c.id === o.customerId) || { name:'미확인', contact:'', phone:'', address:'', terms:'' };
@@ -3800,16 +3828,29 @@ async function autoSaveInvoice(orderId) {
         }
       }
       const custName = cust.name.replace(/[\/:*?"<>|]/g, '_');
-      doc.save(`${o.invoiceNo || o.orderNo}_${custName}.pdf`);
-      showToast('💾 JSON + PDF 다운로드 완료');
+      const pdfFilename = `${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`;
+      if (dirHandle) {
+        const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
+        const dateFolder = await atmFolder.getDirectoryHandle(dateStr, { create: true });
+        const custFolder = await dateFolder.getDirectoryHandle(custName, { create: true });
+        const fileHandle = await custFolder.getFileHandle(pdfFilename, { create: true });
+        const writable   = await fileHandle.createWritable();
+        await writable.write(doc.output('arraybuffer'));
+        await writable.close();
+        showToast(`✅ JSON + PDF 저장 완료 — 📁 ATM Invoice/${dateStr}/${custName}/`);
+      } else {
+        doc.save(pdfFilename);
+        showToast('💾 JSON + PDF 다운로드 완료');
+      }
     } catch(e) {
-      console.warn('PDF 자동 저장 실패:', e);
-      showToast('💾 JSON 백업 다운로드 완료');
+      console.warn('PDF 저장 실패:', e);
+      showToast(dirHandle ? '💾 JSON 저장 완료 (PDF 실패)' : '💾 JSON 백업 다운로드 완료');
     }
   } else {
-    showToast('💾 JSON 백업 다운로드 완료');
+    showToast(dirHandle ? '💾 JSON 백업 저장 완료' : '💾 JSON 백업 다운로드 완료');
   }
 }
+
 
 if (FIREBASE_READY && DB_REF) {
   // Show loading screen while connecting
