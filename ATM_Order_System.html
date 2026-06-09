@@ -1165,7 +1165,7 @@ function renderCustomersAdmin() {
   const body = document.getElementById('adminBody');
   body.innerHTML = `
     <div class="card">
-      <h3>거래처 마스터 (총 ${DB.customers.length}곳)</h3>
+      <h3>거래처 마스터 (총 ${DB.customers.length}곳 · 활성 ${DB.customers.filter(c=>c.active!==false).length}곳 · <span style="color:#C62828;">차단 ${DB.customers.filter(c=>c.active===false).length}곳</span>)</h3>
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn success" onclick="editCustomer()">+ 거래처 추가</button>
         <input id="custSearch" placeholder="거래처명 검색" style="flex:1; min-width:200px; padding:9px; border:1px solid var(--line); border-radius:6px;">
@@ -1181,10 +1181,17 @@ function renderCustomerList(q) {
   document.getElementById('custList').innerHTML = `
     <table class="t">
       <thead><tr>
-        <th>코드</th><th>거래처명</th><th>담당자</th><th>전화</th><th>결제</th><th>즐겨찾기</th><th class="act">주문링크</th>
+        <th>상태</th><th>코드</th><th>거래처명</th><th>담당자</th><th>전화</th><th>결제</th><th>즐겨찾기</th><th class="act">관리</th>
       </tr></thead>
-      <tbody>${filt.map(c => `
-        <tr>
+      <tbody>${filt.map(c => {
+        const blocked = c.active === false;
+        return `
+        <tr style="${blocked ? 'opacity:0.55; background:#fff5f5;' : ''}">
+          <td style="text-align:center; font-size:13px; white-space:nowrap;">
+            ${blocked
+              ? '<span style="color:#C62828; font-weight:700;">🔴 차단</span>'
+              : '<span style="color:#2E7D32; font-weight:700;">🟢 활성</span>'}
+          </td>
           <td>${c.code}</td>
           <td><b>${c.name}</b></td>
           <td>${c.contact||'-'}</td>
@@ -1192,14 +1199,18 @@ function renderCustomerList(q) {
           <td>${c.terms||'-'}</td>
           <td>${(c.favoriteProductIds||[]).length}개</td>
           <td class="act">
-            <button class="btn sm warn" onclick="copyOrderLink('${c.id}')">🔗 링크</button>
-            <button class="btn sm kakao" onclick="kakaoShare('${c.id}')">카톡</button>
+            <button class="btn sm ${blocked ? 'success' : 'danger'}" onclick="toggleCustomerBlock('${c.id}')"
+              title="${blocked ? '차단 해제 — 주문 접수 허용' : '차단 — 주문 접수 불가'}">
+              ${blocked ? '✅ 해제' : '🚫 차단'}
+            </button>
+            <button class="btn sm warn" onclick="copyOrderLink('${c.id}')" ${blocked?'disabled':''}>🔗 링크</button>
+            <button class="btn sm kakao" onclick="kakaoShare('${c.id}')" ${blocked?'disabled':''}>카톡</button>
             <button class="btn sm secondary" onclick="location.hash='#admin?tab=favorites&c=${c.id}'">⭐</button>
             <button class="btn sm secondary" onclick="editCustomer('${c.id}')">수정</button>
             <button class="btn sm danger" onclick="delCustomer('${c.id}')">삭제</button>
           </td>
-        </tr>
-      `).join('')}</tbody>
+        </tr>`;
+      }).join('')}</tbody>
     </table>
   `;
 }
@@ -1230,7 +1241,9 @@ function saveCustomer(id, isNew, favs) {
   const obj = {
     id, code: val('m_code'), name: val('m_name'), contact: val('m_contact'),
     phone: val('m_phone'), email: val('m_email'), terms: val('m_terms'),
-    address: val('m_address'), active: true,
+    address: val('m_address'),
+    active: (isNew === 'true' || isNew === true) ? true
+      : (DB.customers.find(c => c.id === id) || {}).active !== false,
     favoriteProductIds: typeof favs === 'string' ? JSON.parse(favs) : favs
   };
   if (!obj.name) return alert('거래처명을 입력하세요.');
@@ -1242,6 +1255,19 @@ function saveCustomer(id, isNew, favs) {
   }
   saveDB(); closeModal(); renderCustomersAdmin();
 }
+function toggleCustomerBlock(id) {
+  const c = DB.customers.find(x => x.id === id);
+  if (!c) return;
+  const willBlock = c.active !== false;  // currently active → will block
+  if (willBlock) {
+    if (!confirm(`「${c.name}」 거래처를 차단하시겠습니까?\n\n차단 후에는 주문 페이지 접근이 불가능합니다.\n관리자 화면에서 언제든 해제할 수 있습니다.`)) return;
+  }
+  c.active = !willBlock;
+  saveDB();
+  renderCustomersAdmin();
+  showToast(willBlock ? `🚫 ${c.name} 차단됨` : `✅ ${c.name} 차단 해제됨`);
+}
+
 function delCustomer(id) {
   if (!confirm('이 거래처를 삭제하시겠습니까? 관련 주문은 그대로 남습니다.')) return;
   DB.customers = DB.customers.filter(c => c.id !== id);
@@ -1525,17 +1551,27 @@ function liveSearchCustomer() {
       + '❌ 일치하는 거래처 없음 — 상호명 또는 코드를 다시 확인해 주세요</div>';
 
   } else if (matches.length === 1) {
-    _enterMatchId = matches[0].id;
-    var nm = (matches[0].name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-    div.innerHTML = '<div onclick="selectEnterMatch()" style="'
-      + 'padding:16px 14px;background:#E8F5E9;border:2px solid #43A047;border-radius:8px;'
-      + 'margin-top:8px;text-align:center;cursor:pointer;'
-      + 'transition:background 0.15s;" '
-      + 'onmouseover="this.style.background=\'#C8E6C9\'" '
-      + 'onmouseout="this.style.background=\'#E8F5E9\'">'
-      + '<div style="font-size:20px;font-weight:700;color:#1B5E20;letter-spacing:0.3px;">✅&nbsp;' + nm + '</div>'
-      + '<div style="font-size:12px;color:#43A047;margin-top:6px;">👆 여기를 클릭하거나 아래 확인 버튼을 누르세요</div>'
-      + '</div>';
+    var matched = matches[0];
+    var nm = (matched.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    if (matched.active === false) {
+      // 차단된 거래처
+      div.innerHTML = '<div style="padding:14px;background:#FFEBEE;border:2px solid #E53935;border-radius:8px;margin-top:8px;text-align:center;">'
+        + '<div style="font-size:18px;font-weight:700;color:#B71C1C;">⛔&nbsp;' + nm + '</div>'
+        + '<div style="font-size:13px;color:#C62828;margin-top:6px;">주문 접근이 차단된 거래처입니다</div>'
+        + '<div style="font-size:12px;color:#888;margin-top:4px;">문의: ' + ((DB.company && DB.company.phone) || 'ATM 사무실') + '</div>'
+        + '</div>';
+    } else {
+      _enterMatchId = matched.id;
+      div.innerHTML = '<div onclick="selectEnterMatch()" style="'
+        + 'padding:16px 14px;background:#E8F5E9;border:2px solid #43A047;border-radius:8px;'
+        + 'margin-top:8px;text-align:center;cursor:pointer;'
+        + 'transition:background 0.15s;" '
+        + 'onmouseover="this.style.background=\'#C8E6C9\'" '
+        + 'onmouseout="this.style.background=\'#E8F5E9\'">'
+        + '<div style="font-size:20px;font-weight:700;color:#1B5E20;letter-spacing:0.3px;">✅&nbsp;' + nm + '</div>'
+        + '<div style="font-size:12px;color:#43A047;margin-top:6px;">👆 여기를 클릭하거나 아래 확인 버튼을 누르세요</div>'
+        + '</div>';
+    }
 
   } else {
     div.innerHTML = '<div style="padding:10px 14px;background:#E3F2FD;border-left:4px solid #2196F3;border-radius:6px;font-size:13px;color:#1565C0;margin-top:8px;">'
@@ -1561,6 +1597,10 @@ function submitEntry() {
     return alert('일치하는 거래처를 찾을 수 없습니다.\nNo matching customer found.\n\n' +
       '· 띄어쓰기, 대소문자는 달라도 괜찮습니다.\n' +
       '· 문의: ' + (DB.company.phone || 'ATM 사무실'));
+  }
+  if (match.active === false) {
+    return alert('⛔ 주문 접근이 차단된 거래처입니다.\nOrder access has been suspended.\n\n' +
+      '문의: ' + (DB.company.phone || 'ATM 사무실로 연락 주세요'));
   }
   setCustomerMode(match.id);
   location.hash = '#order?c=' + match.id;
