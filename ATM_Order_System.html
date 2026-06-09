@@ -725,8 +725,8 @@ function viewHome() {
       <b>📁 폴더 설정이 필요한 이유</b><br>
       브라우저는 보안상 컴퓨터의 특정 폴더에 파일을 직접 저장할 수 없습니다.
       상단의 <b>📁 폴더 설정</b>을 <b>처음 한 번만 클릭해서 원하는 폴더를 지정</b>해두면,
-      이후부터는 💾 Backup(JSON)과 📄 인보이스 PDF 모두 같은 폴더에 자동 저장됩니다.<br>
-      <small style="color:var(--muted);">📄 인보이스 PDF는 지정 폴더 안 <b>인보이스/날짜/업체명/</b> 구조로 정리됩니다.</small><br>
+      이후부터는 💾 Backup(JSON)과 📄 PDF 모두 같은 폴더에 자동 저장됩니다.<br>
+      <small style="color:var(--muted);">📄 인보이스는 <b>ATM Invoice ▸ 날짜별/거래처별</b>, 주문서는 <b>ATM 거래처 ▸ 날짜별/거래처별</b> 두 구조로 동시에 정리됩니다.</small><br>
       <span style="color:var(--muted); font-size:11px; margin-top:4px; display:block;">
         ※ <b>Chrome 또는 Edge</b> 에서만 폴더 직접 저장을 지원합니다. Safari·Firefox는 일반 다운로드 폴더로 저장됩니다.
         폴더 권한은 브라우저를 닫으면 초기화되므로, 재시작 후 처음 저장 시 한 번 더 승인이 필요할 수 있습니다.
@@ -1025,10 +1025,19 @@ function renderBackupAdmin() {
     <div class="card">
       <h3>📄 인보이스 PDF 백업</h3>
       <p style="font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:12px;">
-        발행된 모든 인보이스를 날짜/거래처별 폴더로 정리해 저장합니다.<br>
-        PDF 폴더는 별도 설정 가능합니다 (상단 📁 폴더 설정 버튼).
+        발행된 모든 인보이스를 <b>ATM Invoice</b> 폴더 안에<br>
+        <b>날짜별</b> (날짜 ▸ 거래처) 과 <b>거래처별</b> (거래처) 두 구조로 동시에 저장합니다.
       </p>
-      <button class="btn secondary" onclick="exportInvoicePDFs()" style="padding:10px 24px; font-size:14px; background:#B8860B; color:#fff; border-color:#B8860B;">📄 PDF 저장</button>
+      <button class="btn secondary" onclick="exportInvoicePDFs()" style="padding:10px 24px; font-size:14px; background:#B8860B; color:#fff; border-color:#B8860B;">📄 인보이스 PDF 저장</button>
+    </div>
+
+    <div class="card">
+      <h3>📄 주문서 PDF 백업 <span style="font-weight:400; font-size:12px; color:var(--muted);">— 단가/금액 미표시</span></h3>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:12px;">
+        모든 거래처 주문서를 <b>ATM 거래처</b> 폴더 안에<br>
+        <b>날짜별</b> (날짜 ▸ 거래처) 과 <b>거래처별</b> (거래처) 두 구조로 동시에 저장합니다.
+      </p>
+      <button class="btn secondary" onclick="exportOrderPDFs()" style="padding:10px 24px; font-size:14px; background:#2E7D32; color:#fff; border-color:#2E7D32;">📄 주문서 PDF 저장</button>
     </div>
 
     <div class="card">
@@ -3253,6 +3262,178 @@ function buildInvoiceHTML(o, cust, totals) {
     </div>`;
 }
 
+// 지정한 루트 폴더 아래로 segments 경로를 따라 디렉터리를 만들고 파일을 기록한다.
+// ⚠️ 2중 폴더 방지: 사용자가 선택한 폴더 이름이 최상위 목표 폴더명(segments[0])과 같으면
+//    그 폴더를 다시 만들지 않고 그대로 사용한다. (예: 'ATM Invoice' 폴더를 직접 선택했을 때
+//    'ATM Invoice/ATM Invoice/...' 로 중첩 생성되던 버그 수정)
+async function writeToFolderPath(rootHandle, segments, filename, data) {
+  let dir = rootHandle;
+  for (let i = 0; i < segments.length; i++) {
+    const seg = (segments[i] || '').toString().trim();
+    if (!seg) continue;
+    if (i === 0 && dir.name === seg) continue; // 최상위 폴더 중복 생성 방지
+    dir = await dir.getDirectoryHandle(seg, { create: true });
+  }
+  const fileHandle = await dir.getFileHandle(filename, { create: true });
+  const writable = await fileHandle.createWritable();
+  await writable.write(data);
+  await writable.close();
+}
+
+// 주문서(거래처 주문) PDF용 HTML — 단가/금액 미표시 (작업장·거래처 공유용)
+function buildOrderSheetHTML(o, cust) {
+  const itemRows = o.items.map((it, idx) => {
+    const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
+    const w = it.actualWeightKg;
+    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity} ${it.unit}`;
+    const bg = idx % 2 === 1 ? '#FAF6F1' : '#ffffff';
+    const weightCell = (w == null)
+      ? `<td style="padding:7px 8px; text-align:right; color:#B8860B;">계근 대기</td>`
+      : `<td style="padding:7px 8px; text-align:right;">${w.toFixed(2)}</td>`;
+    return `<tr style="background:${bg};">
+      <td style="padding:7px 8px;"><b>${p.name}</b>${it.notes ? `<br><small style="color:#888;font-size:10px;">※ ${it.notes}</small>` : ''}</td>
+      <td style="padding:7px 8px;">${p.brand}</td>
+      <td style="padding:7px 8px;">${orderDisplay}</td>
+      ${weightCell}
+    </tr>`;
+  }).join('');
+  let totalKg = 0;
+  o.items.forEach(it => { if (it.actualWeightKg != null) totalKg += it.actualWeightKg; });
+
+  return `
+    <div style="font-family:'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue',Arial,sans-serif;
+                padding:32px; background:#fff; color:#2A1A1A; width:740px;">
+      <div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:14px;">
+        <div>
+          <div style="font-size:22px; font-weight:800; color:#5C0F0F;">${DB.company.name}</div>
+          <div style="font-size:11px; color:#6B5B5B; margin-top:4px; line-height:1.6;">
+            ABN: ${DB.company.abn||'-'} · ${DB.company.phone||''}<br>${DB.company.address||''}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:24px; font-weight:800; color:#14145A; letter-spacing:2px;">주문서 / ORDER</div>
+          <div style="margin-top:6px; font-size:12px; line-height:1.7;">
+            Order No: <b>${o.orderNo}</b><br>
+            Date: ${new Date(o.orderDate).toLocaleDateString('en-AU')}
+          </div>
+        </div>
+      </div>
+
+      <div style="border-top:2px solid #8B1A1A; margin-bottom:16px;"></div>
+
+      <div style="display:flex; justify-content:space-between; margin-bottom:20px;">
+        <div>
+          <div style="font-size:9px; color:#aaa; text-transform:uppercase; margin-bottom:4px;">거래처 / Customer</div>
+          <div style="font-weight:700; font-size:15px;">${cust.name||'-'}</div>
+          <div style="font-size:11px; color:#6B5B5B; line-height:1.6;">
+            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}
+          </div>
+        </div>
+        <div style="text-align:right; font-size:12px; color:#6B5B5B; line-height:1.7;">
+          <div style="font-size:9px; color:#aaa; text-transform:uppercase; margin-bottom:4px;">Delivery</div>
+          Requested: ${o.deliveryDate||'-'}<br>
+          Notes: ${o.deliveryNotes||'-'}
+        </div>
+      </div>
+
+      <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:20px;">
+        <thead>
+          <tr style="background:#8B1A1A; color:#fff;">
+            <th style="text-align:left; padding:8px 8px; font-weight:700;">Item / 품목</th>
+            <th style="text-align:left; padding:8px 8px; font-weight:700;">Brand</th>
+            <th style="text-align:left; padding:8px 8px; font-weight:700;">Order / 주문</th>
+            <th style="text-align:right; padding:8px 8px; font-weight:700;">Weight / 중량 (kg)</th>
+          </tr>
+        </thead>
+        <tbody>${itemRows}</tbody>
+      </table>
+
+      <div style="display:flex; justify-content:flex-end;">
+        <div style="min-width:240px; padding:14px 18px; border:1px solid #E5DCD3; border-radius:8px; background:#FAF6F1; font-size:13px;">
+          <div style="display:flex; justify-content:space-between; padding:3px 0;"><span>Total Weight / 총중량</span><b>${totalKg.toFixed(2)} kg</b></div>
+        </div>
+      </div>
+
+      <div style="margin-top:28px; padding-top:12px; border-top:1px solid #E5DCD3; font-size:10px; color:#999; line-height:1.6;">
+        ${DB.company.name} · 주문 확인서 / Order Sheet (가격 미표시)
+      </div>
+    </div>`;
+}
+
+async function exportOrderPDFs(silent = false) {
+  const orders = DB.orders.filter(o => o.status !== 'cancelled');
+  if (orders.length === 0) {
+    if (!silent) alert('백업할 주문서가 없습니다.');
+    return { saved: 0, failed: 0, skipped: '주문 없음' };
+  }
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+    if (!silent) alert('PDF 라이브러리를 불러오는 중입니다.\n잠시 후 다시 시도해 주세요.');
+    return { saved: 0, failed: 0, skipped: 'PDF 라이브러리 로딩 중' };
+  }
+  const { jsPDF } = window.jspdf;
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
+  document.body.appendChild(container);
+  const dirHandle = await getBackupDirHandle();
+  let saved = 0, failed = 0;
+  for (const o of orders) {
+    try {
+      const cust = DB.customers.find(c => c.id === o.customerId) || { name:'미확인', contact:'', phone:'', address:'', terms:'' };
+      container.innerHTML = buildOrderSheetHTML(o, cust);
+      await new Promise(r => setTimeout(r, 80));
+      const canvas = await html2canvas(container.firstElementChild, {
+        scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+      });
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      const pageW = 210, pageH = 297;
+      const imgH = canvas.height * pageW / canvas.width;
+      const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+      if (imgH <= pageH) {
+        doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+      } else {
+        let yOff = 0;
+        while (yOff < imgH) {
+          if (yOff > 0) doc.addPage();
+          doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+          yOff += pageH;
+        }
+      }
+      const dateStr = (o.orderDate || '').slice(0,10);
+      const dateCompact = dateStr.replace(/-/g, '');
+      const custName = cust.name.replace(/[\/:*?"<>|]/g, '_');
+      const byDateName = `주문서_${o.orderNo}.pdf`;            // 날짜별 (폴더에 날짜 있음)
+      const byCustName = `주문서_${dateCompact}_${o.orderNo}.pdf`; // 거래처별 (파일명에 날짜)
+      if (dirHandle) {
+        try {
+          const buf = doc.output('arraybuffer');
+          // 날짜별: ATM 거래처/날짜별/{날짜}/{거래처}/
+          await writeToFolderPath(dirHandle, ['ATM 거래처', '날짜별', dateStr || 'unknown', custName], byDateName, buf);
+          // 거래처별: ATM 거래처/거래처별/{거래처}/
+          await writeToFolderPath(dirHandle, ['ATM 거래처', '거래처별', custName], byCustName, buf);
+        } catch(e) {
+          console.warn('주문서 폴더 저장 실패, 다운로드 대체:', e);
+          doc.save(byCustName);
+        }
+      } else {
+        doc.save(byCustName);
+      }
+      saved++;
+      await new Promise(r => setTimeout(r, 300));
+    } catch(e) {
+      console.error('주문서 PDF 저장 실패:', o.orderNo, e);
+      failed++;
+    }
+  }
+  document.body.removeChild(container);
+  if (!silent) {
+    const msg = dirHandle
+      ? `✅ 주문서 ${saved}건 → 📁 ATM 거래처/날짜별·거래처별/ 저장` + (failed > 0 ? ` / ${failed}건 실패` : '')
+      : `✅ 주문서 ${saved}건 다운로드 완료` + (failed > 0 ? ` / ${failed}건 실패` : '');
+    alert(msg);
+  }
+  return { saved, failed };
+}
+
 async function exportInvoicePDFs(silent = false) {
   const invoicedOrders = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status));
   if (invoicedOrders.length === 0) {
@@ -3298,13 +3479,11 @@ async function exportInvoicePDFs(silent = false) {
       const pdfFilename = `${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`;
       if (dirHandle) {
         try {
-          const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
-          const dateFolder = await atmFolder.getDirectoryHandle(dateStr || 'unknown', { create: true });
-          const custFolder = await dateFolder.getDirectoryHandle(custName, { create: true });
-          const fileHandle = await custFolder.getFileHandle(pdfFilename, { create: true });
-          const writable   = await fileHandle.createWritable();
-          await writable.write(doc.output('arraybuffer'));
-          await writable.close();
+          const buf = doc.output('arraybuffer');
+          // 날짜별: ATM Invoice/날짜별/{날짜}/{거래처}/
+          await writeToFolderPath(dirHandle, ['ATM Invoice', '날짜별', dateStr || 'unknown', custName], pdfFilename, buf);
+          // 거래처별: ATM Invoice/거래처별/{거래처}/
+          await writeToFolderPath(dirHandle, ['ATM Invoice', '거래처별', custName], pdfFilename, buf);
         } catch(e) {
           console.warn('PDF 폴더 저장 실패, 다운로드 대체:', e);
           doc.save(pdfFilename);
@@ -3322,31 +3501,11 @@ async function exportInvoicePDFs(silent = false) {
   document.body.removeChild(container);
   if (!silent) {
     const msg = dirHandle
-      ? `✅ PDF ${saved}건 → 📁 ATM Invoice/날짜/거래처/ 저장` + (failed > 0 ? ` / ${failed}건 실패` : '')
-      : `✅ PDF ${saved}건 다운로드 완료` + (failed > 0 ? ` / ${failed}건 실패` : '');
+      ? `✅ 인보이스 PDF ${saved}건 → 📁 ATM Invoice/날짜별·거래처별/ 저장` + (failed > 0 ? ` / ${failed}건 실패` : '')
+      : `✅ 인보이스 PDF ${saved}건 다운로드 완료` + (failed > 0 ? ` / ${failed}건 실패` : '');
     alert(msg);
   }
   return { saved, failed };
-}
-
-async function getBackupDirHandle() {
-  if (_backupDirHandle) {
-    try {
-      const perm = await _backupDirHandle.queryPermission({ mode: 'readwrite' });
-      if (perm === 'granted') return _backupDirHandle;
-      const req = await _backupDirHandle.requestPermission({ mode: 'readwrite' });
-      if (req === 'granted') return _backupDirHandle;
-    } catch(e) {}
-  }
-  try {
-    const handle = await idbGet('backupDirHandle');
-    if (handle) {
-      let perm = await handle.queryPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { _backupDirHandle = handle; return handle; }
-    }
-  } catch(e) {}
-  return null;
 }
 
 async function setBackupFolder() {
@@ -3398,14 +3557,9 @@ async function exportAll(silent = false) {
   const dirHandle = await getBackupDirHandle();
   if (dirHandle) {
     try {
-      const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
-      const dateFolder = await atmFolder.getDirectoryHandle(dateStr, { create: true });
-      const fileHandle = await dateFolder.getFileHandle(filename, { create: true });
-      const writable   = await fileHandle.createWritable();
-      await writable.write(json);
-      await writable.close();
-      if (!silent) showToast(`✅ 백업 저장 완료 — 📁 ATM Invoice/${dateStr}/${filename}`);
-      return { success: true, filename, folder: `ATM Invoice/${dateStr}` };
+      await writeToFolderPath(dirHandle, ['ATM Invoice', '_백업(JSON)', dateStr], filename, json);
+      if (!silent) showToast(`✅ 백업 저장 완료 — 📁 ATM Invoice/_백업(JSON)/${dateStr}/${filename}`);
+      return { success: true, filename, folder: `ATM Invoice/_백업(JSON)/${dateStr}` };
     } catch(e) { console.warn('폴더 저장 실패, 다운로드로 대체:', e); }
   } else {
     if (!silent) {
@@ -3425,6 +3579,7 @@ async function exportAll(silent = false) {
 async function exportAllFull() {
   const jsonResult = await exportAll(true);
   const pdfResult = await exportInvoicePDFs(true);
+  const orderResult = await exportOrderPDFs(true);
   let msg = '✅ 전체 백업 완료!\n\n';
   if (jsonResult.folder) {
     msg += `💾 JSON: 📁 ${jsonResult.folder} / ${jsonResult.filename}\n`;
@@ -3432,11 +3587,18 @@ async function exportAllFull() {
     msg += `💾 JSON: ${jsonResult.filename} (다운로드 폴더)\n`;
   }
   if (pdfResult.skipped) {
-    msg += `📄 PDF: ${pdfResult.skipped}`;
+    msg += `📄 인보이스: ${pdfResult.skipped}\n`;
   } else if (pdfResult.failed > 0) {
-    msg += `📄 PDF: ${pdfResult.saved}건 저장 / ${pdfResult.failed}건 실패`;
+    msg += `📄 인보이스: ${pdfResult.saved}건 저장 / ${pdfResult.failed}건 실패 (ATM Invoice/날짜별·거래처별)\n`;
   } else {
-    msg += `📄 PDF: ${pdfResult.saved}건 저장 완료`;
+    msg += `📄 인보이스: ${pdfResult.saved}건 → ATM Invoice/날짜별·거래처별\n`;
+  }
+  if (orderResult.skipped) {
+    msg += `📄 주문서: ${orderResult.skipped}`;
+  } else if (orderResult.failed > 0) {
+    msg += `📄 주문서: ${orderResult.saved}건 저장 / ${orderResult.failed}건 실패 (ATM 거래처/날짜별·거래처별)`;
+  } else {
+    msg += `📄 주문서: ${orderResult.saved}건 → ATM 거래처/날짜별·거래처별`;
   }
   alert(msg);
 }
@@ -3783,12 +3945,7 @@ async function autoSaveInvoice(orderId) {
     const json = JSON.stringify(DB, null, 2);
     const jsonFilename = `ATM_backup_${ts}.json`;
     if (dirHandle) {
-      const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
-      const dateFolder = await atmFolder.getDirectoryHandle(dateStr, { create: true });
-      const fileHandle = await dateFolder.getFileHandle(jsonFilename, { create: true });
-      const writable   = await fileHandle.createWritable();
-      await writable.write(json);
-      await writable.close();
+      await writeToFolderPath(dirHandle, ['ATM Invoice', '_백업(JSON)', dateStr], jsonFilename, json);
     } else {
       const blob = new Blob([json], {type:'application/json'});
       const url = URL.createObjectURL(blob);
@@ -3830,14 +3987,13 @@ async function autoSaveInvoice(orderId) {
       const custName = cust.name.replace(/[\/:*?"<>|]/g, '_');
       const pdfFilename = `${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`;
       if (dirHandle) {
-        const atmFolder  = await dirHandle.getDirectoryHandle('ATM Invoice', { create: true });
-        const dateFolder = await atmFolder.getDirectoryHandle(dateStr, { create: true });
-        const custFolder = await dateFolder.getDirectoryHandle(custName, { create: true });
-        const fileHandle = await custFolder.getFileHandle(pdfFilename, { create: true });
-        const writable   = await fileHandle.createWritable();
-        await writable.write(doc.output('arraybuffer'));
-        await writable.close();
-        showToast(`✅ JSON + PDF 저장 완료 — 📁 ATM Invoice/${dateStr}/${custName}/`);
+        const buf = doc.output('arraybuffer');
+        // exportInvoicePDFs 와 동일한 2중 구조로 저장 (폴더 중복/불일치 방지)
+        // 날짜별: ATM Invoice/날짜별/{날짜}/{거래처}/
+        await writeToFolderPath(dirHandle, ['ATM Invoice', '날짜별', dateStr, custName], pdfFilename, buf);
+        // 거래처별: ATM Invoice/거래처별/{거래처}/
+        await writeToFolderPath(dirHandle, ['ATM Invoice', '거래처별', custName], pdfFilename, buf);
+        showToast(`✅ JSON + 인보이스 PDF 저장 완료 — 📁 ATM Invoice/날짜별·거래처별/`);
       } else {
         doc.save(pdfFilename);
         showToast('💾 JSON + PDF 다운로드 완료');
