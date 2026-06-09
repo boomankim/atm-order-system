@@ -992,32 +992,52 @@ function viewAdmin(params) {
 
 function renderBackupAdmin() {
   const body = document.getElementById('adminBody');
+  // 현재 저장된 백업 폴더 이름 표시
+  const folderName = _backupDirHandle ? _backupDirHandle.name : null;
+  const folderDisplay = folderName
+    ? `<span style="background:#E8F5E9;color:#1B5E20;padding:3px 10px;border-radius:6px;font-weight:700;">📁 ${folderName}</span>`
+    : `<span style="background:#FFF3E0;color:#BF6900;padding:3px 10px;border-radius:6px;">미설정</span>`;
+
   body.innerHTML = `
     <div class="card">
-      <h3>📁 폴더 설정</h3>
-      <p style="font-size:13px; color:var(--muted); line-height:1.7;">
-        💾 Backup(JSON)과 📄 인보이스 PDF가 저장될 폴더를 지정합니다.<br>
-        한 번 설정하면 이후 버튼 클릭 시 자동으로 해당 폴더에 저장됩니다.<br>
-        <span style="font-size:11px;">※ Chrome / Edge 전용. 브라우저 재시작 후 첫 저장 시 승인 팝업이 한 번 뜰 수 있습니다.</span>
+      <h3>📁 JSON 백업 폴더 설정</h3>
+      <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
+        <span style="font-size:13px; color:var(--muted);">현재 저장 폴더:</span>
+        ${folderDisplay}
+        <button class="btn secondary" style="font-size:12px; padding:5px 14px;" onclick="setBackupFolder()">📁 폴더 변경</button>
+      </div>
+      <p style="font-size:12px; color:var(--muted); line-height:1.7; margin:0;">
+        폴더를 한 번 설정하면 이후 백업 버튼 클릭 시 <b>폴더 선택창 없이 바로 저장</b>됩니다.<br>
+        파일명 형식: <code>ATM_backup_날짜_시간.json</code> (예: ATM_backup_20260609_1430.json)<br>
+        <span style="font-size:11px; color:#aaa;">※ Chrome / Edge 전용. 브라우저 재시작 후 첫 저장 시 승인 팝업이 한 번 뜰 수 있습니다.</span>
       </p>
     </div>
 
     <div class="card">
-      <h3>💾 전체 백업 (JSON + PDF)</h3>
-      <p style="font-size:13px; color:var(--muted); line-height:1.7;">
-        JSON 데이터 백업과 인보이스 PDF 저장을 한 번에 실행합니다.<br>
-        데이터 분실 대비 또는 정기 백업 시 사용하세요.<br>
-        <b>JSON만:</b> 거래처·품목·주문·설정 전체를 JSON 파일로 저장합니다.<br>
-        <b>PDF만:</b> 발행된 모든 인보이스를 날짜/거래처별 폴더로 정리해 저장합니다.
+      <h3>💾 JSON 백업</h3>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:12px;">
+        거래처·품목·주문·설정 전체를 JSON 파일로 저장합니다.<br>
+        데이터 분실 대비 또는 기기 이전 시 사용하세요.
       </p>
+      <button class="btn success" onclick="exportAll()" style="padding:10px 24px; font-size:14px;">💾 지금 백업하기</button>
+    </div>
+
+    <div class="card">
+      <h3>📄 인보이스 PDF 백업</h3>
+      <p style="font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:12px;">
+        발행된 모든 인보이스를 날짜/거래처별 폴더로 정리해 저장합니다.<br>
+        PDF 폴더는 별도 설정 가능합니다 (상단 📁 폴더 설정 버튼).
+      </p>
+      <button class="btn secondary" onclick="exportInvoicePDFs()" style="padding:10px 24px; font-size:14px; background:#B8860B; color:#fff; border-color:#B8860B;">📄 PDF 저장</button>
     </div>
 
     <div class="card">
       <h3>📂 데이터 복원 (Restore)</h3>
-      <p style="font-size:13px; color:var(--muted); line-height:1.7;">
+      <p style="font-size:13px; color:var(--muted); line-height:1.7; margin-bottom:12px;">
         이전에 백업한 JSON 파일을 불러와 <b>현재 데이터 전체를 덮어씁니다.</b><br>
         잘못된 복원은 되돌릴 수 없으니, 복원 전 반드시 현재 상태를 먼저 백업하세요.
       </p>
+      <button class="btn danger" onclick="importAll()" style="padding:10px 24px; font-size:14px;">📂 복원하기</button>
     </div>
   `;
 }
@@ -3318,21 +3338,74 @@ async function setBackupFolder() {
     const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
     await idbSet('backupDirHandle', handle);
     _backupDirHandle = handle;
-    alert('✅ 백업 폴더 설정 완료!\n📁 ' + handle.name + '\n\n이제 💾 Backup 클릭 시 이 폴더에 자동 저장됩니다.');
+    showToast('✅ 백업 폴더 설정 완료: 📁 ' + handle.name);
+    // 백업 탭이 열려 있으면 새로고침
+    const hash = location.hash;
+    if (hash.includes('tab=backup')) renderBackupAdmin();
   } catch(e) {
     if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
   }
 }
 
+async function getBackupDirHandle() {
+  // 1. 메모리 캐시 확인
+  if (_backupDirHandle) {
+    try {
+      const perm = await _backupDirHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') return _backupDirHandle;
+      const req = await _backupDirHandle.requestPermission({ mode: 'readwrite' });
+      if (req === 'granted') return _backupDirHandle;
+    } catch(e) {}
+  }
+  // 2. IndexedDB 저장 핸들 복구
+  try {
+    const handle = await idbGet('backupDirHandle');
+    if (handle) {
+      let perm = await handle.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') { _backupDirHandle = handle; return handle; }
+    }
+  } catch(e) {}
+  return null;
+}
+
 async function exportAll(silent = false) {
+  // 날짜/시간 형식: YYYYMMDD_HHMM
+  const now = new Date();
+  const pad = n => String(n).padStart(2,'0');
+  const ts = `${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}`;
+  const filename = `ATM_backup_${ts}.json`;
   const json = JSON.stringify(DB, null, 2);
-  const filename = `ATM_backup_${new Date().toISOString().slice(0,10)}.json`;
+
+  // 저장된 백업 폴더로 직접 저장 시도
+  const dirHandle = await getBackupDirHandle();
+  if (dirHandle) {
+    try {
+      const fileHandle = await dirHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(json);
+      await writable.close();
+      if (!silent) showToast(`✅ 백업 저장 완료 — 📁 ${dirHandle.name} / ${filename}`);
+      return { success: true, filename, folder: dirHandle.name };
+    } catch(e) {
+      // 저장 실패 시 다운로드로 폴백
+      console.warn('폴더 저장 실패, 다운로드로 대체:', e);
+    }
+  } else {
+    // 폴더 미설정 → 설정 안내 후 폴더 선택
+    if (!silent) {
+      const go = confirm('💡 백업 저장 폴더가 설정되지 않았습니다.\n\n지금 폴더를 선택하시겠습니까?\n\n(취소 시 다운로드 폴더로 저장됩니다)');
+      if (go) { await setBackupFolder(); return await exportAll(silent); }
+    }
+  }
+
+  // 폴더 없을 때 기본 다운로드 폴백
   const blob = new Blob([json], {type:'application/json'});
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename; a.click();
   URL.revokeObjectURL(url);
-  if (!silent) alert('💾 JSON 백업 다운로드 완료!\n파일명: ' + filename);
+  if (!silent) showToast(`💾 백업 다운로드 완료 — ${filename}`);
   return { success: true, filename, folder: null };
 }
 async function exportAllFull() {
@@ -3747,44 +3820,12 @@ if (FIREBASE_READY && DB_REF) {
       <div style="margin-top:8px; font-size:13px;">실시간 연결 중... / Connecting...</div>
     </div>`;
 
-  // 8초 타임아웃: Firebase 무응답 시 localStorage 모드로 전환
   let _firstLoad = true;
-  const _fbTimeout = setTimeout(() => {
-    if (_firstLoad) {
-      console.warn('Firebase 연결 시간 초과 — localStorage 모드로 전환');
-      DB_REF.off();
-      DB_REF = null;
-      DB = loadLocalDB() || seed();
-      migrateProducts();
-      if (!DB.payments) DB.payments = [];
-      route();
-    }
-  }, 8000);
-
-  // Firebase 에러 콜백 (보안 규칙 거부 등)
-  function _fbError(error) {
-    console.warn('Firebase 오류 — localStorage 모드로 전환:', error.message);
-    clearTimeout(_fbTimeout);
-    if (_firstLoad) {
-      _firstLoad = false;
-      if (DB_REF) { DB_REF.off(); DB_REF = null; }
-      DB = loadLocalDB() || seed();
-      if (!DB.products)  DB.products  = seed().products;
-      if (!DB.customers) DB.customers = [];
-      if (!DB.orders)    DB.orders    = [];
-      if (!DB.payments)  DB.payments  = [];
-      if (!DB.settings)  DB.settings  = seed().settings;
-      migrateProducts();
-      route();
-    }
-  }
-
   DB_REF.on('value', snapshot => {
     const isSelf = (Date.now() - _lastSaveTime) < 3000;
     const data = snapshot.val();
 
     if (_firstLoad) {
-      clearTimeout(_fbTimeout);
       _firstLoad = false;
       initApp(data);
       return;
@@ -3802,19 +3843,17 @@ if (FIREBASE_READY && DB_REF) {
         if (!banner) {
           const b = document.createElement('div');
           b.id = 'sync-banner';
-          b.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#2E5C8A;color:#fff;text-align:center;padding:6px;font-size:12px;z-index:200;';
-          b.textContent = '🔄 다른 기기에서 데이터가 업데이트됐습니다. 주문 완료 후 자동 반영됩니다.';
+          b.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#2E5C8A;color:#fff;text-align:center;padding:6px;font-size:12px;x:9999;';
+          b.innerHTML = '🔄 다른 기기에서 데이터가 업데이트되었습니다.';
           document.body.appendChild(b);
-          setTimeout(() => b.remove(), 6000);
+          setTimeout(() => { b && b.remove(); }, 4000);
         }
       }
     }
-  }, _fbError);
+  });
 } else {
   // No Firebase — use localStorage only
   DB = loadLocalDB() || seed();
-  migrateProducts();
-  if (!DB.payments) DB.payments = [];
   if (!FIREBASE_READY) {
     console.info('Firebase 미설정 — localStorage 모드로 실행 중');
   }
