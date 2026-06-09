@@ -1424,8 +1424,10 @@ function viewEnter(params) {
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
           <p style="font-size:13px; color:var(--muted);">다른 계정으로 변경하려면 아래에 코드를 입력하세요.<br><span style="font-size:11px;">To switch account, enter the new code below.</span></p>
           <div class="field"><input id="entryCode" placeholder="거래처 코드 또는 상호명 / Customer code or store name"
-            onkeydown="if(event.key==='Enter') submitEntry()"></div>
-          <button class="btn secondary sm" onclick="submitEntry()">계정 변경 / Switch Account</button>
+            onkeydown="if(event.key==='Enter') submitEntry()"
+            oninput="liveSearchCustomer()"></div>
+          <div id="liveResult"></div>
+          <button class="btn secondary sm" onclick="submitEntry()" style="margin-top:6px;">계정 변경 / Switch Account</button>
         </div>
       ` : `
         <h3>거래처 확인 / Customer Verification</h3>
@@ -1436,9 +1438,11 @@ function viewEnter(params) {
         <div class="field">
           <label>거래처 코드 또는 상호명 / Customer Code or Store Name</label>
           <input id="entryCode" placeholder="예: CUST001 또는 Sydney BBQ" autofocus
-            onkeydown="if(event.key==='Enter') submitEntry()" autocomplete="off">
+            onkeydown="if(event.key==='Enter') submitEntry()" autocomplete="off"
+            oninput="liveSearchCustomer()" style="font-size:16px; padding:10px;">
         </div>
-        <button class="btn" onclick="submitEntry()" style="width:100%; font-size:16px; padding:14px;">✅ 확인 후 주문하기 / Verify &amp; Order</button>
+        <div id="liveResult"></div>
+        <button class="btn" onclick="submitEntry()" style="width:100%; font-size:16px; padding:14px; margin-top:10px;">✅ 확인 후 주문하기 / Verify &amp; Order</button>
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); line-height:1.9;">
           ※ 거래처 코드는 ATM에서 카카오톡으로 전달해 드린 코드입니다.<br>
           ※ Your customer code is sent by ATM via KakaoTalk.<br>
@@ -1495,6 +1499,58 @@ function findCustomerMatch(input) {
     );
   });
   return m || null;
+}
+
+// ── 거래처 실시간 자동완성 ────────────────────────────────
+var _enterMatchId = null;
+
+function liveSearchCustomer() {
+  var inp = document.getElementById('entryCode');
+  var div = document.getElementById('liveResult');
+  if (!inp || !div) return;
+  var raw = (inp.value || '').trim();
+  _enterMatchId = null;
+
+  if (!raw) { div.innerHTML = ''; return; }
+
+  var q = raw.toLowerCase();
+  var matches = DB.customers.filter(function(c) {
+    return (c.name  || '').toLowerCase().indexOf(q) !== -1 ||
+           (c.code  || '').toLowerCase().indexOf(q) !== -1 ||
+           (c.contact||'').toLowerCase().indexOf(q) !== -1;
+  });
+
+  if (matches.length === 0) {
+    div.innerHTML = '<div style="padding:10px 14px;background:#FFF3E0;border-left:4px solid #FF9800;border-radius:6px;font-size:13px;color:#BF6900;margin-top:8px;">'
+      + '❌ 일치하는 거래처 없음 — 상호명 또는 코드를 다시 확인해 주세요</div>';
+
+  } else if (matches.length === 1) {
+    _enterMatchId = matches[0].id;
+    var nm = (matches[0].name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    div.innerHTML = '<div onclick="selectEnterMatch()" style="'
+      + 'padding:16px 14px;background:#E8F5E9;border:2px solid #43A047;border-radius:8px;'
+      + 'margin-top:8px;text-align:center;cursor:pointer;'
+      + 'transition:background 0.15s;" '
+      + 'onmouseover="this.style.background=\'#C8E6C9\'" '
+      + 'onmouseout="this.style.background=\'#E8F5E9\'">'
+      + '<div style="font-size:20px;font-weight:700;color:#1B5E20;letter-spacing:0.3px;">✅&nbsp;' + nm + '</div>'
+      + '<div style="font-size:12px;color:#43A047;margin-top:6px;">👆 여기를 클릭하거나 아래 확인 버튼을 누르세요</div>'
+      + '</div>';
+
+  } else {
+    div.innerHTML = '<div style="padding:10px 14px;background:#E3F2FD;border-left:4px solid #2196F3;border-radius:6px;font-size:13px;color:#1565C0;margin-top:8px;">'
+      + '🔍&nbsp;<b>' + matches.length + '개</b> 거래처 일치 — 상호명을 더 입력하면 좁혀집니다</div>';
+  }
+}
+
+function selectEnterMatch() {
+  if (!_enterMatchId) return;
+  var c = DB.customers.find(function(x) { return x.id === _enterMatchId; });
+  if (c) {
+    var inp = document.getElementById('entryCode');
+    if (inp) inp.value = c.name;
+    submitEntry();
+  }
 }
 
 function submitEntry() {
