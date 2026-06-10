@@ -3271,7 +3271,8 @@ async function writeToFolderPath(rootHandle, segments, filename, data) {
   for (let i = 0; i < segments.length; i++) {
     const seg = (segments[i] || '').toString().trim();
     if (!seg) continue;
-    if (i === 0 && dir.name === seg) continue; // 최상위 폴더 중복 생성 방지
+    // 현재 폴더와 같은 이름의 하위 폴더는 만들지 않음 (예: 사용자가 "거래처 백업" 폴더를 선택한 경우 중복 방지)
+    if (dir.name === seg) continue;
     dir = await dir.getDirectoryHandle(seg, { create: true });
   }
   const fileHandle = await dir.getFileHandle(filename, { create: true });
@@ -3405,8 +3406,8 @@ async function exportOrderPDFs(silent = false) {
       if (dirHandle) {
         try {
           const buf = doc.output('arraybuffer');
-          // 거래처 백업 > ATM 주문서 > {날짜} > {거래처} > PDF
-          await writeToFolderPath(dirHandle, ['거래처 백업', 'ATM 주문서', dateStr || 'unknown', custName], pdfFilename, buf);
+          // (선택한 거래처 백업 폴더) > ATM 주문서 > {날짜} > {거래처} > PDF
+          await writeToFolderPath(dirHandle, ['ATM 주문서', dateStr || 'unknown', custName], pdfFilename, buf);
         } catch(e) {
           console.warn('주문서 폴더 저장 실패, 다운로드 대체:', e);
           doc.save(pdfFilename);
@@ -3477,8 +3478,8 @@ async function exportInvoicePDFs(silent = false) {
       if (dirHandle) {
         try {
           const buf = doc.output('arraybuffer');
-          // 거래처 백업 > ATM Invoice > {날짜} > {거래처} > PDF
-          await writeToFolderPath(dirHandle, ['거래처 백업', 'ATM Invoice', dateStr || 'unknown', custName], pdfFilename, buf);
+          // (선택한 거래처 백업 폴더) > ATM Invoice > {날짜} > {거래처} > PDF
+          await writeToFolderPath(dirHandle, ['ATM Invoice', dateStr || 'unknown', custName], pdfFilename, buf);
         } catch(e) {
           console.warn('PDF 폴더 저장 실패, 다운로드 대체:', e);
           doc.save(pdfFilename);
@@ -3552,9 +3553,9 @@ async function exportAll(silent = false) {
   const dirHandle = await getBackupDirHandle();
   if (dirHandle) {
     try {
-      await writeToFolderPath(dirHandle, ['거래처 백업', '_백업(JSON)', dateStr], filename, json);
-      if (!silent) showToast(`✅ 백업 저장 완료 — 📁 거래처 백업/_백업(JSON)/${dateStr}/${filename}`);
-      return { success: true, filename, folder: `거래처 백업/_백업(JSON)/${dateStr}` };
+      await writeToFolderPath(dirHandle, ['_백업(JSON)', dateStr], filename, json);
+      if (!silent) showToast(`✅ 백업 저장 완료 — 📁 _백업(JSON)/${dateStr}/${filename}`);
+      return { success: true, filename, folder: `_백업(JSON)/${dateStr}` };
     } catch(e) { console.warn('폴더 저장 실패, 다운로드로 대체:', e); }
   } else {
     if (!silent) {
@@ -3940,7 +3941,7 @@ async function autoSaveInvoice(orderId) {
     const json = JSON.stringify(DB, null, 2);
     const jsonFilename = `ATM_backup_${ts}.json`;
     if (dirHandle) {
-      await writeToFolderPath(dirHandle, ['거래처 백업', '_백업(JSON)', dateStr], jsonFilename, json);
+      await writeToFolderPath(dirHandle, ['_백업(JSON)', dateStr], jsonFilename, json);
     } else {
       const blob = new Blob([json], {type:'application/json'});
       const url = URL.createObjectURL(blob);
@@ -3984,9 +3985,9 @@ async function autoSaveInvoice(orderId) {
       if (dirHandle) {
         const buf = doc.output('arraybuffer');
         // exportInvoicePDFs 와 동일한 단일 구조로 저장
-        // 거래처 백업 > ATM Invoice > {날짜} > {거래처} > PDF
-        await writeToFolderPath(dirHandle, ['거래처 백업', 'ATM Invoice', dateStr, custName], pdfFilename, buf);
-        showToast(`✅ JSON + 인보이스 PDF 저장 완료 — 📁 거래처 백업/ATM Invoice/날짜/거래처/`);
+        // (선택한 거래처 백업 폴더) > ATM Invoice > {날짜} > {거래처} > PDF
+        await writeToFolderPath(dirHandle, ['ATM Invoice', dateStr, custName], pdfFilename, buf);
+        showToast(`✅ JSON + 인보이스 PDF 저장 완료 — 📁 ATM Invoice/날짜/거래처/`);
       } else {
         doc.save(pdfFilename);
         showToast('💾 JSON + PDF 다운로드 완료');
