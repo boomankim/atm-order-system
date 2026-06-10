@@ -802,14 +802,15 @@ function renderProcessingToday() {
   if (!div) return;
   const today = new Date().toISOString().slice(0,10);
 
-  // Group items containing "작업)" by customer
+  // 품목 분류(cut)가 '작업육'인 모든 품목을 거래처별로 묶는다
+  // (하위호환: 품목명에 "작업"이 포함된 경우도 포함)
   const byCust = {};
   DB.orders.forEach(o => {
     if ((o.orderDate || '').slice(0,10) !== today) return;
     o.items.forEach(it => {
       const p = DB.products.find(x => x.id === it.productId);
       if (!p) return;
-      if (!p.name.includes('작업')) return;
+      if (p.cut !== '작업육' && !p.name.includes('작업')) return;
       if (!byCust[o.customerId]) byCust[o.customerId] = [];
       byCust[o.customerId].push({ product: p, item: it, order: o });
     });
@@ -1155,7 +1156,7 @@ function editProduct(id) {
     <div class="grid-2">
       <div class="field"><label>부위 (분류)</label>
         <select id="m_cut">
-          ${['소고기','와규','돼지고기','오리','가공육','공산품','기타'].map(c=>`<option ${c===p.cut?'selected':''}>${c}</option>`).join('')}
+          ${['소고기','와규','돼지고기','오리','작업육','가공육','공산품','기타'].map(c=>`<option ${c===p.cut?'selected':''}>${c}</option>`).join('')}
         </select>
       </div>
       <div class="field"><label>브랜드 / 원산지</label>
@@ -1838,7 +1839,8 @@ function renderCart() {
             <div>
               <label>${qtyLabel}</label>
               <input type="number" min="0" step="${qtyStep}" value="${item.quantity}"
-                onchange="CART[${idx}].quantity=parseFloat(this.value)||0; renderCart();">
+                onchange="CART[${idx}].quantity=parseFloat(this.value)||0; renderCart();"
+                onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)">
             </div>
           </div>
           <div class="notes-row">
@@ -1952,8 +1954,9 @@ function viewWeigh(params) {
               <td><b>${pName}</b><br><small style="color:var(--muted);">${pBrand}${pBrand&&pCut?' · ':''}${pCut}</small></td>
               <td>${orderDisplay}</td>
               <td class="num">
-                <input type="number" step="0.01" value="${it.actualWeightKg ?? ''}"
+                <input type="number" step="0.01" value="${it.actualWeightKg != null ? it.actualWeightKg.toFixed(2) : ''}"
                   style="width:110px; padding:8px; border:2px solid var(--warn); border-radius:5px; font-size:16px; text-align:right;"
+                  onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"
                   onchange="updateWeighing('${order.id}', ${i}, this.value)">
               </td>
               <td><small>${it.notes||''}</small></td>
@@ -3664,7 +3667,8 @@ function viewPayment(params) {
       </div>
       <div class="field">
         <label>금액 ($)</label>
-        <input type="number" id="payAmount" min="0" step="0.01" placeholder="0.00">
+        <input type="number" id="payAmount" min="0" step="0.01" placeholder="0.00"
+          onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)">
       </div>
       <div class="field">
         <label>입금 방법</label>
