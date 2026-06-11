@@ -1711,10 +1711,6 @@ function viewOrder(params) {
 
     <div class="summary-bar">
       <div class="info">총 <b id="totalQty">0</b>개</div>
-      <div style="display:flex; align-items:center; gap:8px; margin:5px 0;">
-        <span style="font-size:12px; opacity:0.85; white-space:nowrap;">📱 확인문자 번호</span>
-        <input type="tel" id="ordererPhone" placeholder="04XXXXXXXX (선택/Optional)" style="flex:1; padding:5px 8px; border:1px solid rgba(255,255,255,0.35); border-radius:6px; font-size:13px; background:rgba(255,255,255,0.15); color:inherit; min-width:0;">
-      </div>
       <button onclick="submitOrder('${cust.id}')">주문 제출 / Submit Order</button>
     </div>
   `;
@@ -1859,7 +1855,7 @@ function estWeight(item, p) {
   if (item.unit === '팩') return (item.quantity||0) * p.packKg;
   return (item.quantity||0); // 작업중량
 }
-function submitOrder(custId) {
+async function submitOrder(custId) {
   if (CART.length === 0) return alert('주문 품목을 추가해주세요.');
   const order = {
     id: uid('o'),
@@ -1868,7 +1864,6 @@ function submitOrder(custId) {
     orderDate: new Date().toISOString(),
     deliveryDate: val('deliveryDate'),
     deliveryNotes: val('deliveryNotes'),
-    ordererPhone: val('ordererPhone'),
     items: CART.map(i => ({...i, actualWeightKg: i.unit === '작업중량' ? i.quantity : null})),
     status: 'new',
     createdAt: new Date().toISOString()
@@ -1886,8 +1881,35 @@ function submitOrder(custId) {
     });
   }
 
-  saveDB();
-  alert(`주문이 접수되었습니다!\n주문번호: ${order.orderNo}\n\n작업장에서 계근 후 인보이스가 발행됩니다.`);
+  // 항상 먼저 이 기기(localStorage)에 저장
+  saveLocalDB();
+
+  // 서버(Firebase)가 실제로 주문을 받았는지 확인한 뒤에만 "접수 완료"를 보여준다.
+  // 인터넷이 불안정하면 사무실이 주문을 못 받을 수 있으므로, 확인 전에는 완료로 처리하지 않는다.
+  if (DB_REF) {
+    const submitBtn = document.querySelector('.summary-bar button');
+    if (submitBtn) { submitBtn.disabled = true; submitBtn.textContent = '전송 중… / Sending…'; }
+    if (typeof showToast === 'function') showToast('📡 주문을 서버로 보내는 중…');
+
+    const delivered = await new Promise(resolve => {
+      let done = false;
+      const finish = ok => { if (!done) { done = true; clearTimeout(timer); resolve(ok); } };
+      const timer = setTimeout(() => finish(false), 12000); // 12초 내 확인 못하면 실패로 간주
+      DB_REF.set(DB).then(() => finish(true)).catch(() => finish(false));
+    });
+
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '주문 제출 / Submit Order'; }
+
+    if (!delivered) {
+      // 서버 전송이 확인되지 않음 → 중복 방지를 위해 방금 추가한 주문을 로컬에서 제거하고, 장바구니는 유지해 재시도 가능하게 둔다.
+      DB.orders = DB.orders.filter(x => x.id !== order.id);
+      saveLocalDB();
+      alert('⚠️ 주문 전송이 확인되지 않았습니다.\n\n인터넷 연결 상태를 확인한 뒤\n[주문 제출] 버튼을 다시 눌러 주세요.\n\n(연결이 정상이면 바로 접수됩니다.)');
+      return;
+    }
+  }
+
+  alert(`✅ 주문이 정상 접수되었습니다!\n주문번호: ${order.orderNo}\n\n작업장에서 계근 후 인보이스가 발행됩니다.`);
   CART = [];
   location.hash = '#orderDetail?id=' + order.id;
 }
@@ -3065,10 +3087,8 @@ function viewOrderDetail(params) {
         ${o.status==='weighed' ? `<button class="btn success" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 발행</button>` : ''}
         ${o.status==='invoiced' || o.status==='delivered' ? `<button class="btn" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 보기</button>` : ''}
         <button class="btn danger" onclick="if(confirm('주문을 삭제할까요?')){DB.orders=DB.orders.filter(x=>x.id!=='${o.id}'); saveDB(); location.hash='#home';}">삭제</button>
-        <button class="btn secondary" onclick="sendConfirmSMS('${o.id}')">📱 접수 확인 문자</button>
         <button style="background:#FEE500; color:#3A1D1D; border:none; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:700; font-family:inherit;" onclick="shareOrder('${o.id}')">💬 카톡 공유</button>
       </div>
-      ${o.ordererPhone ? `<div style="font-size:12px; color:var(--muted); padding:4px 2px 8px;">📱 주문자 연락처: <b style="color:var(--text);">${o.ordererPhone}</b></div>` : ''}
       <table class="t">
         <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th class="num">실측 중량</th><th class="num">금액</th></tr></thead>
         <tbody>
@@ -3095,47 +3115,6 @@ function viewOrderDetail(params) {
       </div>
     </div>
   `;
-}
-
-function sendConfirmSMS(orderId) {
-  var o = DB.orders.find(function(x){ return x.id === orderId; });
-  if (!o) return;
-  var cust = DB.customers.find(function(c){ return c.id === o.customerId; }) || {};
-  var phone = o.ordererPhone || '';
-  var date = (o.orderDate||'').slice(0,10);
-  var itemCount = (o.items||[]).length;
-  var msg = '[ALL THAT MEAT]\n'
-    + '안녕하세요 ' + (cust.name||'고객') + '님,\n'
-    + date + ' 주문(' + o.orderNo + ')이\n'
-    + '정상적으로 접수되었습니다.\n'
-    + '품목 수: ' + itemCount + '건\n'
-    + '감사합니다. 🥩';
-  window._smsMsg = msg;
-
-  var smsPhone = phone.replace(/\s/g, '');
-  if (smsPhone.startsWith('04')) smsPhone = '+614' + smsPhone.slice(2);
-
-  var phoneRow = phone
-    ? '<div style="margin-bottom:10px; font-size:13px;"><b>수신 번호:</b> ' + phone + '</div>'
-    : '<div style="margin-bottom:10px; padding:8px 10px; background:#FEF3CD; border-radius:6px; font-size:13px;">'
-      + '⚠️ 저장된 전화번호가 없습니다.<br>'
-      + '문자 내용을 복사해서 직접 발송해 주세요.</div>';
-  var smsBtn = phone
-    ? '<a class="btn success" href="sms:' + smsPhone + '?body=' + encodeURIComponent(msg)
-      + '" style="text-decoration:none; display:inline-flex; align-items:center; padding:6px 14px; border-radius:6px; font-size:13px; font-weight:600; background:var(--ok); color:#fff; cursor:pointer;">'
-      + '📱 문자 앱으로 열기</a>'
-    : '';
-
-  openModal('<div style="padding:10px;">'
-    + '<h3 style="margin:0 0 14px;">📱 접수 확인 문자</h3>'
-    + phoneRow
-    + '<div style="margin:0 0 6px; font-size:13px;"><b>문자 내용:</b></div>'
-    + '<textarea readonly style="width:100%; height:130px; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:13px; box-sizing:border-box; resize:none; font-family:inherit;">' + msg + '</textarea>'
-    + '<div class="btn-row" style="margin-top:12px;">'
-    + smsBtn
-    + '<button class="btn" onclick="navigator.clipboard.writeText(window._smsMsg).then(function(){ showToast(\'&#x2705; 복사됨\'); })">📋 복사</button>'
-    + '<button class="btn secondary" onclick="closeModal()">닫기</button>'
-    + '</div></div>');
 }
 
 // =========================================================================
