@@ -271,7 +271,7 @@
   }
 
   @media print {
-    .nav, .summary-bar, .btn, .btn-row, .search-bar { display: none !important; }
+    .nav, .summary-bar, .btn, .btn-row, .search-bar, .no-print { display: none !important; }
     body { background: #fff; }
     main { max-width: 100%; padding: 0; }
     .card { box-shadow: none; }
@@ -2068,6 +2068,36 @@ function viewOffice() {
     </div>
     <div class="card">
       <h3>💰 거래처별 미수금</h3>
+      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+        <button class="btn sm" onclick="togglePaymentPanel()">💳 입금 처리</button>
+        <button class="btn sm secondary" onclick="location.hash='#statement'">📄 스테이트먼트</button>
+      </div>
+      ${(() => {
+        const today = new Date().toISOString().slice(0,10);
+        return `<div id="inlinePaymentPanel" style="display:none; margin-bottom:14px; padding:14px 16px; background:var(--surface); border:1px solid var(--line); border-radius:8px;">
+          <div class="grid-3">
+            <div class="field"><label>거래처</label>
+              <select id="ipCustomer">
+                <option value="">— 선택하세요 —</option>
+                ${DB.customers.filter(c => c.active !== false).map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('')}
+              </select>
+            </div>
+            <div class="field"><label>입금일</label><input type="date" id="ipDate" value="${today}"></div>
+            <div class="field"><label>금액 ($)</label><input type="number" id="ipAmount" min="0" step="0.01" placeholder="0.00" onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"></div>
+          </div>
+          <div class="grid-3">
+            <div class="field"><label>입금 방법</label>
+              <select id="ipMethod"><option value="cash">현금</option><option value="cheque">체크</option><option value="bank">은행이체</option></select>
+            </div>
+            <div class="field"><label>참조번호</label><input type="text" id="ipRef" placeholder="선택 입력"></div>
+            <div class="field"><label>메모</label><input type="text" id="ipNotes" placeholder="선택 입력"></div>
+          </div>
+          <div style="margin-top:12px; display:flex; gap:8px;">
+            <button class="btn success sm" onclick="saveInlinePayment()">💾 저장</button>
+            <button class="btn secondary sm" onclick="togglePaymentPanel()">닫기</button>
+          </div>
+        </div>`;
+      })()}
       ${(() => {
         const custs = DB.customers.filter(c => c.active !== false);
         const rows = custs.map(c => {
@@ -2081,17 +2111,13 @@ function viewOffice() {
         rows.sort((a, b) => b.balance - a.balance);
         if (rows.length === 0) return '<div class="empty">인보이스된 주문이 없습니다.</div>';
         return `<table class="t">
-          <thead><tr><th>거래처</th><th class="num">총 인보이스</th><th class="num">총 입금</th><th class="num">미수금</th><th class="act"></th></tr></thead>
+          <thead><tr><th>거래처</th><th class="num">총 인보이스</th><th class="num">총 입금</th><th class="num">미수금</th></tr></thead>
           <tbody>
             ${rows.map(({c, invoiced, paid, balance}) => `<tr style="${balance <= 0 ? 'color:var(--muted);' : ''}">
               <td><b>${c.name}</b>${c.contact ? `<br><small style="color:var(--muted);">${c.contact}</small>` : ''}</td>
               <td class="num">$${invoiced.toFixed(2)}</td>
               <td class="num">$${paid.toFixed(2)}</td>
               <td class="num" style="font-weight:700; color:${balance > 0 ? 'var(--warn)' : 'var(--success)'};">$${balance.toFixed(2)}</td>
-              <td class="act" style="white-space:nowrap;">
-                <button class="btn sm" onclick="location.hash='#payment?cid=${c.id}'">💳 입금 처리</button>
-                <button class="btn sm secondary" onclick="location.hash='#statement?cid=${c.id}'" style="margin-left:4px;">📄 스테이트먼트</button>
-              </td>
             </tr>`).join('')}
           </tbody>
         </table>`;
@@ -2099,6 +2125,28 @@ function viewOffice() {
     </div>
   `;
 }
+window.togglePaymentPanel = function() {
+  const el = document.getElementById('inlinePaymentPanel');
+  if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+};
+window.saveInlinePayment = function() {
+  const cid = document.getElementById('ipCustomer').value;
+  const date = document.getElementById('ipDate').value;
+  const amount = parseFloat(document.getElementById('ipAmount').value);
+  const method = document.getElementById('ipMethod').value;
+  const ref = document.getElementById('ipRef').value.trim();
+  const notes = document.getElementById('ipNotes').value.trim();
+  if (!cid) { alert('거래처를 선택하세요.'); return; }
+  if (!date) { alert('입금일을 입력하세요.'); return; }
+  if (isNaN(amount) || amount <= 0) { alert('올바른 금액을 입력하세요.'); return; }
+  DB.payments.push({ id: uid('pay'), customerId: cid, date, amount, method, reference: ref, notes, createdAt: new Date().toISOString() });
+  saveDB();
+  viewOffice();
+  const panel = document.getElementById('inlinePaymentPanel');
+  if (panel) panel.style.display = 'block';
+  const cSel = document.getElementById('ipCustomer'); if (cSel) cSel.value = cid;
+  showToast('✅ 입금이 기록됐습니다.');
+};
 function lineUnitPrice(it, p) {
   // Per-line override (set during 인보이스 준비) falls back to product master price.
   return (it.lineUnitPrice != null) ? it.lineUnitPrice : (p ? p.priceKg : 0);
@@ -3742,93 +3790,90 @@ window.savePayment = function() {
 function viewStatement(params) {
   if (!ADMIN_UNLOCKED && !STAFF_UNLOCKED) { showStaffLogin(); return; }
   const app = document.getElementById('app');
-  const cid = params && params.cid;
-  if (!cid) {
-    app.innerHTML = '<div class="card"><p style="color:var(--warn);">거래처 ID가 없습니다. 사무실 화면에서 거래처를 선택하세요.</p>' +
-      '<button class="btn secondary" onclick="history.back()">← 뒤로</button></div>';
-    return;
-  }
-  const cust = DB.customers.find(c => c.id === cid);
-  if (!cust) {
-    app.innerHTML = '<div class="card"><p style="color:var(--warn);">거래처를 찾을 수 없습니다.</p>' +
-      '<button class="btn secondary" onclick="history.back()">← 뒤로</button></div>';
-    return;
-  }
-
   const today = new Date().toISOString().slice(0, 10);
-  const firstDate = '2000-01-01';
-  const methodLabel = { cash: '현금', cheque: '체크', bank: '은행이체' };
+  const firstDate = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0,10); // 올해 1월 1일
+  const preCid = (params && params.cid) || '';
 
-  function buildStatement(dateFrom, dateTo) {
-    const invoices = DB.orders.filter(o =>
-      ['invoiced','delivered'].includes(o.status) &&
-      o.customerId === cid &&
-      (o.invoicedAt || o.orderDate || '').slice(0,10) >= dateFrom &&
-      (o.invoicedAt || o.orderDate || '').slice(0,10) <= dateTo
-    ).sort((a,b) => (a.invoicedAt||a.orderDate||'') > (b.invoicedAt||b.orderDate||'') ? 1 : -1);
+  function buildStatement(cid, dateFrom, dateTo) {
+    const cust = DB.customers.find(c => c.id === cid);
+    if (!cust) return '<p style="color:var(--muted); padding:8px;">거래처를 선택하고 [조회]를 누르세요.</p>';
 
-    const payments = DB.payments.filter(p =>
-      p.customerId === cid && p.date >= dateFrom && p.date <= dateTo
-    ).sort((a,b) => a.date > b.date ? 1 : -1);
+    // 이월 잔액 = 시작일 이전의 모든 인보이스 - 입금
+    const openInv = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid && (o.invoicedAt||o.orderDate||'').slice(0,10) < dateFrom)
+      .reduce((s,o) => s + computeTotals(o).grand, 0);
+    const openPaid = DB.payments.filter(p => p.customerId === cid && p.date < dateFrom)
+      .reduce((s,p) => s + p.amount, 0);
+    const opening = openInv - openPaid;
 
-    const totalInvoiced = invoices.reduce((s, o) => s + computeTotals(o).grand, 0);
-    const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
-    const balance = totalInvoiced - totalPaid;
+    // 기간 내 인보이스 + 입금을 한 줄씩 이벤트로 모아 날짜순 정렬
+    const events = [];
+    DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid).forEach(o => {
+      const d = (o.invoicedAt||o.orderDate||'').slice(0,10);
+      if (d >= dateFrom && d <= dateTo) events.push({ date: d, kind: 'inv', no: (o.invoiceNo||o.orderNo||'-'), amount: computeTotals(o).grand });
+    });
+    DB.payments.filter(p => p.customerId === cid).forEach(p => {
+      if (p.date >= dateFrom && p.date <= dateTo) events.push({ date: p.date, kind: 'pay', amount: p.amount });
+    });
+    events.sort((a,b) => { if (a.date !== b.date) return a.date < b.date ? -1 : 1; return a.kind === 'inv' ? -1 : 1; });
 
-    const invRows = invoices.map(o =>
-      '<tr><td>' + (o.invoicedAt||o.orderDate||'').slice(0,10) + '</td><td>' + (o.invoiceNo||'-') + '</td><td>' + o.orderNo + '</td><td class="num">$' + computeTotals(o).grand.toFixed(2) + '</td><td><span class="pill ' + o.status + '">' + statusLabel(o.status) + '</span></td></tr>'
-    ).join('');
-    const payRows = payments.map(p =>
-      '<tr><td>' + p.date + '</td><td>' + (methodLabel[p.method]||p.method) + '</td><td>' + (p.reference||'-') + '</td><td>' + (p.notes||'-') + '</td><td class="num">$' + p.amount.toFixed(2) + '</td></tr>'
-    ).join('');
-
-    const balColor = balance > 0 ? 'var(--warn)' : 'var(--success)';
+    let bal = opening, totInv = 0, totPay = 0;
+    let rows = '<tr style="color:var(--muted);"><td>' + dateFrom + '</td><td>이월 잔액</td><td class="num">—</td><td class="num">—</td><td class="num"><b>$' + opening.toFixed(2) + '</b></td></tr>';
+    events.forEach(e => {
+      if (e.kind === 'inv') {
+        bal += e.amount; totInv += e.amount;
+        rows += '<tr><td>' + e.date + '</td><td>' + e.no + '</td><td class="num">$' + e.amount.toFixed(2) + '</td><td class="num">—</td><td class="num"><b>$' + bal.toFixed(2) + '</b></td></tr>';
+      } else {
+        bal -= e.amount; totPay += e.amount;
+        rows += '<tr><td>' + e.date + '</td><td style="color:var(--muted);">입금</td><td class="num">—</td><td class="num" style="color:var(--success);">$' + e.amount.toFixed(2) + '</td><td class="num"><b>$' + bal.toFixed(2) + '</b></td></tr>';
+      }
+    });
+    const balColor = bal > 0 ? 'var(--warn)' : 'var(--success)';
 
     return '<div id="statementPrintArea">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">' +
         '<div>' +
           '<div style="font-size:20px;font-weight:800;color:var(--brand-dark);">' + cust.name + '</div>' +
-          '<div style="font-size:13px;color:var(--muted);margin-top:2px;">거래내역서 · 기준일: ' + today + '</div>' +
+          '<div style="font-size:13px;color:var(--muted);margin-top:2px;">거래내역서 (Statement) · 기준일: ' + today + '</div>' +
           (cust.contact ? '<div style="font-size:12px;color:var(--muted);">' + cust.contact + ' · ' + (cust.phone||'') + '</div>' : '') +
         '</div>' +
         '<div style="text-align:right;font-size:12px;color:var(--muted);">' +
-          '<div>ALL THAT MEAT WHOLESALE PTY LTD</div>' +
+          '<div style="font-weight:700;color:var(--brand-dark);">ALL THAT MEAT WHOLESALE PTY LTD</div>' +
           '<div>기간: ' + dateFrom + ' ~ ' + dateTo + '</div>' +
         '</div>' +
       '</div>' +
-      '<h4 style="margin:16px 0 8px;color:var(--brand-dark);">인보이스 내역</h4>' +
-      (invoices.length === 0 ? '<p style="color:var(--muted);font-size:13px;">해당 기간 인보이스 없음</p>' :
-        '<table class="t"><thead><tr><th>날짜</th><th>인보이스#</th><th>주문번호</th><th class="num">금액</th><th>상태</th></tr></thead><tbody>' + invRows + '</tbody></table>') +
-      '<h4 style="margin:20px 0 8px;color:var(--brand-dark);">입금 내역</h4>' +
-      (payments.length === 0 ? '<p style="color:var(--muted);font-size:13px;">해당 기간 입금 없음</p>' :
-        '<table class="t"><thead><tr><th>날짜</th><th>방법</th><th>참조번호</th><th>메모</th><th class="num">금액</th></tr></thead><tbody>' + payRows + '</tbody></table>') +
-      '<div style="margin-top:20px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
-        '<div><span style="color:var(--muted);font-size:12px;">총 인보이스</span><br><b style="font-size:18px;">$' + totalInvoiced.toFixed(2) + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">총 입금</span><br><b style="font-size:18px;color:var(--success);">$' + totalPaid.toFixed(2) + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">미수금</span><br><b style="font-size:20px;color:' + balColor + ';">$' + balance.toFixed(2) + '</b></div>' +
+      '<table class="t"><thead><tr><th>날짜</th><th>인보이스 번호</th><th class="num">금액</th><th class="num">입금</th><th class="num">발란스</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<div style="margin-top:18px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
+        '<div><span style="color:var(--muted);font-size:12px;">총 인보이스</span><br><b style="font-size:18px;">$' + totInv.toFixed(2) + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">총 입금</span><br><b style="font-size:18px;color:var(--success);">$' + totPay.toFixed(2) + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">기말 미수금</span><br><b style="font-size:20px;color:' + balColor + ';">$' + bal.toFixed(2) + '</b></div>' +
       '</div></div>' +
       '<div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap;" class="no-print">' +
-        '<button class="btn" onclick="window.print()">🖨️ 인쇄 / PDF</button>' +
+        '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>' +
         '<button class="btn secondary" onclick="shareStatementKakao(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📤 카톡/이메일 공유</button>' +
-        '<button class="btn secondary" onclick="history.back()">← 뒤로</button>' +
       '</div>';
   }
 
   app.innerHTML =
-    '<h2 class="page-title">📄 거래내역서 — ' + cust.name +
-      '<button class="btn sm secondary" style="float:right;" onclick="history.back()">← 뒤로</button></h2>' +
+    '<h2 class="page-title">📄 거래내역서 (Statement)' +
+      '<button class="btn sm secondary" style="float:right;" onclick="location.hash=\'#office\'">← 사무실로</button></h2>' +
     '<div class="card no-print" style="margin-bottom:12px;">' +
       '<div class="grid-3" style="align-items:flex-end;">' +
+        '<div class="field"><label>거래처</label><select id="stmtCust"><option value="">— 선택하세요 —</option>' +
+          DB.customers.filter(c => c.active !== false).map(c => '<option value="' + c.id + '"' + (c.id === preCid ? ' selected' : '') + '>' + c.name + ' (' + c.code + ')</option>').join('') +
+        '</select></div>' +
         '<div class="field"><label>시작일</label><input type="date" id="stmtFrom" value="' + firstDate + '"></div>' +
         '<div class="field"><label>종료일</label><input type="date" id="stmtTo" value="' + today + '"></div>' +
-        '<div><button class="btn sm" onclick="refreshStatement()">조회</button></div>' +
-      '</div></div>' +
-    '<div class="card" id="stmtBody">' + buildStatement(firstDate, today) + '</div>';
+      '</div>' +
+      '<div style="margin-top:10px;"><button class="btn sm" onclick="refreshStatement()">조회</button></div>' +
+    '</div>' +
+    '<div class="card" id="stmtBody">' + (preCid ? buildStatement(preCid, firstDate, today) : '<p style="color:var(--muted); padding:8px;">거래처와 기간을 선택하고 [조회]를 누르세요.</p>') + '</div>';
 
   window.refreshStatement = function() {
+    const cid = document.getElementById('stmtCust').value;
     const from = document.getElementById('stmtFrom').value || firstDate;
     const to = document.getElementById('stmtTo').value || today;
-    document.getElementById('stmtBody').innerHTML = buildStatement(from, to);
+    if (!cid) { alert('거래처를 선택하세요.'); return; }
+    document.getElementById('stmtBody').innerHTML = buildStatement(cid, from, to);
   };
 }
 
