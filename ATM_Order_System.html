@@ -3043,15 +3043,16 @@ function viewMyOrders() {
     app.innerHTML = `<div class="empty"><div class="icon">🔒</div>유효한 거래처 정보가 없습니다.<br>주문 링크를 다시 확인해주세요.</div>`;
     return;
   }
-  const orders = DB.orders.filter(o => o.customerId === CUSTOMER_MODE)
+  const allOrders = DB.orders.filter(o => o.customerId === CUSTOMER_MODE)
     .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
+  const orders = allOrders.slice(0, 3);
 
   app.innerHTML = `
     <h2 class="page-title">👋 ${cust.name}
       <span class="sub">주문 내역 / Order History</span></h2>
 
     <div class="card">
-      <h3>주문 내역 / Order History <span style="font-weight:400; color:var(--muted); font-size:12px;">(${orders.length}건 / ${orders.length} orders)</span></h3>
+      <h3>최근 주문 내역 / Recent Orders <span style="font-weight:400; color:var(--muted); font-size:12px;">(최근 ${orders.length}건 / latest ${orders.length} of ${allOrders.length})</span></h3>
       ${orders.length === 0
         ? `<div class="empty"><div class="icon">📭</div>
              아직 주문 내역이 없습니다.<br>
