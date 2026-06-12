@@ -1366,6 +1366,7 @@ function renderCustomersAdmin() {
       <h3>거래처 마스터 (총 ${DB.customers.length}곳 · 활성 ${DB.customers.filter(c=>c.active!==false).length}곳 · <span style="color:#C62828;">차단 ${DB.customers.filter(c=>c.active===false).length}곳</span>)</h3>
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn success" onclick="editCustomer()">+ 거래처 추가</button>
+        <button class="btn" style="background:#6B46C1; border-color:#6B46C1; color:#fff;" onclick="renumberCustomerCodes()">🔢 코드 일괄 번호 부여</button>
         <input id="custSearch" placeholder="거래처명 검색" style="flex:1; min-width:200px; padding:9px; border:1px solid var(--line); border-radius:6px;">
       </div>
       <div id="custList"></div>
@@ -1412,6 +1413,39 @@ function renderCustomerList(q) {
     </table>
   `;
 }
+
+// ----- 거래처 코드 일괄 번호 부여 (데모 3곳 제외, 등록순 0001~) -----
+function renumberCustomerCodes() {
+  const DEMO_IDS = new Set(['c_demo1', 'c_demo2', 'c_demo3']);
+  const targets = DB.customers.filter(c => !DEMO_IDS.has(c.id));
+  if (targets.length === 0) return alert('번호를 부여할 거래처가 없습니다.');
+
+  // 기존 4자리 숫자 접미사 제거 — 재실행해도 안전
+  const stripSuffix = code => (code || '').replace(/\d{4}$/, '');
+
+  const pad = String(targets.length).length < 4 ? 4 : String(targets.length).length;
+  const previewHead = targets.slice(0, 3).map((c, i) => {
+    const base = stripSuffix(c.code);
+    return `· ${c.name}: ${c.code||'-'} → ${base + String(i+1).padStart(pad,'0')}`;
+  }).join('\n');
+  const last = targets[targets.length-1];
+  const previewTail = `· ${last.name}: ${last.code||'-'} → ${stripSuffix(last.code) + String(targets.length).padStart(pad,'0')}`;
+
+  const msg = `${targets.length}곳의 거래처 코드에 0001~${String(targets.length).padStart(pad,'0')} 순서대로 부여합니다.\n` +
+              `(데모 거래처 ${DB.customers.length - targets.length}곳 제외)\n\n` +
+              `미리보기:\n${previewHead}\n  ...\n${previewTail}\n\n` +
+              `계속할까요?`;
+  if (!confirm(msg)) return;
+
+  targets.forEach((c, i) => {
+    const base = stripSuffix(c.code);
+    c.code = base + String(i+1).padStart(pad,'0');
+  });
+  saveDB();
+  alert(`✅ ${targets.length}곳 코드 번호 부여 완료.\n첫: ${targets[0].code} / 마지막: ${targets[targets.length-1].code}`);
+  route();
+}
+
 function editCustomer(id) {
   const c = id ? DB.customers.find(x => x.id === id) : { id: uid('c'), code: 'CUST'+String(DB.customers.length+1).padStart(3,'0'), name:'', contact:'', phone:'', email:'', address:'', favoriteProductIds:[], terms:'현금', active:true };
   openModal(`
