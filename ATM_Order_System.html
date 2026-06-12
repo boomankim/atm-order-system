@@ -2336,11 +2336,16 @@ async function submitOrder(custId) {
   // (두 거래처가 동시에 주문 제출해도 서로 다른 번호 보장)
   let orderSeq = 0;
   if (DB_REF) {
+    // 버그 수정 (2026-06-12): 트랜잭션 *전* 에 _lastSaveTime 설정 — 그렇지 않으면
+    // local-apply 단계에서 value 리스너가 isSelf=false 로 잘못 판단해 빨간 배너 + DB 덮어쓰기.
+    _lastSaveTime = Date.now();
     try {
       const result = await DB_REF.child('settings/orderSeq').transaction(curr => {
         const next = (typeof curr === 'number' && curr > 0) ? curr : 1;
         return next + 1;
       });
+      // 서버 확정 후에도 _lastSaveTime 재설정 (네트워크 지연 시 후속 리스너 발사 방어)
+      _lastSaveTime = Date.now();
       if (result && result.committed) {
         const newVal = result.snapshot.val();
         if (typeof newVal === 'number') {
@@ -3512,11 +3517,15 @@ async function issueInvoice(orderId) {
   // Firebase 트랜잭션으로 invoiceNoNext 를 원자적으로 증가시키고 그 값을 사용
   let invoiceNo;
   if (DB_REF) {
+    // 버그 수정 (2026-06-12): 트랜잭션 *전* 에 _lastSaveTime 설정 — local-apply
+    // 단계에서 빨간 배너 + DB 덮어쓰기로 인한 items "undefined" 표시 방지.
+    _lastSaveTime = Date.now();
     try {
       const result = await DB_REF.child('settings/invoiceNoNext').transaction(curr => {
         const next = (typeof curr === 'number' && curr >= 200001) ? curr : 200001;
         return next + 1;
       });
+      _lastSaveTime = Date.now(); // 서버 확정 후 갱신
       const committed = result && result.committed;
       const newVal = result && result.snapshot && result.snapshot.val();
       if (committed && typeof newVal === 'number') {
@@ -4958,8 +4967,11 @@ if (FIREBASE_READY && DB_REF) {
   }
 
   let _firstLoad = true;
+  // 버그 수정 (2026-06-12): isSelf 윈도우 3초 → 8초. 트랜잭션 서버 round-trip 이
+  // 느린 네트워크에서 3초를 넘기면 자기 저장도 외부 업데이트로 오인됨.
+  const SELF_WRITE_WINDOW_MS = 8000;
   DB_REF.on('value', snapshot => {
-    const isSelf = (Date.now() - _lastSaveTime) < 3000;
+    const isSelf = (Date.now() - _lastSaveTime) < SELF_WRITE_WINDOW_MS;
     const data = snapshot.val();
 
     if (_firstLoad) {
@@ -4970,17 +4982,18 @@ if (FIREBASE_READY && DB_REF) {
 
     // 다른 기기에서 업데이트 — 자기가 방금 저장한 게 아니면 반영
     if (!isSelf) {
-      if (data) DB = data;
-      saveLocalDB();
+      // 버그 수정: 사용자가 입력 중인 화면이면 메모리도 덮어쓰지 말 것.
+      // 그렇지 않으면 입력 중인 폼이 referencing 하던 객체가 사라져 "(품목없음)
+      // undefined" 같은 깨진 표시가 발생.
       const sensitive = isSensitiveEntryScreen();
-      // 항상 배너 표시 — 사용자가 다른 기기 변경을 인지하도록
+      if (!sensitive && data) {
+        DB = data;
+        saveLocalDB();
+      }
       showSyncBanner(sensitive);
       if (!sensitive) {
-        // 입력 중이 아니면 자동 새로고침으로 최신 데이터 반영
-        route();
+        route(); // 입력 중이 아닐 때만 자동 새로고침
       }
-      // 입력 중이면 데이터는 메모리에 반영되지만 화면은 그대로 유지
-      // (사용자가 저장 후 직접 새로고침해야 깨끗한 최신 화면을 봄)
     }
   });
 } else {
