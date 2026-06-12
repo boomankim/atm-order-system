@@ -1003,10 +1003,11 @@ function viewAdmin(params) {
 function renderOrdersAdmin(params) {
   const body = document.getElementById('adminBody');
   const selCid = params.get('c') || '';
-  // 거래처별 주문 집계
+  // 거래처별 주문 집계 — customerId 가 없거나, 있어도 거래처 마스터에 없으면 모두 '__none__' 으로
+  const validCustIds = new Set(DB.customers.map(c => c.id));
   const byCust = {};
   DB.orders.forEach(o => {
-    const cid = o.customerId || '__none__';
+    const cid = (o.customerId && validCustIds.has(o.customerId)) ? o.customerId : '__none__';
     if (!byCust[cid]) byCust[cid] = { orders: [], total: 0 };
     byCust[cid].orders.push(o);
     byCust[cid].total += computeTotals(o).grand;
@@ -1043,9 +1044,13 @@ function renderOrdersAdmin(params) {
 
 function renderOrdersAdminList(cid) {
   const cust = DB.customers.find(c => c.id === cid);
-  const custName = cust ? cust.name : (cid === '__none__' ? '거래처 없음' : '(알수없음)');
+  const custName = cust ? cust.name : (cid === '__none__' ? '거래처 없음/삭제됨' : '(알수없음)');
+  const validCustIds = new Set(DB.customers.map(c => c.id));
   const orders = DB.orders
-    .filter(o => (o.customerId || '__none__') === cid)
+    .filter(o => {
+      const effectiveCid = (o.customerId && validCustIds.has(o.customerId)) ? o.customerId : '__none__';
+      return effectiveCid === cid;
+    })
     .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
 
   const totalAmt = orders.reduce((s,o) => s + computeTotals(o).grand, 0);
