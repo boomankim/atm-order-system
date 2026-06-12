@@ -1639,12 +1639,94 @@ function editCustomer(id) {
       </div>
     </div>
     <div class="field"><label>주소</label><textarea id="m_address">${c.address||''}</textarea></div>
+    ${id ? `<div id="customPriceSection" style="margin-top:10px;">${renderCustomPriceSection(c.id)}</div>` : ''}
     <div class="btn-row">
       <button class="btn" onclick="saveCustomer('${c.id}', ${id?'false':'true'}, ${JSON.stringify(c.favoriteProductIds||[]).replace(/"/g,'&quot;')})">저장</button>
       <button class="btn secondary" onclick="closeModal()">취소</button>
     </div>
   `);
 }
+
+// Feature 1: 거래처 맞춤 단가 섹션 (관리자 거래처 수정창에 표시)
+function renderCustomPriceSection(custId) {
+  const c = DB.customers.find(x => x.id === custId);
+  if (!c) return '';
+  const customPrices = c.customPrices || {};
+  const entries = Object.keys(customPrices)
+    .map(pid => ({ pid, price: customPrices[pid], product: DB.products.find(p => p.id === pid) }))
+    .filter(e => e.product)
+    .sort((a,b) => (a.product.name || '').localeCompare(b.product.name || ''));
+
+  let html = '<div style="background:#FAF6F1;border:1px solid var(--line);border-radius:8px;padding:12px 14px;">';
+  html += '<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;">';
+  html += '<b style="color:var(--brand);font-size:13px;">📋 이 거래처 맞춤 단가 (' + entries.length + '개)</b>';
+  if (entries.length > 0) {
+    html += '<button class="btn sm secondary" onclick="clearAllCustomPrices(\'' + custId + '\')" style="font-size:11px;padding:3px 10px;">전체 해제</button>';
+  }
+  html += '</div>';
+  if (entries.length === 0) {
+    html += '<div style="color:var(--muted);font-size:12px;">맞춤 단가 없음 — 인보이스 발행 화면에서 단가 수정하면 자동으로 기억됨.</div>';
+  } else {
+    html += '<div style="font-size:11px;color:var(--muted);margin-bottom:6px;">단가 칸 수정 후 Enter / 마스터 값과 같으면 자동 해제</div>';
+    html += '<table style="width:100%;font-size:12px;">';
+    entries.forEach(e => {
+      const masterP = e.product.priceKg || 0;
+      html += '<tr style="border-bottom:1px solid var(--line);">';
+      html += '<td style="padding:5px 4px;"><b>' + e.product.name + '</b><br><small style="color:var(--muted);">' + (e.product.brand || '') + '</small></td>';
+      html += '<td style="padding:5px 4px;width:120px;">';
+      html += '<input type="number" step="0.01" value="' + parseFloat(e.price).toFixed(2) + '" id="cp_' + e.pid + '"';
+      html += ' style="width:90px;padding:5px 6px;border:1px solid var(--line);border-radius:4px;text-align:right;font-size:12px;"';
+      html += ' onchange="updateCustomPriceFromModal(\'' + custId + '\',\'' + e.pid + '\',this.value)">';
+      html += '<br><small style="color:var(--muted);font-size:10px;">마스터 $' + fmtMoney(masterP) + '</small>';
+      html += '</td>';
+      html += '<td style="padding:5px 4px;width:50px;text-align:center;">';
+      html += '<button onclick="clearOneCustomPrice(\'' + custId + '\',\'' + e.pid + '\')" title="해제 (마스터 단가로 돌아감)"';
+      html += ' style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--muted);">✖</button>';
+      html += '</td>';
+      html += '</tr>';
+    });
+    html += '</table>';
+  }
+  html += '</div>';
+  return html;
+}
+
+window.updateCustomPriceFromModal = function(custId, productId, val) {
+  const c = DB.customers.find(x => x.id === custId);
+  if (!c) return;
+  const p = DB.products.find(x => x.id === productId);
+  const masterP = p ? (p.priceKg || 0) : 0;
+  const newPrice = parseFloat(val) || 0;
+  c.customPrices = c.customPrices || {};
+  if (Math.abs(newPrice - masterP) < 0.001 || newPrice <= 0) {
+    delete c.customPrices[productId];
+  } else {
+    c.customPrices[productId] = newPrice;
+  }
+  saveEntityField('customers', custId, 'customPrices');
+  // 섹션 새로고침
+  const sec = document.getElementById('customPriceSection');
+  if (sec) sec.innerHTML = renderCustomPriceSection(custId);
+};
+
+window.clearOneCustomPrice = function(custId, productId) {
+  const c = DB.customers.find(x => x.id === custId);
+  if (!c || !c.customPrices) return;
+  delete c.customPrices[productId];
+  saveEntityField('customers', custId, 'customPrices');
+  const sec = document.getElementById('customPriceSection');
+  if (sec) sec.innerHTML = renderCustomPriceSection(custId);
+};
+
+window.clearAllCustomPrices = function(custId) {
+  if (!confirm('이 거래처의 모든 맞춤 단가를 해제할까요?\n해제 후에는 다시 마스터 단가를 따라갑니다.')) return;
+  const c = DB.customers.find(x => x.id === custId);
+  if (!c) return;
+  c.customPrices = {};
+  saveEntityField('customers', custId, 'customPrices');
+  const sec = document.getElementById('customPriceSection');
+  if (sec) sec.innerHTML = renderCustomPriceSection(custId);
+};
 function saveCustomer(id, isNew, favs) {
   const obj = {
     id, code: val('m_code'), name: val('m_name'), contact: val('m_contact'),
@@ -1662,6 +1744,8 @@ function saveCustomer(id, isNew, favs) {
   } else {
     const i = DB.customers.findIndex(c => c.id === id);
     obj.favoriteProductIds = DB.customers[i].favoriteProductIds || [];
+    // Feature 1: 맞춤 단가도 보존 (수정창에서 단가 섹션 안 만져도 유지됨)
+    if (DB.customers[i].customPrices) obj.customPrices = DB.customers[i].customPrices;
     DB.customers[i] = obj;
     // Phase 2 동시성: 이 거래처만 부분 업데이트
     saveEntity('customers', id, obj);
@@ -2567,10 +2651,7 @@ function viewOffice() {
         return `<div id="inlinePaymentPanel" style="display:none; margin-bottom:14px; padding:14px 16px; background:var(--surface); border:1px solid var(--line); border-radius:8px;">
           <div class="grid-3">
             <div class="field"><label>거래처</label>
-              <select id="ipCustomer">
-                <option value="">— 선택하세요 —</option>
-                ${DB.customers.filter(c => c.active !== false).map(c => `<option value="${c.id}">${c.name} (${c.code})</option>`).join('')}
-              </select>
+              ${renderCustomerSearchSelect({ selectId: 'ipCustomer', placeholder: '— 선택하세요 —' })}
             </div>
             <div class="field"><label>입금일</label><input type="date" id="ipDate" value="${today}"></div>
             <div class="field"><label>금액 ($)</label><input type="number" id="ipAmount" min="0" step="0.01" placeholder="0.00" onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"></div>
@@ -2639,10 +2720,87 @@ window.saveInlinePayment = function() {
   const cSel = document.getElementById('ipCustomer'); if (cSel) cSel.value = cid;
   showToast('✅ 입금이 기록됐습니다.');
 };
-function lineUnitPrice(it, p) {
-  // Per-line override (set during 인보이스 준비) falls back to product master price.
-  return (it.lineUnitPrice != null) ? it.lineUnitPrice : (p ? p.priceKg : 0);
+function lineUnitPrice(it, p, cust) {
+  // 우선순위: 1) 라인별 명시 (인보이스 준비 시 사장님이 수정한 값)
+  //          2) 거래처 맞춤 단가 (customPrices[productId] — 자동 학습됨)
+  //          3) 품목 마스터 단가
+  if (it.lineUnitPrice != null) return it.lineUnitPrice;
+  if (cust && cust.customPrices && it.productId && cust.customPrices[it.productId] != null) {
+    return cust.customPrices[it.productId];
+  }
+  return p ? p.priceKg : 0;
 }
+// 거래처 맞춤 단가만 별도로 가져오기 (UI에 "마스터 $XX" 표시할 때 사용)
+function customerCustomPrice(cust, productId) {
+  if (!cust || !cust.customPrices || !productId) return null;
+  const v = cust.customPrices[productId];
+  return (v != null) ? v : null;
+}
+
+// === Feature 2: 거래처 검색 가능한 select 컴포넌트 =================
+// opts: { selectId, selectedId, includeInactive(bool), placeholder, onChange(string), label(string)? }
+// 검색 입력 + select 조합. 검색어 입력하면 select 옵션이 좁혀짐.
+function renderCustomerSearchSelect(opts) {
+  opts = opts || {};
+  const selId = opts.selectId;
+  const searchId = selId + '_search';
+  const includeInactive = !!opts.includeInactive;
+  const placeholder = opts.placeholder || '— 선택하세요 —';
+  const onChange = opts.onChange || '';
+  const list = DB.customers.filter(c => includeInactive || c.active !== false);
+  const selected = opts.selectedId || '';
+  let html = '<div style="position:relative;">';
+  html += '<input type="text" id="' + searchId + '" placeholder="🔍 거래처 검색 (이름·코드·담당자)"';
+  html += ' autocomplete="off"';
+  html += ' style="width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:4px;font-size:13px;margin-bottom:5px;box-sizing:border-box;"';
+  html += ' oninput="filterCustomerSelect(\'' + selId + '\', this.value)">';
+  html += '<select id="' + selId + '" data-include-inactive="' + (includeInactive ? '1' : '0') + '"';
+  if (onChange) html += ' onchange="' + onChange + '"';
+  html += '>';
+  html += '<option value="">' + placeholder + '</option>';
+  list.forEach(c => {
+    const sel = (c.id === selected) ? ' selected' : '';
+    html += '<option value="' + c.id + '"' + sel + '>' + (c.name || '') + ' (' + (c.code || '') + ')</option>';
+  });
+  html += '</select></div>';
+  return html;
+}
+
+window.filterCustomerSelect = function(selId, query) {
+  const sel = document.getElementById(selId);
+  if (!sel) return;
+  const q = (query || '').toLowerCase().trim();
+  const includeInactive = sel.dataset.includeInactive === '1';
+  const list = DB.customers.filter(c => includeInactive || c.active !== false);
+  const allOpt = sel.querySelector('option[value=""]');
+  const placeholder = allOpt ? allOpt.textContent : '— 선택하세요 —';
+  const currentVal = sel.value;
+  const filtered = q
+    ? list.filter(c => {
+        const hay = ((c.name || '') + ' ' + (c.code || '') + ' ' + (c.contact || '')).toLowerCase();
+        return hay.indexOf(q) >= 0;
+      })
+    : list;
+  let html = '<option value="">' + placeholder + '</option>';
+  filtered.forEach(c => {
+    const sel2 = (c.id === currentVal) ? ' selected' : '';
+    html += '<option value="' + c.id + '"' + sel2 + '>' + (c.name || '') + ' (' + (c.code || '') + ')</option>';
+  });
+  sel.innerHTML = html;
+  // 현재 선택값이 필터에서 사라지면 placeholder 로 리셋되지 않음 — 선택 유지를 위해 보존
+  if (currentVal && !filtered.some(c => c.id === currentVal)) {
+    // 검색에서 빠졌더라도 사용자가 선택한 거래처 옵션은 보존해서 보여준다
+    const c = list.find(x => x.id === currentVal);
+    if (c) {
+      const extra = document.createElement('option');
+      extra.value = c.id;
+      extra.selected = true;
+      extra.textContent = (c.name || '') + ' (' + (c.code || '') + ')  ✓ 선택됨';
+      sel.appendChild(extra);
+    }
+  }
+  // onchange 콜백이 있으면, 검색만으로는 트리거되지 않음 (사용자가 직접 선택해야).
+};
 // 금액 천단위 쉼표 (예: 1234.5 → "1,234.50")
 function fmtMoney(n) {
   return (Number(n) || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
@@ -2701,12 +2859,13 @@ function companyAddrLine() {
 function computeTotals(order) {
   // Only weighed items contribute to totals — no fake estimates for 박스/팩.
   let subtotal = 0, totalKg = 0, unweighedCount = 0;
+  const cust = DB.customers.find(c => c.id === order.customerId);
   getInvoiceItems(order).forEach(it => {
     if (it._status === 'cancelled') return;
     const p = DB.products.find(x => x.id === it.productId);
     if (it.actualWeightKg == null) { unweighedCount++; return; }
     totalKg += it.actualWeightKg;
-    subtotal += it.actualWeightKg * lineUnitPrice(it, p);
+    subtotal += it.actualWeightKg * lineUnitPrice(it, p, cust);
   });
   // Treat priceKg as GST-inclusive (common AU wholesale convention)
   const gst = subtotal * (DB.company.gstRate / (1 + DB.company.gstRate));
@@ -2761,10 +2920,12 @@ function viewHistory(params) {
         </div>
         <div class="field">
           <label>거래처</label>
-          <select id="histCust">
-            <option value="">— 전체 —</option>
-            ${DB.customers.map(c => `<option value="${c.id}" ${c.id===HISTORY_FILTER.customerId?'selected':''}>${c.name} (${c.code})</option>`).join('')}
-          </select>
+          ${renderCustomerSearchSelect({
+            selectId: 'histCust',
+            selectedId: HISTORY_FILTER.customerId,
+            placeholder: '— 전체 —',
+            includeInactive: true
+          })}
         </div>
         <div class="field">
           <label>상태</label>
@@ -2843,10 +3004,11 @@ function renderHistoryResults() {
     totalItems += o.items.length;
     byCust[o.customerId] = (byCust[o.customerId] || 0) + t.grand;
     byStatus[o.status] = (byStatus[o.status] || 0) + 1;
+    const _cust = DB.customers.find(c => c.id === o.customerId);
     o.items.forEach(it => {
       if (it.actualWeightKg == null) return;
       const p = DB.products.find(x => x.id === it.productId);
-      const price = lineUnitPrice(it, p);
+      const price = lineUnitPrice(it, p, _cust);
       const key = p ? (p.name + ' / ' + p.brand) : '(unknown)';
       byProduct[key] = (byProduct[key] || 0) + it.actualWeightKg * price;
     });
@@ -2950,7 +3112,7 @@ function exportHistoryCSV(detailed) {
       const c = DB.customers.find(x => x.id === o.customerId);
       o.items.forEach(it => {
         const p = DB.products.find(x => x.id === it.productId);
-        const price = lineUnitPrice(it, p);
+        const price = lineUnitPrice(it, p, c);
         const w = it.actualWeightKg;
         const amt = (w != null) ? w * price : '';
         rows.push([
@@ -3031,11 +3193,12 @@ function viewInvoicePrep(params) {
       return Object.assign({}, it, {_source: 'original'});
     });
   }
-  // 마스터 단가 채우기 (0인 경우)
+  // 단가 초기값 채우기 — 우선순위: 거래처 맞춤 단가 > 품목 마스터
   o.invoiceItems.forEach(function(it) {
     if (it.lineUnitPrice == null || it.lineUnitPrice === 0) {
       var p = DB.products.find(function(x) { return x.id === it.productId; });
-      it.lineUnitPrice = p ? p.priceKg : 0;
+      var customP = customerCustomPrice(cust, it.productId);
+      it.lineUnitPrice = (customP != null) ? customP : (p ? p.priceKg : 0);
     }
   });
 
@@ -3114,6 +3277,7 @@ function renderPrepTbody(o) {
   var tbody = document.getElementById('prepTbody');
   if (!tbody) return;
   window._prepOid = o.id;
+  window._prepCustId = o.customerId;
   var items = getInvoiceItems(o);
   var html = '';
   for (var i = 0; i < items.length; i++) {
@@ -3139,8 +3303,14 @@ function renderPrepTbody(o) {
     var pBrand = p ? (p.brand || '') : '';
     var lineP  = isCancelled ? 0 : (it.lineUnitPrice || 0);
     var masterP = p ? p.priceKg : 0;
-    var priceDiff = !isCancelled && Math.abs(lineP - masterP) > 0.001
-      ? '<small style="color:var(--warn);display:block;">Master: $' + fmtMoney(masterP) + '</small>' : '';
+    // 거래처 맞춤 단가 / 마스터 차이 시 표시
+    var _custForRow = DB.customers.find(function(x){ return x.id === window._prepCustId; });
+    var hasCustomPrice = _custForRow && _custForRow.customPrices && _custForRow.customPrices[it.productId] != null;
+    var priceDiff = '';
+    if (!isCancelled && Math.abs(lineP - masterP) > 0.001) {
+      var labelText = hasCustomPrice ? '거래처 맞춤 · 마스터 $' : '마스터 $';
+      priceDiff = '<small style="color:var(--warn);display:block;font-size:10px;">' + labelText + fmtMoney(masterP) + '</small>';
+    }
     var amt = fmtMoney(isCancelled ? 0 : ((w != null ? parseFloat(w) : 0) * lineP));
     var nameStyle = isCancelled ? 'text-decoration:line-through;color:#999;' : '';
     var btnTitle  = isCancelled ? '취소 복원 (클릭)' : '취소 처리';
@@ -3209,10 +3379,14 @@ function addInvoiceItem(orderId, productId, note) {
       return Object.assign({}, it, {_source: 'original'});
     });
   }
+  // 신규 추가 라인도 거래처 맞춤 단가 우선
+  var custForAdd = DB.customers.find(function(x){ return x.id === o.customerId; });
+  var customPForAdd = customerCustomPrice(custForAdd, productId);
+  var initialPrice = (customPForAdd != null) ? customPForAdd : (p.priceKg || 0);
   o.invoiceItems.push({
     productId: productId, unit: '박스', quantity: 1,
     actualWeightKg: null, notes: '',
-    lineUnitPrice: p.priceKg || 0,
+    lineUnitPrice: initialPrice,
     _source: 'added', _addNote: note || ''
   });
   // Phase 2 동시성: 이 주문의 invoiceItems 만 부분 업데이트
@@ -3275,13 +3449,31 @@ function updatePrepWeight(orderId, idx, val) {
 function updatePrepPrice(orderId, idx, val) {
   var o = DB.orders.find(function(x){ return x.id === orderId; });
   if (!o) return;
-  getInvoiceItems(o)[idx].lineUnitPrice = parseFloat(val) || 0;
+  var newPrice = parseFloat(val) || 0;
+  getInvoiceItems(o)[idx].lineUnitPrice = newPrice;
   // Phase 1 동시성: 단가 변경도 부분 업데이트
   var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
   saveOrderItemField(orderId, listKey, idx, 'lineUnitPrice');
-  var amtEl = document.getElementById('prep_amt_' + idx);
+  // Feature 1: 거래처 맞춤 단가 자동 학습 — 다음 인보이스의 초기값으로 사용됨
   var it = getInvoiceItems(o)[idx];
+  var cust = DB.customers.find(function(x){ return x.id === o.customerId; });
+  if (cust && it.productId) {
+    var p = DB.products.find(function(x){ return x.id === it.productId; });
+    var masterP = p ? (p.priceKg || 0) : 0;
+    cust.customPrices = cust.customPrices || {};
+    // 마스터 단가와 같으면 맞춤 단가 항목을 제거 (마스터를 따라가게)
+    if (Math.abs(newPrice - masterP) < 0.001) {
+      delete cust.customPrices[it.productId];
+    } else {
+      cust.customPrices[it.productId] = newPrice;
+    }
+    // Phase 2 동시성: 이 거래처 customPrices 만 부분 업데이트
+    saveEntityField('customers', cust.id, 'customPrices');
+  }
+  var amtEl = document.getElementById('prep_amt_' + idx);
   if (amtEl) amtEl.textContent = '$' + fmtMoney((it.actualWeightKg||0) * (it.lineUnitPrice||0));
+  // 단가 변경 직후 마스터 차이 표시도 새로고침
+  renderPrepTbody(o);
   renderPrepTotals(o);
 }
 function renderPrepTotals(o) {
@@ -3434,7 +3626,7 @@ function viewInvoice(params) {
             const cancelNote = isCancelled && it._cancelNote
               ? `<br><small style="color:#E74C3C;font-size:9px;">사유: ${it._cancelNote}</small>` : '';
             const w = isCancelled ? 0 : it.actualWeightKg;
-            const price = isCancelled ? 0 : lineUnitPrice(it, p);
+            const price = isCancelled ? 0 : lineUnitPrice(it, p, cust);
             const orderDisplay = it.unit === '작업중량'
               ? `${it.quantity} kg <small>작업</small>`
               : `${it.quantity}${unitEn(it.unit)}`;
@@ -3500,7 +3692,7 @@ function sendInvoice(id) {
   o.items.forEach(it => {
     const p = DB.products.find(x => x.id === it.productId);
     const w = it.actualWeightKg;
-    const price = lineUnitPrice(it, p);
+    const price = lineUnitPrice(it, p, cust);
     const orderText = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity}${unitEn(it.unit)}`;
     if (w == null) {
       msg += `· ${p.name}(${p.brand}) ${orderText} → 계근 대기\n`;
@@ -3671,7 +3863,7 @@ function viewOrderDetail(params) {
           ${o.items.map(it => {
             const p = DB.products.find(x => x.id === it.productId);
             const w = it.actualWeightKg;
-            const price = lineUnitPrice(it, p);
+            const price = lineUnitPrice(it, p, cust);
             const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small style="color:var(--muted);">작업</small>` : `${it.quantity} ${it.unit}`;
             return `<tr>
               <td><b>${p.name}</b>${it.notes?`<br><small style="color:var(--muted);">${it.notes}</small>`:''}</td>
@@ -3777,7 +3969,7 @@ function buildInvoiceHTML(o, cust, totals) {
   const itemRows = o.items.map((it, idx) => {
     const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
     const w = it.actualWeightKg;
-    const price = lineUnitPrice(it, p);
+    const price = lineUnitPrice(it, p, cust);
     const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity}${unitEn(it.unit)}`;
     const bg = idx % 2 === 1 ? '#FAF6F1' : '#ffffff';
     if (w == null) {
@@ -4305,12 +4497,12 @@ function viewPayment(params) {
     <div class="card" style="max-width:560px;">
       <div class="field">
         <label>거래처</label>
-        <select id="payCustomer" onchange="document.getElementById('payBalanceBox').innerHTML=renderPaymentBalance(this.value)">
-          <option value="">— 선택하세요 —</option>
-          ${DB.customers.filter(c => c.active !== false).map(c =>
-            `<option value="${c.id}" ${c.id === preCid ? 'selected' : ''}>${c.name} (${c.code})</option>`
-          ).join('')}
-        </select>
+        ${renderCustomerSearchSelect({
+          selectId: 'payCustomer',
+          selectedId: preCid,
+          placeholder: '— 선택하세요 —',
+          onChange: "document.getElementById('payBalanceBox').innerHTML=renderPaymentBalance(this.value)"
+        })}
         <div id="payBalanceBox">${renderBalance(preCid)}</div>
       </div>
       <div class="field">
@@ -4463,9 +4655,9 @@ function viewStatement(params) {
       '<button class="btn sm secondary" style="float:right;" onclick="location.hash=\'#office\'">← 사무실로</button></h2>' +
     '<div class="card no-print" style="margin-bottom:12px;">' +
       '<div class="grid-3" style="align-items:flex-end;">' +
-        '<div class="field"><label>거래처</label><select id="stmtCust"><option value="">— 선택하세요 —</option>' +
-          DB.customers.filter(c => c.active !== false).map(c => '<option value="' + c.id + '"' + (c.id === preCid ? ' selected' : '') + '>' + c.name + ' (' + c.code + ')</option>').join('') +
-        '</select></div>' +
+        '<div class="field"><label>거래처</label>' +
+          renderCustomerSearchSelect({ selectId: 'stmtCust', selectedId: preCid, placeholder: '— 선택하세요 —' }) +
+        '</div>' +
         '<div class="field"><label>시작일</label><input type="date" id="stmtFrom" value="' + firstDate + '"></div>' +
         '<div class="field"><label>종료일</label><input type="date" id="stmtTo" value="' + today + '"></div>' +
       '</div>' +
