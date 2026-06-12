@@ -2236,6 +2236,44 @@ function unitEn(u) {
 function termsLabel(t) {
   return { '현금': '현금/Cash', '계좌이체': '계좌이체/Transfer', '7일 외상': '7day', '14일 외상': '14day', '30일 외상': '30day' }[t] || (t || '-');
 }
+// 결제조건 → 일수 (현금/계좌이체는 0일 = 당일)
+function termsDays(t) {
+  if (!t) return 7;
+  if (t === '현금' || t === '계좌이체') return 0;
+  const m = (t + '').match(/(\d+)/);
+  return m ? parseInt(m[1], 10) : 7;
+}
+// 인보이스 발행일 기준 듀데이트 ("10 Jul 2026" 형식)
+function dueDateText(baseISO, terms) {
+  const base = new Date(baseISO);
+  if (isNaN(base.getTime())) return '-';
+  const d = new Date(base.getTime());
+  d.setDate(d.getDate() + termsDays(terms));
+  return d.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' });
+}
+// 인보이스 하단 표준 약관 HTML (화면/인쇄/PDF 공용)
+function invoiceFooterHTML(o, cust) {
+  const baseISO = o.invoicedAt || o.orderDate || new Date().toISOString();
+  const due = dueDateText(baseISO, cust && cust.terms);
+  const days = termsDays(cust && cust.terms);
+  const termLine = days > 0
+    ? `${days} DAYS after the invoice issued`
+    : `On invoice (${termsLabel(cust && cust.terms)})`;
+  return `
+    <div style="margin-top:18px; padding:12px 14px; border:1px solid #E5DCD3; border-radius:6px; background:#FBF8F4; font-size:9.5px; color:#3A2A2A; line-height:1.55;">
+      <div style="font-weight:800; color:#5C0F0F; font-size:11px; margin-bottom:6px;">Due Date: ${due}</div>
+      <div>Bank: SUNCORP &nbsp;&nbsp; Name: ALL THAT MEAT WHOLESALES PTY LTD</div>
+      <div>BSB: 484 799 &nbsp;&nbsp; Account: 079 429 751</div>
+      <div style="margin-top:6px;">*Order under $200.00, can be applied $20.00 delivery fee.</div>
+      <div>PAYMENT TERM : ${termLine}</div>
+      <div>*EFT PAYMENT: DESCRIBE COMPANY NAME ON THE BANK REFERENCE</div>
+      <div style="margin-top:6px; font-weight:700;">NOTICE</div>
+      <div>Claims will not be recognised unless made within 24 hours of delivery.</div>
+      <div style="margin-top:4px;">1. We reserve all the rights to charges interest and recovery costs for any unpaid amount. If payment is not made by the due date, an additional 5% interest will be charged.</div>
+      <div>2. Products delivered remain the property of ALL THAT MEAT P/L until they are paid in full. If the payment is overdue for more than 1 month, the collection process may be carried out through a lawyer and a collection claim company.</div>
+    </div>
+  `;
+}
 // 회사 주소 표기 ('Australia' 기본값은 인보이스에 표시하지 않음)
 function companyAddrLine() {
   var a = DB.company.address;
@@ -2969,7 +3007,9 @@ function viewInvoice(params) {
         </div>
       </div>
 
-      <div style="margin-top:30px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted);">
+      ${invoiceFooterHTML(o, cust)}
+
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted);">
         Thank you for your business. / ${DB.company.name}<br>
         All prices in ${DB.company.currency||'AUD'}, GST inclusive.
       </div>
@@ -3350,7 +3390,9 @@ function buildInvoiceHTML(o, cust, totals) {
         </div>
       </div>
 
-      <div style="margin-top:28px; padding-top:12px; border-top:1px solid #E5DCD3; font-size:10px; color:#999; line-height:1.6;">
+      ${invoiceFooterHTML(o, cust)}
+
+      <div style="margin-top:16px; padding-top:10px; border-top:1px solid #E5DCD3; font-size:10px; color:#999; line-height:1.6;">
         Thank you for your business. / ${DB.company.name}<br>
         All prices in ${DB.company.currency||'AUD'}, GST inclusive.
       </div>
