@@ -425,6 +425,123 @@ function saveOrderItemField(orderId, listKey, itemIdx, field) {
   }
 }
 
+// === Phase 2 동시성 개선 (2026-06-12) =====================================
+// 일반 entity (orders/customers/products/payments)에 대한 부분 업데이트 helpers.
+// 사무실에 매니저·담당자·총괄 3명이 같은 페이지에서 동시 작업할 때 발생하는
+// last-write-wins 충돌을 방지한다.
+
+// 한 entity 의 단일 필드만 업데이트 — 예: order.status, customer.phone
+// 다른 사용자가 같은 entity 의 *다른* 필드를 동시 수정해도 양쪽 모두 보존됨.
+function saveEntityField(entityType, entityId, field) {
+  const list = DB[entityType];
+  if (!Array.isArray(list)) return;
+  const idx = list.findIndex(x => x && x.id === entityId);
+  if (idx < 0) return;
+  saveLocalDB();
+  if (DB_REF) {
+    _lastSaveTime = Date.now();
+    const value = list[idx][field];
+    const path = entityType + '/' + idx + '/' + field;
+    const update = {};
+    update[path] = (value === undefined ? null : value);
+    DB_REF.update(update).catch(e => {
+      console.error('Firebase partial save error, falling back to full save:', e);
+      if (DB_REF) DB_REF.set(DB).catch(() => {});
+    });
+  }
+}
+
+// 여러 필드를 한 번에 — 예: order.status + order.invoicedAt 동시 변경
+function saveEntityFields(entityType, entityId, fields) {
+  const list = DB[entityType];
+  if (!Array.isArray(list)) return;
+  const idx = list.findIndex(x => x && x.id === entityId);
+  if (idx < 0) return;
+  saveLocalDB();
+  if (DB_REF) {
+    _lastSaveTime = Date.now();
+    const update = {};
+    Object.keys(fields).forEach(f => {
+      const v = fields[f];
+      update[entityType + '/' + idx + '/' + f] = (v === undefined ? null : v);
+    });
+    DB_REF.update(update).catch(e => {
+      console.error('Firebase partial save error, falling back to full save:', e);
+      if (DB_REF) DB_REF.set(DB).catch(() => {});
+    });
+  }
+}
+
+// 기존 entity 한 개를 통째로 교체 (편집 후 저장)
+// 다른 사용자가 같은 entity 를 동시 수정한 경우 마지막 저장이 이김 (불가피).
+// 그러나 *다른* entity 작업은 영향 받지 않음.
+function saveEntity(entityType, entityId, value) {
+  const list = DB[entityType];
+  if (!Array.isArray(list)) return;
+  const idx = list.findIndex(x => x && x.id === entityId);
+  if (idx < 0) return;
+  saveLocalDB();
+  if (DB_REF) {
+    _lastSaveTime = Date.now();
+    const update = {};
+    update[entityType + '/' + idx] = value;
+    DB_REF.update(update).catch(e => {
+      console.error('Firebase partial save error, falling back to full save:', e);
+      if (DB_REF) DB_REF.set(DB).catch(() => {});
+    });
+  }
+}
+
+// 신규 entity 를 안전하게 array 끝에 추가 — Firebase 트랜잭션으로
+// 동시 push 시 인덱스 충돌 (orders[5] 가 두 명 모두라서 한쪽이 덮어쓰기) 회피.
+// 로컬 DB는 이미 push 되었다고 가정 (호출 전에 DB[entityType].push() 했어야 함).
+function pushEntityToFirebase(entityType, newEntity) {
+  if (!DB_REF || !newEntity) return;
+  _lastSaveTime = Date.now();
+  DB_REF.child(entityType).transaction(currentList => {
+    const list = Array.isArray(currentList) ? currentList.slice() : [];
+    if (list.some(x => x && x.id === newEntity.id)) return; // 이미 있으면 그대로
+    list.push(newEntity);
+    return list;
+  }, (error, committed) => {
+    if (error || !committed) {
+      console.error('Firebase push transaction error, falling back:', error);
+      if (DB_REF) DB_REF.set(DB).catch(() => {});
+    }
+  });
+}
+
+// entity 삭제 — 트랜잭션으로 안전하게 array 에서 제거
+function removeEntityFromFirebase(entityType, entityId) {
+  if (!DB_REF) return;
+  _lastSaveTime = Date.now();
+  DB_REF.child(entityType).transaction(currentList => {
+    const list = Array.isArray(currentList) ? currentList : [];
+    return list.filter(x => x && x.id !== entityId);
+  }, (error, committed) => {
+    if (error || !committed) {
+      console.error('Firebase remove transaction error, falling back:', error);
+      if (DB_REF) DB_REF.set(DB).catch(() => {});
+    }
+  });
+}
+
+// entity 여러 개 일괄 삭제
+function removeEntitiesFromFirebase(entityType, entityIds) {
+  if (!DB_REF) return;
+  const idsSet = new Set(entityIds);
+  _lastSaveTime = Date.now();
+  DB_REF.child(entityType).transaction(currentList => {
+    const list = Array.isArray(currentList) ? currentList : [];
+    return list.filter(x => x && !idsSet.has(x.id));
+  }, (error, committed) => {
+    if (error || !committed) {
+      console.error('Firebase bulk remove transaction error, falling back:', error);
+      if (DB_REF) DB_REF.set(DB).catch(() => {});
+    }
+  });
+}
+
 function uid(prefix='id') {
   return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
 }
@@ -1148,7 +1265,9 @@ function ordAdmDeleteOne(oid) {
   if (!o) return;
   if (!confirm(`주문 ${o.orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.`)) return;
   DB.orders = DB.orders.filter(x => x.id !== oid);
-  saveDB();
+  // Phase 2 동시성: 트랜잭션으로 안전 삭제
+  removeEntityFromFirebase('orders', oid);
+  saveLocalDB();
   route();
 }
 
@@ -1157,7 +1276,9 @@ function ordAdmDeleteSelected(cid) {
   if (ids.length === 0) return alert('삭제할 주문을 선택하세요.');
   if (!confirm(`선택한 ${ids.length}건의 주문을 삭제할까요?\n복구할 수 없습니다.`)) return;
   DB.orders = DB.orders.filter(o => !ids.includes(o.id));
-  saveDB();
+  // Phase 2 동시성: 트랜잭션으로 일괄 삭제
+  removeEntitiesFromFirebase('orders', ids);
+  saveLocalDB();
   route();
 }
 
@@ -1169,8 +1290,11 @@ function ordAdmDeleteAll(cid) {
   if (!confirm(`⚠️ ${custName}의 거래내역 ${orders.length}건을 전체 삭제합니다.\n복구할 수 없습니다. 계속할까요?`)) return;
   const typed = prompt(`확인을 위해 거래처명 "${custName}" 을(를) 입력하세요:`);
   if (typed !== custName) return alert('거래처명이 일치하지 않아 취소되었습니다.');
+  const idsToRemove = orders.map(o => o.id);
   DB.orders = DB.orders.filter(o => (o.customerId || '__none__') !== cid);
-  saveDB();
+  // Phase 2 동시성: 트랜잭션으로 일괄 삭제
+  removeEntitiesFromFirebase('orders', idsToRemove);
+  saveLocalDB();
   alert(`${custName}의 거래내역 ${orders.length}건이 삭제되었습니다.`);
   route();
 }
@@ -1389,7 +1513,8 @@ function updateProductField(prodId, field, value) {
   } else {
     p[field] = String(value || '').trim();
   }
-  saveDB();
+  // Phase 2 동시성: 이 품목의 해당 필드만 업데이트 (다른 사용자의 다른 품목 작업 안전)
+  saveEntityField('products', prodId, field);
 }
 function editProduct(id) {
   const p = id ? DB.products.find(x => x.id === id) : { id: uid('p'), name:'', cut:'소고기', brand:'', boxKg:0, packKg:0, priceKg:0, active:true };
@@ -1421,17 +1546,26 @@ function saveProduct(id, isNew) {
     priceKg: parseFloat(val('m_price'))||0, active: document.getElementById('m_active').checked
   };
   if (!obj.name) return alert('품목명을 입력하세요.');
-  if (isNew === 'true' || isNew === true) DB.products.push(obj);
-  else {
+  if (isNew === 'true' || isNew === true) {
+    DB.products.push(obj);
+    // Phase 2 동시성: 트랜잭션으로 안전하게 신규 품목 추가
+    pushEntityToFirebase('products', obj);
+  } else {
     const i = DB.products.findIndex(p => p.id === id);
     DB.products[i] = obj;
+    // Phase 2 동시성: 이 품목만 부분 업데이트
+    saveEntity('products', id, obj);
   }
-  saveDB(); closeModal(); renderProductsAdmin();
+  saveLocalDB();
+  closeModal(); renderProductsAdmin();
 }
 function delProduct(id) {
   if (!confirm('이 품목을 삭제하시겠습니까?')) return;
   DB.products = DB.products.filter(p => p.id !== id);
-  saveDB(); renderProductsAdmin();
+  // Phase 2 동시성: 트랜잭션으로 안전하게 품목 제거
+  removeEntityFromFirebase('products', id);
+  saveLocalDB();
+  renderProductsAdmin();
 }
 
 function renderCustomersAdmin() {
@@ -1521,13 +1655,19 @@ function saveCustomer(id, isNew, favs) {
     favoriteProductIds: typeof favs === 'string' ? JSON.parse(favs) : favs
   };
   if (!obj.name) return alert('거래처명을 입력하세요.');
-  if (isNew === 'true' || isNew === true) DB.customers.push(obj);
-  else {
+  if (isNew === 'true' || isNew === true) {
+    DB.customers.push(obj);
+    // Phase 2 동시성: 트랜잭션으로 안전하게 신규 거래처 추가
+    pushEntityToFirebase('customers', obj);
+  } else {
     const i = DB.customers.findIndex(c => c.id === id);
     obj.favoriteProductIds = DB.customers[i].favoriteProductIds || [];
     DB.customers[i] = obj;
+    // Phase 2 동시성: 이 거래처만 부분 업데이트
+    saveEntity('customers', id, obj);
   }
-  saveDB(); closeModal(); renderCustomersAdmin();
+  saveLocalDB();
+  closeModal(); renderCustomersAdmin();
 }
 function toggleCustomerBlock(id) {
   const c = DB.customers.find(x => x.id === id);
@@ -1537,7 +1677,8 @@ function toggleCustomerBlock(id) {
     if (!confirm(`「${c.name}」 거래처를 차단하시겠습니까?\n\n차단 후에는 주문 페이지 접근이 불가능합니다.\n관리자 화면에서 언제든 해제할 수 있습니다.`)) return;
   }
   c.active = !willBlock;
-  saveDB();
+  // Phase 2 동시성: 차단 상태만 부분 업데이트
+  saveEntityField('customers', id, 'active');
   renderCustomersAdmin();
   showToast(willBlock ? `🚫 ${c.name} 차단됨` : `✅ ${c.name} 차단 해제됨`);
 }
@@ -1545,7 +1686,10 @@ function toggleCustomerBlock(id) {
 function delCustomer(id) {
   if (!confirm('이 거래처를 삭제하시겠습니까? 관련 주문은 그대로 남습니다.')) return;
   DB.customers = DB.customers.filter(c => c.id !== id);
-  saveDB(); renderCustomersAdmin();
+  // Phase 2 동시성: 트랜잭션으로 안전하게 거래처 제거
+  removeEntityFromFirebase('customers', id);
+  saveLocalDB();
+  renderCustomersAdmin();
 }
 function copyOrderLink(custId) {
   const cust = DB.customers.find(c => c.id === custId);
@@ -1651,7 +1795,8 @@ function toggleFav(custId, prodId) {
     cust.favoriteProductIds = cust.favoriteProductIds.filter(x => x !== prodId);
   else
     cust.favoriteProductIds.push(prodId);
-  saveDB();
+  // Phase 2 동시성: favoriteProductIds 만 부분 업데이트 (다른 거래처 작업 안전)
+  saveEntityField('customers', custId, 'favoriteProductIds');
   // Update chip panel (instant, no scroll jump)
   renderFavChips(custId);
   // Update the clicked item badge in the list
@@ -2048,7 +2193,8 @@ function toggleCatalogFav(custId, prodId, btn) {
     btn.title = 'Remove from Favourites / 자주 주문에서 제거';
     btn.style.color = '#F0B400';
   }
-  saveDB();
+  // Phase 2 동시성: 이 거래처의 favorites 만 부분 업데이트
+  saveEntityField('customers', custId, 'favoriteProductIds');
   // Refresh favourites panel without re-rendering whole page
   const custObj = DB.customers.find(c => c.id === custId);
   if (custObj) renderFavQuick(custObj);
@@ -2101,9 +2247,36 @@ function estWeight(item, p) {
 }
 async function submitOrder(custId) {
   if (CART.length === 0) return alert('주문 품목을 추가해주세요.');
+
+  // Phase 2 동시성: 트랜잭션으로 orderSeq 를 안전하게 증가시켜 주문번호 중복 방지
+  // (두 거래처가 동시에 주문 제출해도 서로 다른 번호 보장)
+  let orderSeq = 0;
+  if (DB_REF) {
+    try {
+      const result = await DB_REF.child('settings/orderSeq').transaction(curr => {
+        const next = (typeof curr === 'number' && curr > 0) ? curr : 1;
+        return next + 1;
+      });
+      if (result && result.committed) {
+        const newVal = result.snapshot.val();
+        if (typeof newVal === 'number') {
+          orderSeq = newVal - 1;
+          if (!DB.settings) DB.settings = {};
+          DB.settings.orderSeq = newVal;
+        }
+      }
+    } catch(e) {
+      console.warn('orderSeq transaction failed, using local counter:', e);
+    }
+  }
+  if (!orderSeq) {
+    orderSeq = (DB.settings.orderSeq || 1);
+    DB.settings.orderSeq = orderSeq + 1;
+  }
+
   const order = {
     id: uid('o'),
-    orderNo: 'ATM-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + String(DB.settings.orderSeq++).padStart(3,'0'),
+    orderNo: 'ATM-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + String(orderSeq).padStart(3,'0'),
     customerId: custId,
     orderDate: new Date().toISOString(),
     deliveryDate: val('deliveryDate'),
@@ -2146,11 +2319,28 @@ async function submitOrder(custId) {
   const _bg = document.getElementById('modalBg');
   if (_bg) _bg.onclick = null;
 
+  // Phase 2 동시성: 전체 DB 덮어쓰기 대신 신규 주문을 트랜잭션으로 push.
+  // 거래처 favorites 도 부분 업데이트 (다른 거래처 주문과 충돌 없음).
   const delivered = !DB_REF ? true : await new Promise(resolve => {
     let done = false;
     const finish = ok => { if (!done) { done = true; clearTimeout(timer); resolve(ok); } };
     const timer = setTimeout(() => finish(false), 12000); // 12초 내 확인 못하면 실패로 간주
-    DB_REF.set(DB).then(() => finish(true)).catch(() => finish(false));
+    _lastSaveTime = Date.now();
+    DB_REF.child('orders').transaction(currentList => {
+      const list = Array.isArray(currentList) ? currentList.slice() : [];
+      if (list.some(x => x && x.id === order.id)) return list; // 이미 추가됨
+      list.push(order);
+      return list;
+    }, (error, committed) => {
+      if (committed && !error) {
+        // 거래처 favorites 부분 업데이트 (fire-and-forget)
+        if (custForFav) saveEntityField('customers', custId, 'favoriteProductIds');
+        finish(true);
+      } else {
+        // 트랜잭션 실패 시 전체 저장으로 폴백
+        DB_REF.set(DB).then(() => finish(true)).catch(() => finish(false));
+      }
+    });
   });
 
   const stateEl = document.getElementById('submitState');
@@ -2223,7 +2413,11 @@ function viewWeigh(params) {
   const order = DB.orders.find(o => o.id === id);
   if (!order) return location.hash = '#warehouse';
   const cust = DB.customers.find(c => c.id === order.customerId);
-  if (order.status === 'new') { order.status = 'weighing'; saveDB(); }
+  if (order.status === 'new') {
+    order.status = 'weighing';
+    // Phase 2 동시성: 다른 주문에 영향 없이 status 만 업데이트
+    saveEntityField('orders', order.id, 'status');
+  }
   const app = document.getElementById('app');
   app.innerHTML = `
     <h2 class="page-title">⚖️ ${order.orderNo}
@@ -2280,7 +2474,8 @@ function completeWeighing(orderId) {
   }
   o.status = 'weighed';
   o.weighedAt = new Date().toISOString();
-  saveDB();
+  // Phase 2 동시성: 다른 주문 작업과 충돌 없이 status+weighedAt 동시 업데이트
+  saveEntityFields('orders', orderId, { status: o.status, weighedAt: o.weighedAt });
   alert('계근 완료! 사무실로 전송되었습니다.');
   location.hash = '#warehouse';
 }
@@ -2434,8 +2629,10 @@ window.saveInlinePayment = function() {
   if (!cid) { alert('거래처를 선택하세요.'); return; }
   if (!date) { alert('입금일을 입력하세요.'); return; }
   if (isNaN(amount) || amount <= 0) { alert('올바른 금액을 입력하세요.'); return; }
-  DB.payments.push({ id: uid('pay'), customerId: cid, date, amount, method, reference: ref, notes, createdAt: new Date().toISOString() });
-  saveDB();
+  const newPayment = { id: uid('pay'), customerId: cid, date, amount, method, reference: ref, notes, createdAt: new Date().toISOString() };
+  DB.payments.push(newPayment);
+  // Phase 2 동시성: 다른 매니저가 다른 거래처 입금 처리 중일 때 안전하게 push
+  pushEntityToFirebase('payments', newPayment);
   viewOffice();
   const panel = document.getElementById('inlinePaymentPanel');
   if (panel) panel.style.display = 'block';
@@ -2981,17 +3178,26 @@ function removeInvoiceItem(orderId, idx) {
   var item = getInvoiceItems(o)[idx];
   var p    = DB.products.find(function(x){ return x.id === item.productId; });
   var name = p ? p.name : '해당 품목';
+  var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
   if (item._status === 'cancelled') {
     // 복원
     item._status = ''; item._cancelNote = '';
-    saveDB(); renderPrepTbody(o); renderPrepTotals(o); renderInvoiceChangeNotice(o);
+    // Phase 2 동시성: 부분 업데이트
+    saveOrderItemField(oid, listKey, idx, '_status');
+    saveOrderItemField(oid, listKey, idx, '_cancelNote');
+    saveLocalDB();
+    renderPrepTbody(o); renderPrepTotals(o); renderInvoiceChangeNotice(o);
     return;
   }
   var reason = prompt('"' + name + '" 취소 처리합니다.\n사유 입력 (예: 재고없음, 고객취소):');
   if (reason === null) return;
   item._status = 'cancelled';
   item._cancelNote = reason || '취소';
-  saveDB(); renderPrepTbody(o); renderPrepTotals(o); renderInvoiceChangeNotice(o);
+  // Phase 2 동시성: 부분 업데이트
+  saveOrderItemField(oid, listKey, idx, '_status');
+  saveOrderItemField(oid, listKey, idx, '_cancelNote');
+  saveLocalDB();
+  renderPrepTbody(o); renderPrepTotals(o); renderInvoiceChangeNotice(o);
 }
 
 function addInvoiceItem(orderId, productId, note) {
@@ -3009,7 +3215,8 @@ function addInvoiceItem(orderId, productId, note) {
     lineUnitPrice: p.priceKg || 0,
     _source: 'added', _addNote: note || ''
   });
-  saveDB();
+  // Phase 2 동시성: 이 주문의 invoiceItems 만 부분 업데이트
+  saveEntityField('orders', orderId, 'invoiceItems');
   document.getElementById('prepAddSearch').value = '';
   document.getElementById('prepAddResults').innerHTML = '';
   renderPrepTbody(o);
@@ -3047,7 +3254,8 @@ function resetInvoiceItems(orderId) {
   if (!confirm('인보이스 품목을 원본 주문으로 되돌릴까요?')) return;
   var o = DB.orders.find(function(x){ return x.id === orderId; });
   delete o.invoiceItems;
-  saveDB();
+  // Phase 2 동시성: invoiceItems 만 null 처리 (다른 주문 영향 없음)
+  saveEntityField('orders', orderId, 'invoiceItems');
   route();
 }
 
@@ -3091,11 +3299,13 @@ function renderPrepTotals(o) {
 function resetPrepPricesToMaster(orderId) {
   if (!confirm('모든 라인 단가를 품목 마스터의 현재값으로 되돌릴까요?')) return;
   const o = DB.orders.find(x => x.id === orderId);
+  const listKey = o.invoiceItems ? 'invoiceItems' : 'items';
   getInvoiceItems(o).forEach(it => {
     const p = DB.products.find(x => x.id === it.productId);
     it.lineUnitPrice = p ? p.priceKg : 0;
   });
-  saveDB();
+  // Phase 2 동시성: 이 주문의 가격 리스트만 부분 업데이트
+  saveEntityField('orders', orderId, listKey);
   route(); // re-render
 }
 async function issueInvoice(orderId) {
@@ -3105,12 +3315,43 @@ async function issueInvoice(orderId) {
     if (!confirm(`${t.unweighedCount}건의 품목이 계근되지 않았습니다.\n그래도 인보이스를 발행하시겠습니까?`)) return;
   }
   if (!confirm(`인보이스를 발행합니다.\n총액: $${fmtMoney(t.grand)} (GST 포함)\n\n발행 후에는 단가 수정이 불가합니다. 진행할까요?`)) return;
-  // 인보이스 번호: 발행순서대로 200001부터 (예: 200001, 200002 …)
-  if (!DB.settings.invoiceNoNext) DB.settings.invoiceNoNext = 200001;
-  o.invoiceNo = String(DB.settings.invoiceNoNext++);
+
+  // Phase 2 동시성: 두 매니저가 동시에 인보이스 발행해도 중복 번호 방지
+  // Firebase 트랜잭션으로 invoiceNoNext 를 원자적으로 증가시키고 그 값을 사용
+  let invoiceNo;
+  if (DB_REF) {
+    try {
+      const result = await DB_REF.child('settings/invoiceNoNext').transaction(curr => {
+        const next = (typeof curr === 'number' && curr >= 200001) ? curr : 200001;
+        return next + 1;
+      });
+      const committed = result && result.committed;
+      const newVal = result && result.snapshot && result.snapshot.val();
+      if (committed && typeof newVal === 'number') {
+        invoiceNo = String(newVal - 1);
+        if (!DB.settings) DB.settings = {};
+        DB.settings.invoiceNoNext = newVal;
+      }
+    } catch(e) {
+      console.warn('invoiceNoNext transaction failed, falling back to local counter:', e);
+    }
+  }
+  if (!invoiceNo) {
+    // Firebase 미연결 또는 트랜잭션 실패 시 로컬 폴백
+    if (!DB.settings.invoiceNoNext) DB.settings.invoiceNoNext = 200001;
+    invoiceNo = String(DB.settings.invoiceNoNext++);
+  }
+  o.invoiceNo = invoiceNo;
   o.status = 'invoiced';
   o.invoicedAt = new Date().toISOString();
-  saveDB();
+
+  // Phase 2 동시성: 이 주문의 status/invoiceNo/invoicedAt 만 부분 업데이트
+  saveEntityFields('orders', orderId, {
+    status: o.status,
+    invoicedAt: o.invoicedAt,
+    invoiceNo: o.invoiceNo
+  });
+  saveLocalDB();
   location.hash = '#invoice?id=' + orderId;
   autoSaveInvoice(orderId).catch(e => console.warn('autoSaveInvoice error:', e));
 }
@@ -3245,7 +3486,9 @@ function viewInvoice(params) {
 function markDelivered(id) {
   const o = DB.orders.find(x => x.id === id);
   o.status = 'delivered'; o.deliveredAt = new Date().toISOString();
-  saveDB(); alert('배송완료로 변경되었습니다.'); route();
+  // Phase 2 동시성: 이 주문의 status/deliveredAt 만 부분 업데이트
+  saveEntityFields('orders', id, { status: o.status, deliveredAt: o.deliveredAt });
+  alert('배송완료로 변경되었습니다.'); route();
 }
 function sendInvoice(id) {
   const o = DB.orders.find(x => x.id === id);
@@ -3419,7 +3662,7 @@ function viewOrderDetail(params) {
         ${o.status==='new' || o.status==='weighing' ? `<button class="btn warn" onclick="location.hash='#weigh?id=${o.id}'">⚖️ 계근하기</button>` : ''}
         ${o.status==='weighed' ? `<button class="btn success" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 발행</button>` : ''}
         ${o.status==='invoiced' || o.status==='delivered' ? `<button class="btn" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 보기</button>` : ''}
-        <button class="btn danger" onclick="if(confirm('주문을 삭제할까요?')){DB.orders=DB.orders.filter(x=>x.id!=='${o.id}'); saveDB(); location.hash='#home';}">삭제</button>
+        <button class="btn danger" onclick="if(confirm('주문을 삭제할까요?')){DB.orders=DB.orders.filter(x=>x.id!=='${o.id}'); removeEntityFromFirebase('orders','${o.id}'); saveLocalDB(); location.hash='#home';}">삭제</button>
         <button style="background:#FEE500; color:#3A1D1D; border:none; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:700; font-family:inherit;" onclick="shareOrder('${o.id}')">💬 카톡 공유</button>
       </div>
       <table class="t">
@@ -4131,7 +4374,8 @@ window.savePayment = function() {
     createdAt: new Date().toISOString()
   };
   DB.payments.push(payment);
-  saveDB();
+  // Phase 2 동시성: 다른 입금 작업과 충돌 없이 push
+  pushEntityToFirebase('payments', payment);
 
   // Show success, reset amount/ref/notes for next entry
   document.getElementById('payAmount').value = '';
@@ -4489,6 +4733,38 @@ if (FIREBASE_READY && DB_REF) {
       <div style="margin-top:8px; font-size:13px;">실시간 연결 중... / Connecting...</div>
     </div>`;
 
+  // Phase 2-D: 어떤 화면에서 입력 중이면 자동 새로고침으로 입력값이 사라지는 걸 방지
+  function isSensitiveEntryScreen() {
+    const hash = location.hash || '';
+    return _isOrderEntry
+      || hash.indexOf('#weigh') === 0
+      || hash.indexOf('#invoicePrep') === 0
+      || hash.indexOf('#payment') === 0
+      || hash.indexOf('#admin') === 0
+      || document.getElementById('modalBg') !== null;
+  }
+
+  // Phase 2-D: 충돌 인지도 향상 — 다른 기기 업데이트 시 항상 배너 표시
+  function showSyncBanner(isSensitive) {
+    let banner = document.getElementById('sync-banner');
+    if (banner) banner.remove();
+    banner = document.createElement('div');
+    banner.id = 'sync-banner';
+    if (isSensitive) {
+      // 입력 중이면 빨간 경고 (자동 새로고침 안 함, 사용자가 직접 새로고침)
+      banner.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#C0392B;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.2);cursor:pointer;';
+      banner.innerHTML = '⚠️ 다른 사용자가 데이터를 업데이트했습니다 — 입력 중이면 저장 후 새로고침 (클릭하여 닫기)';
+      banner.onclick = () => banner.remove();
+      // 입력 중에는 자동으로 안 사라짐 — 사용자가 인지 후 닫아야 함
+    } else {
+      // 일반 화면은 짧은 파란 정보 배너
+      banner.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#2E5C8A;color:#fff;text-align:center;padding:6px;font-size:12px;z-index:9999;';
+      banner.innerHTML = '🔄 다른 기기에서 데이터가 업데이트되었습니다.';
+      setTimeout(() => { banner && banner.remove(); }, 4000);
+    }
+    document.body.appendChild(banner);
+  }
+
   let _firstLoad = true;
   DB_REF.on('value', snapshot => {
     const isSelf = (Date.now() - _lastSaveTime) < 3000;
@@ -4504,20 +4780,15 @@ if (FIREBASE_READY && DB_REF) {
     if (!isSelf) {
       if (data) DB = data;
       saveLocalDB();
-      if (!_isOrderEntry) {
+      const sensitive = isSensitiveEntryScreen();
+      // 항상 배너 표시 — 사용자가 다른 기기 변경을 인지하도록
+      showSyncBanner(sensitive);
+      if (!sensitive) {
+        // 입력 중이 아니면 자동 새로고침으로 최신 데이터 반영
         route();
-      } else {
-        // 주문 입력 중이면 데이터를 덮어쓰지 않고 알림 배너만 표시
-        const banner = document.getElementById('sync-banner');
-        if (!banner) {
-          const b = document.createElement('div');
-          b.id = 'sync-banner';
-          b.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#2E5C8A;color:#fff;text-align:center;padding:6px;font-size:12px;z-index:9999;';
-          b.innerHTML = '🔄 다른 기기에서 데이터가 업데이트되었습니다.';
-          document.body.appendChild(b);
-          setTimeout(() => { b && b.remove(); }, 4000);
-        }
       }
+      // 입력 중이면 데이터는 메모리에 반영되지만 화면은 그대로 유지
+      // (사용자가 저장 후 직접 새로고침해야 깨끗한 최신 화면을 봄)
     }
   });
 } else {
