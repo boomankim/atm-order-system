@@ -398,6 +398,33 @@ function saveDB() {
     DB_REF.set(DB).catch(e => console.error('Firebase save error:', e));
   }
 }
+
+// === Phase 1 동시성 개선 (2026-06-12) =====================================
+// saveDB()는 DB 전체를 Firebase에 덮어쓰기 때문에 여러 기기가 동시에
+// 다른 주문을 계근/단가 입력 시 last-write-wins 충돌로 데이터가 사라질 수 있음.
+// saveOrderItemField()는 변경된 필드 하나만 부분 업데이트해서 충돌을 회피.
+// 사용처: updateWeighing, updatePrepWeight, updatePrepPrice (계근/사무실).
+// listKey: 'items' (계근 화면) 또는 'invoiceItems' (인보이스 준비 화면).
+// 다른 기기의 작업이 같은 주문의 같은 필드를 동시 수정하지 않는 한 안전.
+function saveOrderItemField(orderId, listKey, itemIdx, field) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o || !o[listKey] || !o[listKey][itemIdx]) return;
+  saveLocalDB();
+  if (DB_REF) {
+    const orderIdx = DB.orders.findIndex(x => x.id === orderId);
+    if (orderIdx < 0) return;
+    _lastSaveTime = Date.now();
+    const value = o[listKey][itemIdx][field];
+    const path = 'orders/' + orderIdx + '/' + listKey + '/' + itemIdx + '/' + field;
+    const update = {};
+    update[path] = (value === undefined ? null : value);
+    DB_REF.update(update).catch(e => {
+      console.error('Firebase partial save error, falling back to full save:', e);
+      if (DB_REF) DB_REF.set(DB).catch(() => {});
+    });
+  }
+}
+
 function uid(prefix='id') {
   return prefix + '_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,7);
 }
@@ -2262,7 +2289,8 @@ function updateWeighing(orderId, idx, val) {
   const o = DB.orders.find(x => x.id === orderId);
   const v = parseFloat(val);
   o.items[idx].actualWeightKg = (isNaN(v) || v <= 0) ? null : v;
-  saveDB();
+  // Phase 1 동시성: 전체 DB 덮어쓰지 않고 이 항목만 부분 업데이트
+  saveOrderItemField(orderId, 'items', idx, 'actualWeightKg');
   renderWeighingTotal(o);
 }
 function renderWeighingTotal(o) {
@@ -3027,7 +3055,9 @@ function updatePrepWeight(orderId, idx, val) {
   var o = DB.orders.find(function(x){ return x.id === orderId; });
   if (!o) return;
   getInvoiceItems(o)[idx].actualWeightKg = parseFloat(val) || 0;
-  saveDB();
+  // Phase 1 동시성: 인보이스 준비 화면도 부분 업데이트
+  var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
+  saveOrderItemField(orderId, listKey, idx, 'actualWeightKg');
   // Re-render the amount cell directly
   var amtEl = document.getElementById('prep_amt_' + idx);
   var it = getInvoiceItems(o)[idx];
@@ -3038,7 +3068,9 @@ function updatePrepPrice(orderId, idx, val) {
   var o = DB.orders.find(function(x){ return x.id === orderId; });
   if (!o) return;
   getInvoiceItems(o)[idx].lineUnitPrice = parseFloat(val) || 0;
-  saveDB();
+  // Phase 1 동시성: 단가 변경도 부분 업데이트
+  var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
+  saveOrderItemField(orderId, listKey, idx, 'lineUnitPrice');
   var amtEl = document.getElementById('prep_amt_' + idx);
   var it = getInvoiceItems(o)[idx];
   if (amtEl) amtEl.textContent = '$' + fmtMoney((it.actualWeightKg||0) * (it.lineUnitPrice||0));
