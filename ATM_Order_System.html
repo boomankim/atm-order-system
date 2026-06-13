@@ -2646,10 +2646,14 @@ function viewOffice() {
       </table>`}
     </div>
     <div class="card">
-      <h3>💰 거래처별 미수금</h3>
-      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap;">
+      <h3>📊 매출 일보 — <span id="drDateLabel" style="color:var(--brand);">${formatDateDMY(new Date().toISOString().slice(0,10))}</span></h3>
+      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; align-items:center;">
+        <label style="font-size:12px; color:var(--muted);">기준일자:</label>
+        <input type="date" id="drDate" value="${new Date().toISOString().slice(0,10)}" onchange="renderDailyReport()" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px;">
+        <button class="btn sm" onclick="setDrDateToday()">오늘</button>
         <button class="btn sm" onclick="togglePaymentPanel()">💳 입금 처리</button>
         <button class="btn sm secondary" onclick="location.hash='#statement'">📄 스테이트먼트</button>
+        <button class="btn sm" style="background:var(--info);" onclick="printDailyReport()">🖨️ PDF / 인쇄</button>
       </div>
       ${(() => {
         const today = new Date().toISOString().slice(0,10);
@@ -2674,65 +2678,293 @@ function viewOffice() {
           </div>
         </div>`;
       })()}
-      ${(() => {
-        const custs = DB.customers.filter(c => c.active !== false);
-        const today = new Date(); today.setHours(0,0,0,0);
-        const rows = custs.map(c => {
-          // 거래처의 모든 인보이스 (오래된 순)
-          const custInvoices = DB.orders
-            .filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === c.id)
-            .map(o => ({
-              dateISO: (o.invoicedAt || o.orderDate || '').slice(0,10),
-              amount: computeTotals(o).grand
-            }))
-            .filter(x => x.dateISO)
-            .sort((a, b) => a.dateISO.localeCompare(b.dateISO));
-          const invoiced = custInvoices.reduce((s, x) => s + x.amount, 0);
-          const paid = (DB.payments||[]).filter(p => p.customerId === c.id)
-            .reduce((s, p) => s + p.amount, 0);
-          const balance = invoiced - paid;
-          // Overdue 계산: 입금을 오래된 인보이스부터 FIFO 할당, 남은 미결제 중 결제텀 초과분만 합산
-          const days = termsDays(c.terms);
-          let remainingPayment = paid;
-          let overdue = 0;
-          for (const inv of custInvoices) {
-            let unpaid = inv.amount;
-            if (remainingPayment > 0) {
-              const applied = Math.min(remainingPayment, unpaid);
-              unpaid -= applied;
-              remainingPayment -= applied;
-            }
-            if (unpaid > 0.001) {
-              const invDate = new Date(inv.dateISO);
-              const dueDate = new Date(invDate.getTime());
-              dueDate.setDate(dueDate.getDate() + days);
-              if (dueDate < today) overdue += unpaid;
-            }
-          }
-          return { c, invoiced, paid, balance, overdue };
-        }).filter(r => r.invoiced > 0 || r.balance !== 0);
-        rows.sort((a, b) => (b.overdue - a.overdue) || (b.balance - a.balance));
-        if (rows.length === 0) return '<div class="empty">인보이스된 주문이 없습니다.</div>';
-        return `<table class="t">
-          <thead><tr><th>거래처</th><th>결제조건</th><th class="num">총 인보이스</th><th class="num">총 입금</th><th class="num">전체 미수금</th><th class="num">Overdue</th></tr></thead>
-          <tbody>
-            ${rows.map(({c, invoiced, paid, balance, overdue}) => `<tr style="${balance <= 0 ? 'color:var(--muted);' : ''}">
-              <td><b>${c.name}</b>${c.contact ? `<br><small style="color:var(--muted);">${c.contact}</small>` : ''}</td>
-              <td><small style="color:var(--muted);">${termsLabel(c.terms)}</small></td>
-              <td class="num">$${fmtMoney(invoiced)}</td>
-              <td class="num">$${fmtMoney(paid)}</td>
-              <td class="num" style="font-weight:700; color:${balance > 0 ? 'var(--warn)' : 'var(--success)'};">$${fmtMoney(balance)}</td>
-              <td class="num" style="font-weight:700; color:${overdue > 0 ? '#D32F2F' : 'var(--muted)'};">${overdue > 0 ? '🔴 $' + fmtMoney(overdue) : '–'}</td>
-            </tr>`).join('')}
-          </tbody>
-        </table>`;
-      })()}
+      <div id="drTableWrap"><div class="empty">불러오는 중...</div></div>
     </div>
   `;
+  setTimeout(() => { if (typeof renderDailyReport === 'function') renderDailyReport(); }, 0);
 }
 window.togglePaymentPanel = function() {
   const el = document.getElementById('inlinePaymentPanel');
   if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+};
+
+// =========================================================================
+//  매출 일보 (Daily Sales Report)
+// =========================================================================
+function formatDateDMY(iso) {
+  if (!iso) return '-';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' });
+}
+
+function dailyReportComputeRows(dateISO) {
+  const custs = DB.customers.filter(c => c.active !== false);
+  const todayCutoff = new Date(dateISO + 'T00:00:00');
+  const rows = custs.map(c => {
+    const days = termsDays(c.terms);
+    const allInvoices = DB.orders
+      .filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === c.id)
+      .map(o => ({
+        dateISO: (o.invoicedAt || o.orderDate || '').slice(0,10),
+        amount: computeTotals(o).grand
+      }))
+      .filter(x => x.dateISO);
+    const allPayments = (DB.payments||[]).filter(p => p.customerId === c.id);
+
+    // 전미수금 = 선택일 이전(<)까지의 인보이스 - 입금
+    const priorInvoiced = allInvoices.filter(x => x.dateISO < dateISO).reduce((s,x)=>s+x.amount,0);
+    const priorPaid = allPayments.filter(p => (p.date||'') < dateISO).reduce((s,p)=>s+p.amount,0);
+    const priorBalance = priorInvoiced - priorPaid;
+
+    // 당일 매출액 / 입금액
+    const todaySales = allInvoices.filter(x => x.dateISO === dateISO).reduce((s,x)=>s+x.amount,0);
+    const todayPaid = allPayments.filter(p => (p.date||'') === dateISO).reduce((s,p)=>s+p.amount,0);
+
+    // 현잔액 = 전미수금 + 매출액 - 입금액
+    const currentBalance = priorBalance + todaySales - todayPaid;
+
+    // Overdue: 선택일까지 FIFO 정산 후 결제텀 초과 미결제 합
+    const invoicesAsOf = allInvoices
+      .filter(x => x.dateISO <= dateISO)
+      .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+    let totalPaymentAsOf = allPayments
+      .filter(p => (p.date||'') <= dateISO)
+      .reduce((s,p)=>s+p.amount,0);
+    let overdue = 0;
+    for (const inv of invoicesAsOf) {
+      let unpaid = inv.amount;
+      if (totalPaymentAsOf > 0) {
+        const applied = Math.min(totalPaymentAsOf, unpaid);
+        unpaid -= applied;
+        totalPaymentAsOf -= applied;
+      }
+      if (unpaid > 0.001) {
+        const invDate = new Date(inv.dateISO + 'T00:00:00');
+        const dueDate = new Date(invDate.getTime());
+        dueDate.setDate(dueDate.getDate() + days);
+        if (dueDate < todayCutoff) overdue += unpaid;
+      }
+    }
+    return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue };
+  }).filter(r =>
+    Math.abs(r.priorBalance) > 0.001 ||
+    Math.abs(r.todaySales) > 0.001 ||
+    Math.abs(r.todayPaid) > 0.001 ||
+    Math.abs(r.currentBalance) > 0.001 ||
+    r.overdue > 0.001
+  );
+  rows.sort((a,b) => (b.overdue - a.overdue) || (b.currentBalance - a.currentBalance) || a.c.name.localeCompare(b.c.name, 'ko'));
+  return rows;
+}
+
+function dailyReportTotals(rows) {
+  return rows.reduce((t, r) => ({
+    priorBalance: t.priorBalance + r.priorBalance,
+    todaySales: t.todaySales + r.todaySales,
+    todayPaid: t.todayPaid + r.todayPaid,
+    currentBalance: t.currentBalance + r.currentBalance,
+    overdue: t.overdue + r.overdue,
+  }), {priorBalance:0, todaySales:0, todayPaid:0, currentBalance:0, overdue:0});
+}
+
+function dailyReportScreenTableHTML(rows) {
+  if (rows.length === 0) return '<div class="empty">표시할 거래내역이 없습니다.</div>';
+  const totals = dailyReportTotals(rows);
+  return `<table class="t">
+    <thead>
+      <tr>
+        <th>거래처</th>
+        <th>결제조건</th>
+        <th class="num">전미수금</th>
+        <th class="num">매출액</th>
+        <th class="num">입금액</th>
+        <th class="num">현잔액</th>
+        <th class="num">Overdue</th>
+      </tr>
+    </thead>
+    <tbody>
+      ${rows.map(r => {
+        const balColor = r.currentBalance > 0 ? 'var(--warn)' : (r.currentBalance < -0.001 ? 'var(--success)' : 'inherit');
+        return `<tr>
+          <td><b>${r.c.name}</b>${r.c.contact ? `<br><small style="color:var(--muted);">${r.c.contact}</small>` : ''}</td>
+          <td><small style="color:var(--muted);">${termsLabel(r.c.terms)}</small></td>
+          <td class="num">$${fmtMoney(r.priorBalance)}</td>
+          <td class="num" style="color:${r.todaySales > 0.001 ? 'var(--brand)' : 'var(--muted)'};">${r.todaySales > 0.001 ? '$' + fmtMoney(r.todaySales) : '–'}</td>
+          <td class="num" style="color:${r.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${r.todayPaid > 0.001 ? '$' + fmtMoney(r.todayPaid) : '–'}</td>
+          <td class="num" style="font-weight:700; color:${balColor};">$${fmtMoney(r.currentBalance)}</td>
+          <td class="num" style="font-weight:700; color:${r.overdue > 0.001 ? '#D32F2F' : 'var(--muted)'};">${r.overdue > 0.001 ? '🔴 $' + fmtMoney(r.overdue) : '–'}</td>
+        </tr>`;
+      }).join('')}
+    </tbody>
+    <tfoot>
+      <tr style="border-top:2px solid var(--brand); font-weight:700; background:var(--surface);">
+        <td colspan="2">합계 (${rows.length}건)</td>
+        <td class="num">$${fmtMoney(totals.priorBalance)}</td>
+        <td class="num" style="color:var(--brand);">$${fmtMoney(totals.todaySales)}</td>
+        <td class="num" style="color:var(--success);">$${fmtMoney(totals.todayPaid)}</td>
+        <td class="num" style="color:${totals.currentBalance > 0 ? 'var(--warn)' : 'var(--success)'};">$${fmtMoney(totals.currentBalance)}</td>
+        <td class="num" style="color:${totals.overdue > 0.001 ? '#D32F2F' : 'inherit'};">$${fmtMoney(totals.overdue)}</td>
+      </tr>
+    </tfoot>
+  </table>`;
+}
+
+window.setDrDateToday = function() {
+  const el = document.getElementById('drDate');
+  if (!el) return;
+  el.value = new Date().toISOString().slice(0,10);
+  renderDailyReport();
+};
+
+window.renderDailyReport = function() {
+  const dateEl = document.getElementById('drDate');
+  if (!dateEl) return;
+  const dateISO = dateEl.value || new Date().toISOString().slice(0,10);
+  const rows = dailyReportComputeRows(dateISO);
+  const wrap = document.getElementById('drTableWrap');
+  if (wrap) wrap.innerHTML = dailyReportScreenTableHTML(rows);
+  const dateLbl = document.getElementById('drDateLabel');
+  if (dateLbl) dateLbl.textContent = formatDateDMY(dateISO);
+  // 오늘 날짜 스냅샷만 자동 저장 (과거/미래 일자 조회는 저장 안 함)
+  const todayISO = new Date().toISOString().slice(0,10);
+  if (dateISO === todayISO) saveDailySalesSnapshot(dateISO, rows);
+};
+
+function saveDailySalesSnapshot(dateISO, rows) {
+  try {
+    const key = 'atm_daily_sales_log';
+    const log = JSON.parse(localStorage.getItem(key) || '{}');
+    const totals = dailyReportTotals(rows);
+    log[dateISO] = {
+      date: dateISO,
+      savedAt: new Date().toISOString(),
+      totals,
+      rows: rows.map(r => ({
+        custId: r.c.id,
+        custName: r.c.name,
+        terms: r.c.terms,
+        priorBalance: r.priorBalance,
+        todaySales: r.todaySales,
+        todayPaid: r.todayPaid,
+        currentBalance: r.currentBalance,
+        overdue: r.overdue,
+      })),
+    };
+    localStorage.setItem(key, JSON.stringify(log));
+  } catch (e) { console.warn('일보 스냅샷 저장 실패', e); }
+}
+
+window.printDailyReport = function() {
+  const dateEl = document.getElementById('drDate');
+  const dateISO = (dateEl && dateEl.value) || new Date().toISOString().slice(0,10);
+  const rows = dailyReportComputeRows(dateISO);
+  const totals = dailyReportTotals(rows);
+  const dateDMY = formatDateDMY(dateISO);
+  const fileName = `ATM_매출일보_${dateISO}`;
+
+  // 2열 분할
+  const half = Math.ceil(rows.length / 2);
+  const colLeft = rows.slice(0, half);
+  const colRight = rows.slice(half);
+
+  function colTableHTML(colRows) {
+    if (colRows.length === 0) return '<div style="font-size:8px;color:#aaa;text-align:center;padding:20px;">—</div>';
+    return `<table class="pt">
+      <thead>
+        <tr>
+          <th>거래처</th><th>조건</th>
+          <th class="num">전미수</th>
+          <th class="num">매출</th>
+          <th class="num">입금</th>
+          <th class="num">현잔액</th>
+          <th class="num">Overdue</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${colRows.map(r => `<tr>
+          <td><b>${r.c.name}</b></td>
+          <td>${termsLabel(r.c.terms)}</td>
+          <td class="num">${fmtMoney(r.priorBalance)}</td>
+          <td class="num"${r.todaySales > 0.001 ? ' style="color:#5C0F0F;"' : ' style="color:#bbb;"'}>${r.todaySales > 0.001 ? fmtMoney(r.todaySales) : '–'}</td>
+          <td class="num"${r.todayPaid > 0.001 ? ' style="color:#2E7D32;"' : ' style="color:#bbb;"'}>${r.todayPaid > 0.001 ? fmtMoney(r.todayPaid) : '–'}</td>
+          <td class="num"><b>${fmtMoney(r.currentBalance)}</b></td>
+          <td class="num"${r.overdue > 0.001 ? ' style="color:#D32F2F;font-weight:700;"' : ' style="color:#bbb;"'}>${r.overdue > 0.001 ? fmtMoney(r.overdue) : '–'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  const html = `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>${fileName}</title>
+<style>
+  @page { size: A4 portrait; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, 'Malgun Gothic', '맑은 고딕', sans-serif; font-size: 9px; color: #222; margin: 0; padding: 0; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #5C0F0F; padding-bottom: 4px; margin-bottom: 6px; }
+  h1 { font-size: 15px; margin: 0; color: #5C0F0F; }
+  .hdr .sub { font-size: 8.5px; color: #666; margin-top: 1px; }
+  .hdr .right { text-align: right; }
+  .hdr .date { font-size: 14px; font-weight: 700; }
+  .hdr .stamp { font-size: 7.5px; color: #888; }
+  .summary { padding: 5px 8px; background: #FBF8F4; border: 1px solid #E5DCD3; border-radius: 4px; display: grid; grid-template-columns: repeat(5, 1fr); gap: 6px; font-size: 8.5px; margin-bottom: 6px; }
+  .summary .lbl { color: #666; font-size: 8px; }
+  .summary .v { display: block; font-weight: 700; font-size: 11px; margin-top: 1px; }
+  .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 5mm; }
+  table.pt { width: 100%; border-collapse: collapse; font-size: 8px; table-layout: fixed; }
+  table.pt th { background: #5C0F0F; color: #fff; padding: 3px 3px; text-align: left; font-weight: 600; font-size: 8px; }
+  table.pt td { padding: 2.5px 3px; border-bottom: 1px solid #e2e2e2; vertical-align: top; word-break: break-word; }
+  table.pt .num { text-align: right; font-variant-numeric: tabular-nums; }
+  table.pt th.num { text-align: right; }
+  .footer { margin-top: 6px; font-size: 7.5px; color: #888; text-align: right; padding-top: 4px; border-top: 1px solid #eee; }
+  .sign { margin-top: 12px; display: flex; justify-content: flex-end; gap: 30px; font-size: 9px; }
+  .sign .box { border-top: 1px solid #333; padding-top: 3px; min-width: 100px; text-align: center; }
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+  <div class="hdr">
+    <div>
+      <h1>📊 ATM 매출 일보 / Daily Sales Report</h1>
+      <div class="sub">ALL THAT MEAT WHOLESALE PTY LTD</div>
+    </div>
+    <div class="right">
+      <div class="date">${dateDMY}</div>
+      <div class="stamp">출력: ${new Date().toLocaleString('ko-KR')}</div>
+    </div>
+  </div>
+  <div class="summary">
+    <div><span class="lbl">전미수금 합계</span><span class="v">$${fmtMoney(totals.priorBalance)}</span></div>
+    <div><span class="lbl">당일 매출액</span><span class="v" style="color:#5C0F0F;">$${fmtMoney(totals.todaySales)}</span></div>
+    <div><span class="lbl">당일 입금액</span><span class="v" style="color:#2E7D32;">$${fmtMoney(totals.todayPaid)}</span></div>
+    <div><span class="lbl">현잔액 합계</span><span class="v" style="color:${totals.currentBalance > 0 ? '#C62828' : '#2E7D32'};">$${fmtMoney(totals.currentBalance)}</span></div>
+    <div><span class="lbl">Overdue 합계</span><span class="v" style="color:#D32F2F;">$${fmtMoney(totals.overdue)}</span></div>
+  </div>
+  ${rows.length === 0
+    ? '<div style="padding:30px;text-align:center;color:#888;font-size:11px;">표시할 거래내역이 없습니다.</div>'
+    : `<div class="grid">
+        <div>${colTableHTML(colLeft)}</div>
+        <div>${colTableHTML(colRight)}</div>
+      </div>`}
+  <div class="sign">
+    <div class="box">작성자</div>
+    <div class="box">확인</div>
+  </div>
+  <div class="footer">총 ${rows.length}개 거래처 · ATM Order Management System</div>
+</body></html>`;
+
+  const w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('팝업이 차단되었습니다. 브라우저의 팝업 차단을 해제해주세요.'); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => {
+    try { w.print(); } catch (e) { console.warn(e); }
+  }, 400);
 };
 window.saveInlinePayment = function() {
   const cid = document.getElementById('ipCustomer').value;
