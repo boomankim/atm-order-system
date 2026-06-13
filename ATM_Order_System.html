@@ -2647,14 +2647,18 @@ function viewOffice() {
     </div>
     <div class="card">
       <h3>📊 매출 일보 — <span id="drDateLabel" style="color:var(--brand);">${formatDateDMY(new Date().toISOString().slice(0,10))}</span></h3>
-      <div style="display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; align-items:center;">
+      <div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; align-items:center;">
         <label style="font-size:12px; color:var(--muted);">기준일자:</label>
         <input type="date" id="drDate" value="${new Date().toISOString().slice(0,10)}" onchange="renderDailyReport()" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px;">
         <button class="btn sm" onclick="setDrDateToday()">오늘</button>
         <button class="btn sm" onclick="togglePaymentPanel()">💳 입금 처리</button>
         <button class="btn sm secondary" onclick="location.hash='#statement'">📄 스테이트먼트</button>
-        <button class="btn sm" style="background:var(--info);" onclick="printDailyReport()">🖨️ PDF / 인쇄</button>
+        <span style="border-left:1px solid var(--line); height:24px; margin:0 4px;"></span>
+        <button class="btn sm" style="background:var(--info);" onclick="printDailyReport()">🖨️ 인쇄</button>
+        <button class="btn sm success" onclick="saveDailyReportPDF()">💾 PDF 저장</button>
+        <button class="btn sm secondary" onclick="setDailyReportFolder()">📁 폴더 변경</button>
       </div>
+      <div id="drFolderInfo" style="font-size:11px; color:var(--muted); margin-bottom:12px;"></div>
       ${(() => {
         const today = new Date().toISOString().slice(0,10);
         return `<div id="inlinePaymentPanel" style="display:none; margin-bottom:14px; padding:14px 16px; background:var(--surface); border:1px solid var(--line); border-radius:8px;">
@@ -2782,6 +2786,14 @@ function dailyReportScreenTableHTML(rows) {
         <th class="num">현잔액</th>
         <th class="num">Overdue</th>
       </tr>
+      <tr style="background:#FBF8F4; border-bottom:2px solid var(--brand);">
+        <td colspan="2" style="font-weight:700; color:var(--brand); font-size:13px;">📊 합계 (${rows.length}건)</td>
+        <td class="num" style="font-weight:700; font-size:14px;">$${fmtMoney(totals.priorBalance)}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:var(--brand);">$${fmtMoney(totals.todaySales)}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:var(--success);">$${fmtMoney(totals.todayPaid)}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${totals.currentBalance > 0 ? 'var(--warn)' : 'var(--success)'};">$${fmtMoney(totals.currentBalance)}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${totals.overdue > 0.001 ? '#D32F2F' : 'var(--muted)'};">${totals.overdue > 0.001 ? '🔴 $' + fmtMoney(totals.overdue) : '$0.00'}</td>
+      </tr>
     </thead>
     <tbody>
       ${rows.map(r => {
@@ -2797,16 +2809,6 @@ function dailyReportScreenTableHTML(rows) {
         </tr>`;
       }).join('')}
     </tbody>
-    <tfoot>
-      <tr style="border-top:2px solid var(--brand); font-weight:700; background:var(--surface);">
-        <td colspan="2">합계 (${rows.length}건)</td>
-        <td class="num">$${fmtMoney(totals.priorBalance)}</td>
-        <td class="num" style="color:var(--brand);">$${fmtMoney(totals.todaySales)}</td>
-        <td class="num" style="color:var(--success);">$${fmtMoney(totals.todayPaid)}</td>
-        <td class="num" style="color:${totals.currentBalance > 0 ? 'var(--warn)' : 'var(--success)'};">$${fmtMoney(totals.currentBalance)}</td>
-        <td class="num" style="color:${totals.overdue > 0.001 ? '#D32F2F' : 'inherit'};">$${fmtMoney(totals.overdue)}</td>
-      </tr>
-    </tfoot>
   </table>`;
 }
 
@@ -2829,7 +2831,25 @@ window.renderDailyReport = function() {
   // 오늘 날짜 스냅샷만 자동 저장 (과거/미래 일자 조회는 저장 안 함)
   const todayISO = new Date().toISOString().slice(0,10);
   if (dateISO === todayISO) saveDailySalesSnapshot(dateISO, rows);
+  // 저장 폴더 정보 표시 (비동기)
+  refreshDailyReportFolderInfo(dateISO);
 };
+
+async function refreshDailyReportFolderInfo(dateISO) {
+  const el = document.getElementById('drFolderInfo');
+  if (!el) return;
+  try {
+    const handle = await idbGet('dailyReportDirHandle');
+    if (handle) {
+      const ym = (dateISO || new Date().toISOString().slice(0,10)).slice(0,7);
+      el.innerHTML = `📁 PDF 저장 폴더: <b style="color:var(--brand);">${handle.name}/${ym}/</b>ATM_매출일보_${dateISO}.pdf`;
+    } else {
+      el.innerHTML = `<span style="color:var(--warn);">⚠️ PDF 저장 폴더 미설정</span> — "📁 폴더 변경" 버튼으로 1회만 지정하면 이후 자동 저장됩니다`;
+    }
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--muted);">📁 저장 폴더 정보 로딩 실패</span>`;
+  }
+}
 
 function saveDailySalesSnapshot(dateISO, rows) {
   try {
@@ -2965,6 +2985,177 @@ window.printDailyReport = function() {
   setTimeout(() => {
     try { w.print(); } catch (e) { console.warn(e); }
   }, 400);
+};
+
+// =========================================================================
+//  매출 일보 — PDF 저장 (jsPDF + html2canvas, 폴더 핸들)
+// =========================================================================
+let _dailyReportDirHandle = null;
+
+async function getDailyReportDirHandle() {
+  if (_dailyReportDirHandle) {
+    try {
+      const perm = await _dailyReportDirHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') return _dailyReportDirHandle;
+      const req = await _dailyReportDirHandle.requestPermission({ mode: 'readwrite' });
+      if (req === 'granted') return _dailyReportDirHandle;
+    } catch(e) {}
+  }
+  try {
+    const handle = await idbGet('dailyReportDirHandle');
+    if (handle) {
+      let perm = await handle.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') { _dailyReportDirHandle = handle; return handle; }
+    }
+  } catch(e) {}
+  return null;
+}
+
+window.setDailyReportFolder = async function() {
+  if (!window.showDirectoryPicker) {
+    return alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\n\nChrome 또는 Edge 사용을 권장합니다.\n그 외 브라우저에서는 💾 PDF 저장 시\n다운로드 폴더로 저장됩니다.');
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await idbSet('dailyReportDirHandle', handle);
+    _dailyReportDirHandle = handle;
+    alert('✅ 매출일보 PDF 저장 폴더 설정 완료!\n\n📁 ' + handle.name + '\n\n이제 💾 PDF 저장 클릭 시\n이 폴더 안에 "년-월" 하위폴더가 자동 생성되고\n그 안에 PDF가 저장됩니다.\n\n예: ' + handle.name + '/2026-06/ATM_매출일보_2026-06-13.pdf');
+    if (typeof renderDailyReport === 'function') renderDailyReport();
+  } catch(e) {
+    if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
+  }
+};
+
+function buildDailyReportPDFHTML(rows, totals, dateISO) {
+  const dateDMY = formatDateDMY(dateISO);
+  const half = Math.ceil(rows.length / 2);
+  const colLeft = rows.slice(0, half);
+  const colRight = rows.slice(half);
+
+  function colTable(colRows) {
+    if (colRows.length === 0) return '<div style="font-size:9px;color:#aaa;text-align:center;padding:20px;">—</div>';
+    return `<table style="width:100%;border-collapse:collapse;font-size:9px;table-layout:fixed;">
+      <thead>
+        <tr style="background:#5C0F0F;color:#fff;">
+          <th style="padding:4px;text-align:left;font-weight:700;">거래처</th>
+          <th style="padding:4px;text-align:left;font-weight:700;">조건</th>
+          <th style="padding:4px;text-align:right;font-weight:700;">전미수</th>
+          <th style="padding:4px;text-align:right;font-weight:700;">매출</th>
+          <th style="padding:4px;text-align:right;font-weight:700;">입금</th>
+          <th style="padding:4px;text-align:right;font-weight:700;">현잔액</th>
+          <th style="padding:4px;text-align:right;font-weight:700;">Overdue</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${colRows.map(r => `<tr>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;"><b>${r.c.name}</b></td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;">${termsLabel(r.c.terms)}</td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;">${fmtMoney(r.priorBalance)}</td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;${r.todaySales > 0.001 ? 'color:#5C0F0F;' : 'color:#bbb;'}">${r.todaySales > 0.001 ? fmtMoney(r.todaySales) : '–'}</td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;${r.todayPaid > 0.001 ? 'color:#2E7D32;' : 'color:#bbb;'}">${r.todayPaid > 0.001 ? fmtMoney(r.todayPaid) : '–'}</td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;font-weight:700;">${fmtMoney(r.currentBalance)}</td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;${r.overdue > 0.001 ? 'color:#D32F2F;font-weight:700;' : 'color:#bbb;'}">${r.overdue > 0.001 ? fmtMoney(r.overdue) : '–'}</td>
+        </tr>`).join('')}
+      </tbody>
+    </table>`;
+  }
+
+  return `<div style="font-family:'Malgun Gothic','맑은 고딕','Apple SD Gothic Neo',sans-serif;padding:20px;background:#fff;color:#222;width:780px;box-sizing:border-box;">
+    <div style="display:flex;justify-content:space-between;align-items:flex-end;border-bottom:2px solid #5C0F0F;padding-bottom:6px;margin-bottom:10px;">
+      <div>
+        <div style="font-size:18px;font-weight:800;color:#5C0F0F;">📊 ATM 매출 일보 / Daily Sales Report</div>
+        <div style="font-size:10px;color:#666;margin-top:2px;">ALL THAT MEAT WHOLESALE PTY LTD</div>
+      </div>
+      <div style="text-align:right;">
+        <div style="font-size:16px;font-weight:700;">${dateDMY}</div>
+        <div style="font-size:9px;color:#888;">출력: ${new Date().toLocaleString('ko-KR')}</div>
+      </div>
+    </div>
+    <div style="padding:8px 10px;background:#FBF8F4;border:1px solid #E5DCD3;border-radius:4px;display:grid;grid-template-columns:repeat(5,1fr);gap:8px;font-size:10px;margin-bottom:10px;">
+      <div><span style="color:#666;font-size:9px;">전미수금 합계</span><div style="font-weight:700;font-size:13px;margin-top:2px;">$${fmtMoney(totals.priorBalance)}</div></div>
+      <div><span style="color:#666;font-size:9px;">당일 매출액</span><div style="font-weight:700;font-size:13px;margin-top:2px;color:#5C0F0F;">$${fmtMoney(totals.todaySales)}</div></div>
+      <div><span style="color:#666;font-size:9px;">당일 입금액</span><div style="font-weight:700;font-size:13px;margin-top:2px;color:#2E7D32;">$${fmtMoney(totals.todayPaid)}</div></div>
+      <div><span style="color:#666;font-size:9px;">현잔액 합계</span><div style="font-weight:700;font-size:13px;margin-top:2px;color:${totals.currentBalance > 0 ? '#C62828' : '#2E7D32'};">$${fmtMoney(totals.currentBalance)}</div></div>
+      <div><span style="color:#666;font-size:9px;">Overdue 합계</span><div style="font-weight:700;font-size:13px;margin-top:2px;color:#D32F2F;">$${fmtMoney(totals.overdue)}</div></div>
+    </div>
+    ${rows.length === 0
+      ? '<div style="padding:40px;text-align:center;color:#888;font-size:12px;">표시할 거래내역이 없습니다.</div>'
+      : `<div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+          <div>${colTable(colLeft)}</div>
+          <div>${colTable(colRight)}</div>
+        </div>`}
+    <div style="margin-top:15px;display:flex;justify-content:flex-end;gap:30px;font-size:10px;">
+      <div style="border-top:1px solid #333;padding-top:4px;min-width:100px;text-align:center;">작성자</div>
+      <div style="border-top:1px solid #333;padding-top:4px;min-width:100px;text-align:center;">확인</div>
+    </div>
+    <div style="margin-top:8px;font-size:9px;color:#888;text-align:right;padding-top:4px;border-top:1px solid #eee;">총 ${rows.length}개 거래처 · ATM Order Management System</div>
+  </div>`;
+}
+
+window.saveDailyReportPDF = async function() {
+  const dateEl = document.getElementById('drDate');
+  const dateISO = (dateEl && dateEl.value) || new Date().toISOString().slice(0,10);
+  const rows = dailyReportComputeRows(dateISO);
+  const totals = dailyReportTotals(rows);
+
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+    return alert('PDF 라이브러리를 불러오는 중입니다.\n잠시 후 다시 시도해 주세요.');
+  }
+
+  if (typeof showToast === 'function') showToast('💾 PDF 생성 중...');
+
+  const dirHandle = await getDailyReportDirHandle();
+
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
+  container.innerHTML = buildDailyReportPDFHTML(rows, totals, dateISO);
+  document.body.appendChild(container);
+
+  try {
+    await new Promise(r => setTimeout(r, 120));
+    const canvas = await html2canvas(container.firstElementChild, {
+      scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+    });
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const { jsPDF } = window.jspdf;
+    const pageW = 210, pageH = 297;
+    const imgH = canvas.height * pageW / canvas.width;
+    const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    if (imgH <= pageH) {
+      doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+    } else {
+      let yOff = 0;
+      while (yOff < imgH) {
+        if (yOff > 0) doc.addPage();
+        doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+        yOff += pageH;
+      }
+    }
+
+    const yearMonth = dateISO.slice(0,7);
+    const filename = `ATM_매출일보_${dateISO}.pdf`;
+
+    if (dirHandle) {
+      try {
+        const buf = doc.output('arraybuffer');
+        await writeToFolderPath(dirHandle, [yearMonth], filename, buf);
+        if (typeof showToast === 'function') showToast(`✅ 매출일보 저장 완료 — 📁 ${dirHandle.name}/${yearMonth}/${filename}`);
+      } catch(e) {
+        console.warn('폴더 저장 실패, 다운로드 대체:', e);
+        doc.save(filename);
+        if (typeof showToast === 'function') showToast(`💾 매출일보 다운로드 완료 (폴더 쓰기 실패)`);
+      }
+    } else {
+      doc.save(filename);
+      setTimeout(() => alert('💾 매출일보 다운로드 완료!\n\n📁 매번 같은 폴더에 자동 저장하려면\n"📁 폴더 변경" 버튼을 한 번 눌러서\n저장 폴더를 지정해 주세요.\n\n이후부터는 클릭만 하면\n자동으로 그 폴더에 "년-월" 하위폴더가 만들어지고\n그 안에 PDF가 저장됩니다.'), 300);
+    }
+  } catch(e) {
+    console.error('매출일보 PDF 저장 실패:', e);
+    alert('PDF 저장 실패: ' + e.message);
+  } finally {
+    document.body.removeChild(container);
+  }
 };
 window.saveInlinePayment = function() {
   const cid = document.getElementById('ipCustomer').value;
