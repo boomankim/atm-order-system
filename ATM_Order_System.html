@@ -128,6 +128,7 @@
   table.t tbody tr:hover { background: #F5E8DD; }
   table.t td { padding: 8px; vertical-align: middle; }
   table.t td.num { text-align: right; }
+  table.t th.num { text-align: right; }
   table.t td.act { text-align: right; white-space: nowrap; }
 
   /* Pills / Status */
@@ -2775,6 +2776,7 @@ function dailyReportTotals(rows) {
 function dailyReportScreenTableHTML(rows) {
   if (rows.length === 0) return '<div class="empty">표시할 거래내역이 없습니다.</div>';
   const totals = dailyReportTotals(rows);
+  const txt = '#2A1A1A';
   return `<table class="t">
     <thead>
       <tr>
@@ -2786,18 +2788,18 @@ function dailyReportScreenTableHTML(rows) {
         <th class="num">현잔액</th>
         <th class="num">Overdue</th>
       </tr>
-      <tr style="background:#FBF8F4; border-bottom:2px solid var(--brand);">
-        <td colspan="2" style="font-weight:700; color:var(--brand); font-size:13px;">📊 합계 (${rows.length}건)</td>
-        <td class="num" style="font-weight:700; font-size:14px;">$${fmtMoney(totals.priorBalance)}</td>
-        <td class="num" style="font-weight:700; font-size:14px; color:var(--brand);">$${fmtMoney(totals.todaySales)}</td>
-        <td class="num" style="font-weight:700; font-size:14px; color:var(--success);">$${fmtMoney(totals.todayPaid)}</td>
-        <td class="num" style="font-weight:700; font-size:14px; color:${totals.currentBalance > 0 ? 'var(--warn)' : 'var(--success)'};">$${fmtMoney(totals.currentBalance)}</td>
-        <td class="num" style="font-weight:700; font-size:14px; color:${totals.overdue > 0.001 ? '#D32F2F' : 'var(--muted)'};">${totals.overdue > 0.001 ? '🔴 $' + fmtMoney(totals.overdue) : '$0.00'}</td>
-      </tr>
     </thead>
     <tbody>
+      <tr style="background:#FBF8F4; border-bottom:2px solid var(--brand); color:${txt};">
+        <td colspan="2" style="font-weight:700; color:var(--brand); font-size:13px;">📊 합계 (${rows.length}건)</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${txt};">$${fmtMoney(totals.priorBalance)}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${totals.todaySales > 0.001 ? 'var(--brand)' : 'var(--muted)'};">${totals.todaySales > 0.001 ? '$' + fmtMoney(totals.todaySales) : '–'}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${totals.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${totals.todayPaid > 0.001 ? '$' + fmtMoney(totals.todayPaid) : '–'}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${totals.currentBalance > 0 ? 'var(--warn)' : (totals.currentBalance < -0.001 ? 'var(--success)' : txt)};">$${fmtMoney(totals.currentBalance)}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${totals.overdue > 0.001 ? '#D32F2F' : 'var(--muted)'};">${totals.overdue > 0.001 ? '🔴 $' + fmtMoney(totals.overdue) : '–'}</td>
+      </tr>
       ${rows.map(r => {
-        const balColor = r.currentBalance > 0 ? 'var(--warn)' : (r.currentBalance < -0.001 ? 'var(--success)' : 'inherit');
+        const balColor = r.currentBalance > 0 ? 'var(--warn)' : (r.currentBalance < -0.001 ? 'var(--success)' : txt);
         return `<tr>
           <td><b>${r.c.name}</b>${r.c.contact ? `<br><small style="color:var(--muted);">${r.c.contact}</small>` : ''}</td>
           <td><small style="color:var(--muted);">${termsLabel(r.c.terms)}</small></td>
