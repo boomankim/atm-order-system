@@ -2676,24 +2676,53 @@ function viewOffice() {
       })()}
       ${(() => {
         const custs = DB.customers.filter(c => c.active !== false);
+        const today = new Date(); today.setHours(0,0,0,0);
         const rows = custs.map(c => {
-          const invoiced = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === c.id)
-            .reduce((s, o) => s + computeTotals(o).grand, 0);
-          const paid = DB.payments.filter(p => p.customerId === c.id)
+          // 거래처의 모든 인보이스 (오래된 순)
+          const custInvoices = DB.orders
+            .filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === c.id)
+            .map(o => ({
+              dateISO: (o.invoicedAt || o.orderDate || '').slice(0,10),
+              amount: computeTotals(o).grand
+            }))
+            .filter(x => x.dateISO)
+            .sort((a, b) => a.dateISO.localeCompare(b.dateISO));
+          const invoiced = custInvoices.reduce((s, x) => s + x.amount, 0);
+          const paid = (DB.payments||[]).filter(p => p.customerId === c.id)
             .reduce((s, p) => s + p.amount, 0);
           const balance = invoiced - paid;
-          return { c, invoiced, paid, balance };
+          // Overdue 계산: 입금을 오래된 인보이스부터 FIFO 할당, 남은 미결제 중 결제텀 초과분만 합산
+          const days = termsDays(c.terms);
+          let remainingPayment = paid;
+          let overdue = 0;
+          for (const inv of custInvoices) {
+            let unpaid = inv.amount;
+            if (remainingPayment > 0) {
+              const applied = Math.min(remainingPayment, unpaid);
+              unpaid -= applied;
+              remainingPayment -= applied;
+            }
+            if (unpaid > 0.001) {
+              const invDate = new Date(inv.dateISO);
+              const dueDate = new Date(invDate.getTime());
+              dueDate.setDate(dueDate.getDate() + days);
+              if (dueDate < today) overdue += unpaid;
+            }
+          }
+          return { c, invoiced, paid, balance, overdue };
         }).filter(r => r.invoiced > 0 || r.balance !== 0);
-        rows.sort((a, b) => b.balance - a.balance);
+        rows.sort((a, b) => (b.overdue - a.overdue) || (b.balance - a.balance));
         if (rows.length === 0) return '<div class="empty">인보이스된 주문이 없습니다.</div>';
         return `<table class="t">
-          <thead><tr><th>거래처</th><th class="num">총 인보이스</th><th class="num">총 입금</th><th class="num">미수금</th></tr></thead>
+          <thead><tr><th>거래처</th><th>결제조건</th><th class="num">총 인보이스</th><th class="num">총 입금</th><th class="num">전체 미수금</th><th class="num">Overdue</th></tr></thead>
           <tbody>
-            ${rows.map(({c, invoiced, paid, balance}) => `<tr style="${balance <= 0 ? 'color:var(--muted);' : ''}">
+            ${rows.map(({c, invoiced, paid, balance, overdue}) => `<tr style="${balance <= 0 ? 'color:var(--muted);' : ''}">
               <td><b>${c.name}</b>${c.contact ? `<br><small style="color:var(--muted);">${c.contact}</small>` : ''}</td>
+              <td><small style="color:var(--muted);">${termsLabel(c.terms)}</small></td>
               <td class="num">$${fmtMoney(invoiced)}</td>
               <td class="num">$${fmtMoney(paid)}</td>
               <td class="num" style="font-weight:700; color:${balance > 0 ? 'var(--warn)' : 'var(--success)'};">$${fmtMoney(balance)}</td>
+              <td class="num" style="font-weight:700; color:${overdue > 0 ? '#D32F2F' : 'var(--muted)'};">${overdue > 0 ? '🔴 $' + fmtMoney(overdue) : '–'}</td>
             </tr>`).join('')}
           </tbody>
         </table>`;
