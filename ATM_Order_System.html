@@ -1897,6 +1897,9 @@ function toggleFav(custId, prodId) {
 function renderCompanyAdmin() {
   const body = document.getElementById('adminBody');
   const c = DB.company;
+  const ann = c.invoiceAnnouncement || '';
+  const bank = c.invoiceBankInfo || DEFAULT_INVOICE_BANK_INFO;
+  const notice = c.invoiceNoticeText || DEFAULT_INVOICE_NOTICE;
   body.innerHTML = `
     <div class="card">
       <h3>회사 정보 / Company Details</h3>
@@ -1916,20 +1919,93 @@ function renderCompanyAdmin() {
       </div>
       <button class="btn" onclick="saveCompany()">저장</button>
     </div>
+
+    <div class="card">
+      <h3>📄 인보이스 하단 문구 / Invoice Footer Text</h3>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+        Due Date·PAYMENT TERM 줄은 자동 생성됩니다. 아래 3개 영역만 자유롭게 수정하세요.
+        비워두면 기본값으로 표시됩니다.
+      </div>
+
+      <div class="field" style="margin-bottom:18px;">
+        <label style="display:flex; align-items:center; gap:6px;">
+          📢 공지/휴무 안내 (강조 박스 — 비워두면 표시 안 됨)
+          <small style="color:var(--muted); font-weight:400;">노란 박스, 큰 글씨로 표시</small>
+        </label>
+        <textarea id="co_announce" rows="3" style="font-size:13px; line-height:1.5;" placeholder="예) 12월 25일~1월 1일 신정 휴무. 주문은 12월 24일까지 받습니다.">${escHtml(ann)}</textarea>
+        <div style="margin-top:8px; padding:8px 12px; background:#FFF7D6; border:1.5px solid #E0A800; border-radius:6px; font-size:12px;">
+          <b style="color:#7A4A00;">미리보기:</b>
+          <div id="co_announce_preview" style="margin-top:4px; text-align:center; font-weight:700; color:#7A4A00; font-size:13px;">${ann ? multilineToDivs(ann) : '<i style="color:#aaa;font-weight:400;">(공지 없음 — 박스 미표시)</i>'}</div>
+        </div>
+      </div>
+
+      <div class="field" style="margin-bottom:18px;">
+        <label>🏦 Bank / EFT 안내 (Due Date 줄 아래에 표시)</label>
+        <textarea id="co_bank" rows="5" style="font-family:Consolas, 'Courier New', monospace; font-size:12px; line-height:1.5;">${escHtml(bank)}</textarea>
+        <small style="color:var(--muted); font-size:11px; margin-top:4px; display:block;">
+          한 줄에 하나씩. 줄바꿈 그대로 인보이스에 반영됩니다.
+        </small>
+      </div>
+
+      <div class="field" style="margin-bottom:12px;">
+        <label>⚠️ NOTICE 본문 (NOTICE 제목 아래에 표시)</label>
+        <textarea id="co_notice" rows="6" style="font-size:12px; line-height:1.5;">${escHtml(notice)}</textarea>
+        <small style="color:var(--muted); font-size:11px; margin-top:4px; display:block;">
+          claim 안내, 이자율, 법적 절차 등. 줄바꿈 그대로 반영.
+        </small>
+      </div>
+
+      <div style="display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn success" onclick="saveInvoiceFooter()">💾 인보이스 문구 저장</button>
+        <button class="btn secondary" onclick="resetInvoiceFooter()">↺ 기본값으로 복원</button>
+      </div>
+    </div>
   `;
+  // 실시간 미리보기 (공지 박스만)
+  const ta = document.getElementById('co_announce');
+  if (ta) {
+    ta.addEventListener('input', () => {
+      const v = ta.value.trim();
+      const pv = document.getElementById('co_announce_preview');
+      if (pv) pv.innerHTML = v ? multilineToDivs(v) : '<i style="color:#aaa;font-weight:400;">(공지 없음 — 박스 미표시)</i>';
+    });
+  }
 }
 function saveCompany() {
   const gstParsed = parseFloat(val('co_gst'));
+  // 인보이스 footer 필드는 보존 (이 버튼은 회사 정보만 저장)
+  const existing = DB.company || {};
   DB.company = {
     name: val('co_name'), abn: val('co_abn'), phone: val('co_phone'),
     email: val('co_email'), address: val('co_address'),
     gstRate: isNaN(gstParsed) ? 0 : gstParsed,
-    currency: val('co_cur')||'AUD'
+    currency: val('co_cur')||'AUD',
+    invoiceAnnouncement: existing.invoiceAnnouncement || '',
+    invoiceBankInfo: existing.invoiceBankInfo || '',
+    invoiceNoticeText: existing.invoiceNoticeText || ''
   };
   const appUrl = val('co_appUrl').trim().replace(/#.*$/, '');
   if (appUrl) DB.settings.appUrl = appUrl;
   else delete DB.settings.appUrl;
   saveDB(); alert('회사 정보가 저장되었습니다.');
+}
+function saveInvoiceFooter() {
+  if (!DB.company) DB.company = {};
+  DB.company.invoiceAnnouncement = document.getElementById('co_announce').value;
+  DB.company.invoiceBankInfo = document.getElementById('co_bank').value;
+  DB.company.invoiceNoticeText = document.getElementById('co_notice').value;
+  saveDB();
+  alert('✅ 인보이스 하단 문구가 저장되었습니다.\n\n이제 발행되는 모든 인보이스에 적용됩니다.');
+}
+function resetInvoiceFooter() {
+  if (!confirm('인보이스 하단 문구를 모두 기본값으로 되돌립니다.\n공지/휴무 안내는 비워지고, Bank·NOTICE는 표준 문구로 복원됩니다.\n계속할까요?')) return;
+  if (!DB.company) DB.company = {};
+  DB.company.invoiceAnnouncement = '';
+  DB.company.invoiceBankInfo = '';
+  DB.company.invoiceNoticeText = '';
+  saveDB();
+  renderCompanyAdmin();
+  alert('✅ 기본값으로 복원되었습니다.');
 }
 
 // =========================================================================
@@ -3287,6 +3363,28 @@ function dueDateText(baseISO, terms) {
   d.setDate(d.getDate() + termsDays(terms));
   return d.toLocaleDateString('en-AU', { day: '2-digit', month: 'short', year: 'numeric' });
 }
+// HTML 이스케이프 + 멀티라인 → <div>줄 (사용자 입력 본문용)
+function escHtml(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function multilineToDivs(s) {
+  if (!s) return '';
+  return String(s).split(/\r?\n/).map(line => `<div>${escHtml(line) || '&nbsp;'}</div>`).join('');
+}
+
+// 인보이스 footer 기본값 — 회사 정보에서 비워두면 이 값으로 대체
+const DEFAULT_INVOICE_BANK_INFO =
+  'Bank: SUNCORP    Name: ALL THAT MEAT WHOLESALES PTY LTD\n' +
+  'BSB: 484 799    Account: 079 429 751\n' +
+  '*Order under $200.00, can be applied $20.00 delivery fee.\n' +
+  '*EFT PAYMENT: DESCRIBE COMPANY NAME ON THE BANK REFERENCE';
+const DEFAULT_INVOICE_NOTICE =
+  'Claims will not be recognised unless made within 24 hours of delivery.\n' +
+  '1. We reserve all the rights to charges interest and recovery costs for any unpaid amount. If payment is not made by the due date, an additional 5% interest will be charged.\n' +
+  '2. Products delivered remain the property of ALL THAT MEAT P/L until they are paid in full. If the payment is overdue for more than 1 month, the collection process may be carried out through a lawyer and a collection claim company.';
+
 // 인보이스 하단 표준 약관 HTML (화면/인쇄/PDF 공용)
 function invoiceFooterHTML(o, cust) {
   const baseISO = o.invoicedAt || o.orderDate || new Date().toISOString();
@@ -3295,18 +3393,25 @@ function invoiceFooterHTML(o, cust) {
   const termLine = days > 0
     ? `${days} DAYS after the invoice issued`
     : `On invoice (${termsLabel(cust && cust.terms)})`;
+
+  const co = DB.company || {};
+  const announcement = (co.invoiceAnnouncement || '').trim();
+  const bankInfo = (co.invoiceBankInfo && co.invoiceBankInfo.trim()) || DEFAULT_INVOICE_BANK_INFO;
+  const noticeText = (co.invoiceNoticeText && co.invoiceNoticeText.trim()) || DEFAULT_INVOICE_NOTICE;
+
+  const announcementBlock = announcement ? `
+      <div style="margin-bottom:8px; padding:8px 12px; background:#FFF7D6; border:1.5px solid #E0A800; border-radius:6px; text-align:center; font-size:13px; font-weight:700; color:#7A4A00; line-height:1.5;">
+        ${multilineToDivs(announcement)}
+      </div>` : '';
+
   return `
     <div style="margin-top:18px; padding:12px 14px; border:1px solid #E5DCD3; border-radius:6px; background:#FBF8F4; font-size:9.5px; color:#3A2A2A; line-height:1.55;">
+      ${announcementBlock}
       <div style="font-weight:800; color:#5C0F0F; font-size:11px; margin-bottom:6px;">Due Date: ${due}</div>
-      <div>Bank: SUNCORP &nbsp;&nbsp; Name: ALL THAT MEAT WHOLESALES PTY LTD</div>
-      <div>BSB: 484 799 &nbsp;&nbsp; Account: 079 429 751</div>
-      <div style="margin-top:6px;">*Order under $200.00, can be applied $20.00 delivery fee.</div>
-      <div>PAYMENT TERM : ${termLine}</div>
-      <div>*EFT PAYMENT: DESCRIBE COMPANY NAME ON THE BANK REFERENCE</div>
+      ${multilineToDivs(bankInfo)}
+      <div style="margin-top:4px;">PAYMENT TERM : ${termLine}</div>
       <div style="margin-top:6px; font-weight:700;">NOTICE</div>
-      <div>Claims will not be recognised unless made within 24 hours of delivery.</div>
-      <div style="margin-top:4px;">1. We reserve all the rights to charges interest and recovery costs for any unpaid amount. If payment is not made by the due date, an additional 5% interest will be charged.</div>
-      <div>2. Products delivered remain the property of ALL THAT MEAT P/L until they are paid in full. If the payment is overdue for more than 1 month, the collection process may be carried out through a lawyer and a collection claim company.</div>
+      ${multilineToDivs(noticeText)}
     </div>
   `;
 }
