@@ -2134,17 +2134,20 @@ function renderCustomerList(q) {
   `;
 }
 
-// 거래처 코드 다음 순번 (기존 코드 중 가장 큰 숫자 +1, 4자리 zero-pad)
+// 거래처 코드 다음 순번
+// 거래처 수 + 1 부터 시작, 이미 같은 끝자리 숫자를 쓰는 코드가 있으면 다음 빈 자리로 건너뜀
 function nextCustomerCodeNumber() {
-  let maxN = 0;
+  const taken = new Set();
   for (const cc of DB.customers) {
     const m = (cc.code || '').match(/(\d+)\s*$/);
     if (m) {
       const n = parseInt(m[1], 10);
-      if (!isNaN(n) && n > maxN) maxN = n;
+      if (!isNaN(n)) taken.add(n);
     }
   }
-  return String(maxN + 1).padStart(4, '0');
+  let n = DB.customers.length + 1;
+  while (taken.has(n)) n++;
+  return String(n).padStart(4, '0');
 }
 
 // 기존 코드를 prefix(문자) + number(끝의 숫자)로 분리
