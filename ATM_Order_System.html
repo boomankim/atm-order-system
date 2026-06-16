@@ -2630,11 +2630,13 @@ function liveSearchCustomer() {
 
   if (!raw) { div.innerHTML = ''; return; }
 
-  var q = raw.toLowerCase();
+  // 공백/대소문자 무시 매칭 (예: "강남 정육점" === "강남정육점")
+  var q = raw.toLowerCase().replace(/\s+/g, '');
   var matches = DB.customers.filter(function(c) {
-    return (c.name  || '').toLowerCase().indexOf(q) !== -1 ||
-           (c.code  || '').toLowerCase().indexOf(q) !== -1 ||
-           (c.contact||'').toLowerCase().indexOf(q) !== -1;
+    var nm = (c.name    || '').toLowerCase().replace(/\s+/g, '');
+    var cd = (c.code    || '').toLowerCase().replace(/\s+/g, '');
+    var ct = (c.contact || '').toLowerCase().replace(/\s+/g, '');
+    return nm.indexOf(q) !== -1 || cd.indexOf(q) !== -1 || ct.indexOf(q) !== -1;
   });
 
   if (matches.length === 0) {
@@ -2747,7 +2749,7 @@ function viewOrder(params) {
 
     <div class="card" style="padding:10px 18px; margin-bottom:10px; max-width:360px;">
       <div class="field" style="margin-bottom:0;">
-        <label>배송 요청사항 / Special Requests</label>
+        <label>요청 사항 / Special Requests</label>
         <textarea id="deliveryNotes" placeholder="예: 오전 10시 이전 / Before 10am" style="height:48px; font-size:13px;"></textarea>
       </div>
     </div>
@@ -2890,9 +2892,10 @@ function renderCart() {
             <button class="del" onclick="CART.splice(${idx},1); renderCart();">×</button>
           </div>
           <div class="unit-row">
-            ${['박스','팩','작업중량'].map(u =>
-              `<button class="${item.unit===u?'active':''}" onclick="CART[${idx}].unit='${u}'; renderCart();">${u}${u==='작업중량'?' (kg)':''}</button>`
-            ).join('')}
+            ${['박스','팩','작업중량'].map(u => {
+              const lbl = u==='박스' ? '박스/box' : u==='팩' ? '팩/pack' : '작업중량(kg)';
+              return `<button class="${item.unit===u?'active':''}" onclick="CART[${idx}].unit='${u}'; renderCart();">${lbl}</button>`;
+            }).join('')}
           </div>
           <div class="body" style="grid-template-columns:1fr;">
             <div>
