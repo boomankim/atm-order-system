@@ -4754,13 +4754,16 @@ function viewInvoice(params) {
           </div>
         </div>
         <div style="text-align:right;">
-          <div style="font-size:11px; color:var(--muted);">PAYMENT / 결제</div>
           <div style="font-size:13px;">
-            ${o.deliveryNotes ? `<span style="color:var(--text);">요청사항: ${o.deliveryNotes}</span><br>` : ''}
             Terms / 결제: ${termsLabel(cust.terms)}
           </div>
         </div>
       </div>
+
+      ${o.deliveryNotes ? `
+      <div style="margin:0 0 10px 0; padding:8px 12px; background:#FFF7E0; border-left:4px solid #E0A800; border-radius:4px; font-size:13px;">
+        <b>📝 요청사항 / Special Requests:</b> ${o.deliveryNotes}
+      </div>` : ''}
 
       <table>
         <thead><tr>
@@ -5178,11 +5181,14 @@ function buildInvoiceHTML(o, cust, totals) {
           </div>
         </div>
         <div style="text-align:right; font-size:12px; color:#6B5B5B; line-height:1.7;">
-          <div style="font-size:9px; color:#aaa; text-transform:uppercase; margin-bottom:4px;">Payment</div>
-          ${o.deliveryNotes ? `요청사항: ${o.deliveryNotes}<br>` : ''}
           Terms: ${termsLabel(cust.terms)}
         </div>
       </div>
+
+      ${o.deliveryNotes ? `
+      <div style="margin:0 0 12px 0; padding:8px 12px; background:#FBF4E0; border-left:4px solid #C4A455; border-radius:4px; font-size:11px; color:#3A2A2A;">
+        <b>📝 요청사항 / Special Requests:</b> ${o.deliveryNotes}
+      </div>` : ''}
 
       <table style="width:100%; border-collapse:collapse; font-size:12px; margin-bottom:20px;">
         <thead>
