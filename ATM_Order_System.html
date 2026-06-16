@@ -2134,12 +2134,45 @@ function renderCustomerList(q) {
   `;
 }
 
+// 거래처 코드 다음 순번 (기존 코드 중 가장 큰 숫자 +1, 4자리 zero-pad)
+function nextCustomerCodeNumber() {
+  let maxN = 0;
+  for (const cc of DB.customers) {
+    const m = (cc.code || '').match(/(\d+)\s*$/);
+    if (m) {
+      const n = parseInt(m[1], 10);
+      if (!isNaN(n) && n > maxN) maxN = n;
+    }
+  }
+  return String(maxN + 1).padStart(4, '0');
+}
+
+// 기존 코드를 prefix(문자) + number(끝의 숫자)로 분리
+function splitCustomerCode(code) {
+  const m = (code || '').match(/^(.*?)(\d+)\s*$/);
+  if (m) return { prefix: m[1], num: m[2] };
+  return { prefix: code || '', num: '' };
+}
+
 function editCustomer(id) {
-  const c = id ? DB.customers.find(x => x.id === id) : { id: uid('c'), code: 'CUST'+String(DB.customers.length+1).padStart(3,'0'), name:'', contact:'', phone:'', email:'', address:'', favoriteProductIds:[], terms:'현금', active:true };
+  const nextNum = nextCustomerCodeNumber();
+  const c = id ? DB.customers.find(x => x.id === id) : { id: uid('c'), code: nextNum, name:'', contact:'', phone:'', email:'', address:'', favoriteProductIds:[], terms:'현금', active:true };
+  const split = splitCustomerCode(c.code);
+  // 신규일 때는 prefix 빈 칸 + 자동 순번, 수정일 때는 기존 prefix/숫자 유지
+  const prefixVal = id ? split.prefix : '';
+  const numVal = id ? split.num : nextNum;
   openModal(`
     <h3>${id?'거래처 수정':'거래처 추가'}</h3>
     <div class="grid-2">
-      <div class="field"><label>코드</label><input id="m_code" value="${c.code}"></div>
+      <div class="field"><label>코드 <span style="font-weight:400; color:var(--muted); font-size:11px;">(앞글자 + 자동순번)</span></label>
+        <div style="display:flex; gap:6px; align-items:center;">
+          <input id="m_code_prefix" value="${prefixVal}" placeholder="예: MW" maxlength="10"
+                 style="text-transform:uppercase; flex:1;">
+          <input id="m_code_num" value="${numVal}" readonly
+                 style="width:80px; background:#F5F5F5; color:#555; text-align:center; font-family:monospace;"
+                 title="자동 순번 (수정불가)">
+        </div>
+      </div>
       <div class="field"><label>거래처명 *</label><input id="m_name" value="${c.name}"></div>
       <div class="field"><label>담당자</label><input id="m_contact" value="${c.contact||''}"></div>
       <div class="field"><label>전화</label><input id="m_phone" value="${c.phone||''}"></div>
@@ -2240,8 +2273,12 @@ window.clearAllCustomPrices = function(custId) {
   if (sec) sec.innerHTML = renderCustomPriceSection(custId);
 };
 function saveCustomer(id, isNew, favs) {
+  // 코드 = prefix (대문자 자동) + 자동순번
+  const codePrefix = (val('m_code_prefix') || '').trim().toUpperCase();
+  const codeNum = (val('m_code_num') || '').trim();
+  const combinedCode = codePrefix + codeNum;
   const obj = {
-    id, code: val('m_code'), name: val('m_name'), contact: val('m_contact'),
+    id, code: combinedCode, name: val('m_name'), contact: val('m_contact'),
     phone: val('m_phone'), email: val('m_email'), terms: val('m_terms'),
     address: val('m_address'),
     active: (isNew === 'true' || isNew === true) ? true
@@ -2320,6 +2357,8 @@ function renderFavoritesAdmin(params) {
         <div style="display:flex; gap:6px; flex-wrap:wrap;">
           <button class="btn" onclick="openCustomerMappingTool()"
                   style="background:#6A1B9A;">🔗 거래처명 매핑</button>
+          <button class="btn" onclick="openItemMappingTool()"
+                  style="background:#00838F;">🥩 품목명 매핑</button>
           <button class="btn" onclick="openFavImportModal()"
                   style="background:#1976D2;">📊 엑셀에서 일괄 가져오기</button>
         </div>
@@ -2543,13 +2582,24 @@ function buildFavImportState() {
       selectedCustId = custCands[0].id;
     }
     if (selectedCustId) state.totals.custAuto++; else state.totals.custNone++;
+    const savedItemMap = (DB.settings && DB.settings.favsItemMap) || {};
     const itemRows = items.map(function(it) {
       const cands = favFindProductMatches(it.item, 6);
       let status = 'none';
       let selectedProdId = '';
-      if (cands.length === 0) status = 'none';
-      else if (cands[0].score >= 7) { status = 'auto'; selectedProdId = cands[0].id; }
-      else { status = 'ambi'; selectedProdId = cands[0].id; }
+      // Priority 1: saved item mapping (from 품목명 매핑 도구)
+      // Priority 2: top fuzzy candidate
+      const savedProd = savedItemMap[it.item];
+      if (savedProd && DB.products.find(function(p){return p.id === savedProd;})) {
+        selectedProdId = savedProd;
+        status = 'auto';
+      } else if (cands.length === 0) {
+        status = 'none';
+      } else if (cands[0].score >= 7) {
+        status = 'auto'; selectedProdId = cands[0].id;
+      } else {
+        status = 'ambi'; selectedProdId = cands[0].id;
+      }
       if (status === 'auto') state.totals.itemAuto++;
       else if (status === 'ambi') state.totals.itemAmbi++;
       else state.totals.itemNone++;
@@ -2980,6 +3030,234 @@ function closeCustomerMappingModal() {
   const m = document.getElementById('custMapModal');
   if (m) m.remove();
   CUST_MAP_STATE = null;
+}
+
+// =========================================================================
+//  ITEM NAME MAPPING TOOL  (Excel 품목명 ↔ 시스템 product 매핑)
+//  매핑은 DB.settings.favsItemMap 에 저장되며 일괄 import 시 자동 사용됨.
+//  엑셀 중복 품목은 dedupe — 동일 문자열은 한 행으로 모임 (사용 거래처 수 표시)
+// =========================================================================
+let ITEM_MAP_STATE = null;
+
+function openItemMappingTool() {
+  // Build dedup'd unique items list (excelItemStr → { count, customers })
+  const uniq = {};
+  for (const excelName in ATM_FAVS_IMPORT_DATA) {
+    for (const it of ATM_FAVS_IMPORT_DATA[excelName]) {
+      const key = it.item;
+      if (!uniq[key]) uniq[key] = { item: key, custCount: 0, totalCount: 0, customers: [] };
+      uniq[key].custCount++;
+      uniq[key].totalCount += (it.count || 0);
+      uniq[key].customers.push(excelName);
+    }
+  }
+  const savedMap = (DB.settings && DB.settings.favsItemMap) || {};
+  const entries = Object.values(uniq).map(function(u) {
+    const cands = favFindProductMatches(u.item, 8);
+    const saved = savedMap[u.item];
+    let selected = '';
+    if (saved && DB.products.find(function(p){return p.id === saved;})) {
+      selected = saved;
+    } else if (cands[0] && cands[0].score >= 7) {
+      selected = cands[0].id;
+    }
+    return { item: u.item, custCount: u.custCount, totalCount: u.totalCount,
+             customers: u.customers, candidates: cands, selectedId: selected };
+  });
+  // Sort by usage (custCount desc, totalCount desc) so frequent items come first
+  entries.sort(function(a,b){
+    if (b.custCount !== a.custCount) return b.custCount - a.custCount;
+    return b.totalCount - a.totalCount;
+  });
+  ITEM_MAP_STATE = { entries: entries, filter: 'all', search: '' };
+  renderItemMappingModal();
+}
+
+function renderItemMappingModal() {
+  const s = ITEM_MAP_STATE;
+  if (!s) return;
+  let modal = document.getElementById('itemMapModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'itemMapModal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.55); z-index:9999; display:flex; align-items:center; justify-content:center; padding:20px;';
+    document.body.appendChild(modal);
+  }
+  const mapped = s.entries.filter(function(e){return e.selectedId;}).length;
+  const total = s.entries.length;
+  const ratioPct = total ? Math.round(mapped*100/total) : 0;
+  modal.innerHTML = `
+    <div style="background:#fff; width:100%; max-width:1200px; max-height:92vh; border-radius:12px; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:16px 22px; border-bottom:1px solid #ddd; background:#F5F7FA;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="margin:0;">🥩 엑셀 ↔ 시스템 품목 매핑</h3>
+          <button class="btn secondary sm" onclick="closeItemMappingModal()">× 닫기</button>
+        </div>
+        <div style="margin-top:8px; font-size:13px; color:#555;">
+          고유 품목 <b>${total}</b>개 · 매핑됨 <span style="color:#2E7D32; font-weight:700;">${mapped}</span>
+          (<b>${ratioPct}%</b>) · 사용횟수 순 정렬
+        </div>
+        <div style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+          <input id="itemMapSearch" placeholder="🔍 엑셀 품목명 검색 (한글/영문/브랜드)"
+                 value="${(s.search||'').replace(/"/g,'&quot;')}"
+                 oninput="itemMapSetSearch(this.value)"
+                 style="padding:6px 10px; border:1px solid #ccc; border-radius:5px; font-size:13px; flex:1; min-width:200px;">
+          <select onchange="itemMapSetFilter(this.value)" style="padding:6px 10px; border:1px solid #ccc; border-radius:5px; font-size:13px;">
+            <option value="all" ${s.filter==='all'?'selected':''}>전체</option>
+            <option value="mapped" ${s.filter==='mapped'?'selected':''}>매핑됨</option>
+            <option value="unmapped" ${s.filter==='unmapped'?'selected':''}>매핑없음</option>
+            <option value="lowconf" ${s.filter==='lowconf'?'selected':''}>⚠️ 낮은 신뢰도</option>
+          </select>
+          <button class="btn sm secondary" onclick="itemMapAutoFillAll()">🤖 빈 항목 자동매칭</button>
+          <button class="btn sm secondary" onclick="itemMapClearAll()">🧹 전체 초기화</button>
+        </div>
+      </div>
+      <div id="itemMapListBody" style="flex:1; overflow-y:auto; padding:8px 22px;"></div>
+      <div style="padding:14px 22px; border-top:1px solid #ddd; background:#FAFAFA; display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:12px; color:#666;">💾 저장 시 Firebase 동기화 — 다음 일괄 import 에 자동 사용</span>
+        <div>
+          <button class="btn secondary" onclick="closeItemMappingModal()">취소</button>
+          <button class="btn" onclick="saveItemMapping()" style="background:#2E7D32;">💾 매핑 저장</button>
+        </div>
+      </div>
+    </div>
+  `;
+  renderItemMappingList();
+}
+
+function renderItemMappingList() {
+  const s = ITEM_MAP_STATE;
+  const body = document.getElementById('itemMapListBody');
+  if (!body) return;
+  const q = (s.search || '').toLowerCase().replace(/\s+/g, '');
+  const filtered = s.entries.filter(function(e){
+    if (s.filter === 'mapped' && !e.selectedId) return false;
+    if (s.filter === 'unmapped' && e.selectedId) return false;
+    if (s.filter === 'lowconf') {
+      const topScore = e.candidates[0] ? e.candidates[0].score : 0;
+      if (topScore >= 7 && e.selectedId) return false;
+    }
+    if (q) {
+      const nm = e.item.toLowerCase().replace(/\s+/g, '');
+      if (nm.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+  if (filtered.length === 0) {
+    body.innerHTML = '<div style="padding:30px; text-align:center; color:#888;">조건에 맞는 품목 없음</div>';
+    return;
+  }
+  body.innerHTML = `
+    <table style="width:100%; font-size:13px; border-collapse:collapse;">
+      <thead style="position:sticky; top:0; background:#F0F0F0; z-index:1;">
+        <tr>
+          <th style="padding:8px; text-align:left;">엑셀 품목명</th>
+          <th style="padding:8px; text-align:center; width:80px;">사용</th>
+          <th style="padding:8px; text-align:left; width:45%;">시스템 품목</th>
+          <th style="padding:8px; text-align:center; width:50px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(function(e){
+          const idx = s.entries.indexOf(e);
+          const matched = e.selectedId ? DB.products.find(function(p){return p.id===e.selectedId;}) : null;
+          const topScore = e.candidates[0] ? e.candidates[0].score : 0;
+          let icon, color;
+          if (matched) {
+            if (topScore >= 7) { icon = '✅'; color = '#2E7D32'; }
+            else { icon = '⚠️'; color = '#EF6C00'; }
+          } else {
+            icon = '❌'; color = '#C62828';
+          }
+          const custTooltip = e.customers.slice(0, 10).join(', ') + (e.customers.length > 10 ? '...' : '');
+          return `<tr style="border-top:1px solid #eee;">
+            <td style="padding:8px;">
+              <div style="color:${color}; font-weight:600;">${icon} ${e.item}</div>
+              <div style="font-size:11px; color:#888; margin-top:2px;" title="${custTooltip.replace(/"/g,'&quot;')}">
+                ${e.customers.slice(0,4).join(', ')}${e.customers.length > 4 ? ` +${e.customers.length-4}개` : ''}
+              </div>
+            </td>
+            <td style="padding:8px; text-align:center; color:#666;">
+              <div style="font-weight:700;">${e.custCount}</div>
+              <div style="font-size:11px; color:#999;">${e.totalCount}건</div>
+            </td>
+            <td style="padding:8px;">
+              <select onchange="itemMapSet(${idx}, this.value)"
+                      style="width:100%; padding:5px 8px; border:1px solid #ccc; border-radius:5px; font-size:13px;">
+                <option value="">— 매핑없음 (스킵) —</option>
+                ${e.candidates.map(function(c){
+                  const star = c.score >= 10 ? ' ★강추' : (c.score >= 7 ? ' (높음)' : '');
+                  return `<option value="${c.id}" ${c.id===e.selectedId?'selected':''}>${c.name}${c.brand?' / '+c.brand:''} (${c.score}점)${star}</option>`;
+                }).join('')}
+                <optgroup label="── 전체 품목 ──">
+                  ${DB.products.filter(function(p){return p.active;}).map(function(p){
+                    if (e.candidates.some(function(x){return x.id===p.id;})) return '';
+                    return `<option value="${p.id}" ${p.id===e.selectedId?'selected':''}>${p.name}${p.brand?' / '+p.brand:''}</option>`;
+                  }).join('')}
+                </optgroup>
+              </select>
+            </td>
+            <td style="padding:8px; text-align:center;">
+              ${e.selectedId ? `<button class="btn sm secondary" onclick="itemMapClear(${idx})" title="매핑 해제">✕</button>` : ''}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function itemMapSet(idx, prodId) {
+  ITEM_MAP_STATE.entries[idx].selectedId = prodId;
+  renderItemMappingModal();
+}
+function itemMapClear(idx) {
+  ITEM_MAP_STATE.entries[idx].selectedId = '';
+  renderItemMappingModal();
+}
+function itemMapClearAll() {
+  if (!confirm('모든 품목 매핑을 초기화하시겠습니까?')) return;
+  ITEM_MAP_STATE.entries.forEach(function(e){ e.selectedId = ''; });
+  renderItemMappingModal();
+}
+function itemMapAutoFillAll() {
+  let filled = 0;
+  ITEM_MAP_STATE.entries.forEach(function(e){
+    if (e.selectedId) return;
+    if (e.candidates[0] && e.candidates[0].score >= 7) {
+      e.selectedId = e.candidates[0].id;
+      filled++;
+    }
+  });
+  renderItemMappingModal();
+  alert(filled + '개 빈 항목에 자동매칭 적용됨 (점수 7+ 후보만)');
+}
+function itemMapSetFilter(v) {
+  ITEM_MAP_STATE.filter = v;
+  renderItemMappingList();
+}
+function itemMapSetSearch(v) {
+  ITEM_MAP_STATE.search = v;
+  renderItemMappingList();
+}
+
+function saveItemMapping() {
+  const map = {};
+  let count = 0;
+  for (const e of ITEM_MAP_STATE.entries) {
+    if (e.selectedId) { map[e.item] = e.selectedId; count++; }
+  }
+  DB.settings = DB.settings || {};
+  DB.settings.favsItemMap = map;
+  try { saveDB(); } catch(err) { console.warn(err); alert('저장 실패: ' + err.message); return; }
+  closeItemMappingModal();
+  alert('💾 품목 매핑 저장 완료\n\n' + count + '개 매핑 저장됨\n\n이제 「📊 엑셀에서 일괄 가져오기」 실행 시 이 매핑이 자동 적용됩니다.');
+}
+
+function closeItemMappingModal() {
+  const m = document.getElementById('itemMapModal');
+  if (m) m.remove();
+  ITEM_MAP_STATE = null;
 }
 
 function renderCompanyAdmin() {
