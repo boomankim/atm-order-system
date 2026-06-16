@@ -2315,8 +2315,12 @@ function renderFavoritesAdmin(params) {
   const custId = params.get('c') || (DB.customers[0] && DB.customers[0].id);
   body.innerHTML = `
     <div class="card">
-      <h3>거래처별 즐겨찾기 (자주 주문하는 품목 등록)</h3>
-      <div class="field">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">거래처별 즐겨찾기 (자주 주문하는 품목 등록)</h3>
+        <button class="btn" onclick="openFavImportModal()"
+                style="background:#1976D2;">📊 엑셀에서 일괄 가져오기</button>
+      </div>
+      <div class="field" style="margin-top:14px;">
         <label>거래처 선택</label>
         <select id="favCust" onchange="location.hash='#admin?tab=favorites&c='+this.value">
           ${DB.customers.map(c=>`<option value="${c.id}" ${c.id===custId?'selected':''}>${c.name} (${c.code})</option>`).join('')}
@@ -2403,6 +2407,352 @@ function toggleFav(custId, prodId) {
     const p = DB.products.find(x => x.id === prodId);
     el.textContent = (nowFav ? '⭐ ' : '') + (p ? p.name : prodId);
   }
+}
+
+// =========================================================================
+//  FAVORITES BULK IMPORT  (Excel data → matched per-customer favorites)
+// =========================================================================
+const ATM_FAVS_IMPORT_DATA = JSON.parse(`{"고기마을":[{"item":"갈비 SHORT RIB CUT / SR2+","count":6},{"item":"갈비 SHORT RIBS / TARA","count":37},{"item":"갈비탕 BEEF RIB SOUP (18p/CTN)","count":23},{"item":"곱창 SMALL INTESTINE","count":6},{"item":"꼬리곰탕 BEEF TAIL SOUP (18P/CTN)","count":10},{"item":"냉동삼겹 FROZEN PORK BELLY / RIVALEA","count":3},{"item":"돈까스 DONKASTU (18p/CTN)","count":25},{"item":"돈등심 PORK BACKSTRAPS / SUNPORK","count":6},{"item":"목살 COLLAR BUTT / BE CAMPBELL","count":4},{"item":"목살 COLLAR BUTT / SUNPORK","count":20},{"item":"목살슬라이스 SLICED COLLAR BUTT (2.5mm)","count":37},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":36},{"item":"미박삼겹 미추리 PORK BELLY BLRO","count":3},{"item":"사골국(L) BEEF MARROW BONE SOUP (12p/ctn)","count":27},{"item":"사골국(S) BEEF MARROW BONE SOUP (20p/ctn)","count":23},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":7},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (6mm)","count":4},{"item":"생삼겹 PORK BELLY BLRL / RIVALEA","count":32},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":46},{"item":"샤브슬라이스 SLICED KNUCKLE (1.2mm)","count":58},{"item":"소불슬라이스 SLICED KNUCKLE (1.4mm)","count":64},{"item":"스지 BEEF TENDON","count":4},{"item":"아롱사태 CONICAL MUSCLE / MIDFIELD","count":3},{"item":"아롱사태 CONICAL MUSCLE / STOCK YARD","count":3},{"item":"양지 POINT END BRISKET MB2+ / AMG / SR+","count":6},{"item":"와규꼬리 WAGYU BEEF TAIL / DIAMANTINA","count":5},{"item":"와규꼬리 WAGYU BEEF TAIL / JAC","count":4},{"item":"와규샤브슬라이스 WAGYU KNUCKLE SLICE MB8-9+ (1.2mm)","count":41},{"item":"작업늑간 INTERCOSTAL    ** SPECIAL  **","count":3},{"item":"작업돈목뼈 PORK NECK BONE CUT / PACIFIC","count":48},{"item":"작업우족 BEEF FEET CUT / OAKEY","count":3},{"item":"재단 사골 BEEF MARROW BONE CUT","count":16},{"item":"전지 PORK SHOULDER / SUNPORK / RIVALEA","count":7},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":44},{"item":"치마 FLANK STEAK / EBONY","count":5},{"item":"치마 FLANK STEAK / OAKDALE","count":5},{"item":"치즈돈까스 CHEESE DONKASTU (18p/CTN)","count":9},{"item":"치즈소세지 SMOKED CHEESE KRANSKY(12P/B)","count":23},{"item":"튀긴롱롱돈까스DEEP FRIED LONG DONKASTU 400g (18p/ctn)","count":3},{"item":"튀김용 돈까스 DONKASTU","count":55},{"item":"튀김용 치즈돈까스 CHEESE DONKASTU","count":44},{"item":"플랩밋 FLAP MEAT / KIDMAN","count":7},{"item":"플랩밋 FLAP MEAT MB2+ / AMG","count":5},{"item":"항정 PORK JOWLS / BE CAMPBELL/ SUNPORK","count":3},{"item":"홍두깨 ANGUS EYE ROUND / BARCOO","count":3},{"item":"홍두깨 WAGYU EYE ROUND MB6-7 / SIR HARRY","count":3},{"item":"훈제오리 SMOKED DUCK","count":13},{"item":"WAGYU CHUCK EYE ROLL MB8-9 / BLACK OPAL","count":4},{"item":"WAGYU TRI TIP MB6-7 / LAKE","count":4},{"item":"박스라이너 CARTON LINER / BOX","count":4},{"item":"SOAKER PAD","count":3}],"한상":[{"item":"곱창 SMALL INTESTINE","count":9},{"item":"깐양 HONEY COMB / OKAEY","count":6},{"item":"대창 LARGE INTESTINE / OAKEY / LOCKEY","count":13},{"item":"돈단족 PORK TROTTER / BE CAMPBELL","count":4},{"item":"돈머리 PORK HEAD / WIL MEAT","count":11},{"item":"돈목뼈 PORK NECK BONE CUT /","count":99},{"item":"돈위 PORK MAWS","count":6},{"item":"백립  BACK RIB CUT / BARCOO","count":6},{"item":"사골 BEEF MARROW BONE","count":75},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL","count":19},{"item":"양지 POINT END BRISKET / AMG","count":70},{"item":"와규 꼬리 WAGYU BEEF TAIL / JACKS","count":4},{"item":"와규육회 WAGYU EYE ROUND FOR SASHIMI /200G","count":56},{"item":"작업 꼬리 ANGUS BEEF TAIL CUT / ONIX/ DIA","count":12},{"item":"작업 와규 꼬리 WAGYU BEEF TAIL CUT / JACKS / DARLING","count":12},{"item":"재단갈비LA  SHORT RIB LA CUT","count":9},{"item":"재단백립  BACK RIB CUT / BARCOO / JACKS","count":3},{"item":"전지 PORK SHOULDER / RIVAREA","count":6}],"해장국":[{"item":"곱창 SMALL INTESTINE","count":13},{"item":"돈단족 PORK TROTTER / BE CAMPBELL / CASINO","count":7},{"item":"돈머리 PORK HEAD CUT / WILL MEAT / SUNPORK","count":12},{"item":"돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":45},{"item":"돈사골 PORKS MARROW BONE CUT (8-10mm) / WILMEAT","count":13},{"item":"돈심장 PORK HEART / SUNPORK (14kg/BOX)","count":29},{"item":"돈위 SCALDED MAWS / SUNPORK (10kg/BOX)","count":23},{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL 2p","count":4},{"item":"사골 BEEF MARROW BONE CUT (50mm)","count":9},{"item":"선지 BLOOD JELLY *6","count":12},{"item":"소불고기 BEEF CHUCK SLICE (1.8mm)","count":17},{"item":"재단 돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":4},{"item":"제육삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":5},{"item":"항정 PORK JOWLS RIND / BE CAMPBELL","count":39}],"명동":[{"item":"돈목뼈 PORK NECK BONE / PACIFIC","count":8},{"item":"돈목뼈 PORK NECK BONE / SUNPORK","count":47},{"item":"돈민스 MINCED PORK","count":6},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":20},{"item":"사골 BEEF MARROW BONE","count":21},{"item":"사태 CONICAL MUSCLE / STOCK YARD","count":6},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (15mm)","count":8},{"item":"소민스 BEEF MINCED","count":3},{"item":"소불고기 BEEF SLICE","count":52},{"item":"스지 TENDON / TEYS","count":5},{"item":"재단갈비 SHORT RIBS CUT / CAG / SR+","count":5},{"item":"제육용 삼겹 SLICED PORK BELLY BLRL(4mm)","count":47}],"KUJIP":[{"item":"ANGUS FLANK STAKE / OAKDALE 1p","count":4},{"item":"ANGUS KNUCKLE SLICE (1.6mm)","count":23},{"item":"CHUCK ROLL/ RIVERLINE / BARCOO / HALF CUT","count":3},{"item":"WAGYU INSIDE SKIRT MB4-5 / KRP","count":4},{"item":"WAGYU INTERCOSTAL MB6-7 / KRP","count":4},{"item":"냉동삼겹 FROZEN PORK BELLY BLRL / RIVALEA","count":14},{"item":"냉동삼겹 FROZEN PORK BELLY BLRL / SUNPORK","count":14},{"item":"냉동양지 FROZEN POINT END BRISKET / AMG","count":4},{"item":"냉동전지 PORK SHOULDER / SUNPORK","count":10},{"item":"돈목살 PORK COLLARBUTT / SUNPORK","count":8},{"item":"삼겹 PORK BELLY BLRL / RIVALEA","count":16},{"item":"삼겹 PORK BELLY BLRL / SUNPORK","count":20},{"item":"생삼겹 PORK BELLY BLRL / BE CAMPBELL","count":3},{"item":"앵거스 플랩밋 ANGUS FLAP MEAT / YARRABAH","count":9},{"item":"앵거스 플랩밋 ANGUS FLAP MEAT MB2+ / AMG","count":13},{"item":"재단 돈목뼈 PORK NECK BONE 4cm CUT / PACIFIC","count":7},{"item":"재단 사골 BEEF MARROW BONE CUT","count":4},{"item":"재단갈비 LA SHORT RIBS LA CUT / TARA","count":16},{"item":"전지 PORK SHOULDER / SUNPORK","count":7},{"item":"항정 PORK JOWLS / BE CAMPBELL","count":6}],"PAJU":[{"item":"돈머리 PORK HEAD / WILL MEAT","count":16},{"item":"돈심장 PORK HEART (14kg/ctn)","count":15},{"item":"돈위 SCALDED MAWS (10kg/ctn)","count":15},{"item":"생삼겹 PORK BELLY BLRL / BE CAMPBELL","count":3},{"item":"소불고기 BEEF KNUCKLE SLICE","count":28},{"item":"아롱사태 ANGUS CONICAL MUSCLE / STOCK YARD","count":16},{"item":"작업돈목뼈 PORK NECK BONE 4cm CUT / PACIFIC / RIVALEA","count":6},{"item":"작업사골 BEEF MARROW BONE CUT","count":12},{"item":"전지 PORK SHOULDER / SUNPORK","count":16}],"SOHO":[{"item":"WAGYU CHUCK TENDER MB4-5 / KIDMAN","count":3},{"item":"WAGYU CHUCK TENDER MB6-7 / CARRARA","count":3},{"item":"대패 돌돌이 SLICE PORK BELLY","count":30},{"item":"돈등심 PORK BECKSTRAP / SUNPORK","count":41},{"item":"돈민스 MINCED PORK","count":42},{"item":"돈사골 PORK MARROW BONE / WILMEAT","count":40},{"item":"목살 COLLAR BUTT / SUNPORK 1p","count":3},{"item":"미박삼겹 PORK BELLY BL RO / BE CAMPBELL 4p","count":3}],"NMS":[{"item":"곱창 SMALL INTESTINE","count":16},{"item":"깐양 HONEY COMB / AMG","count":9},{"item":"돈목뼈 전중량 PORK NECK BONE / SUNPORK","count":3},{"item":"돈위 SCALDED MAWS (10KG/CTN)","count":6},{"item":"사태 CONICAL MUSCLE / STOCK YARD","count":4},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":8},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (7mm)","count":11},{"item":"소민스 MINCED BEEF","count":7},{"item":"소불고기 BEEF CHUCK SLICE","count":14},{"item":"스지 TENDON / TEYS","count":5},{"item":"작업돈목뼈 전중량 PORK NECK BONE CUT / PACIFIC","count":7},{"item":"작업돈목뼈 전중량 PORK NECK BONE CUT / SUNPORK","count":31},{"item":"재단갈비 SHORT RIB / SR+","count":3},{"item":"전지 PORK SHOULDER / SUNPORK","count":6},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":19},{"item":"홍두깨  SLICED WAGYU EYE ROUND MB4-5 / KR","count":19}],"이대로":[{"item":"돈막창 RECTUMS / SUNPORK","count":6},{"item":"돈목뼈 PORK NECK BONE / PACIFIC","count":93},{"item":"돈민스 MINCED PORK","count":3},{"item":"돼지곱창 PORK INSTESTINE / RIVALEA","count":4},{"item":"양지 POINT END BRISKET / AMG 1p","count":4},{"item":"자숙곱창 SMALL INTESTINE / LOCKYAVELLY","count":4},{"item":"재단돈목뼈 PORK NECK BONE CUT / PACIFIC","count":7}],"CW":[{"item":"WAGYU KNUCKLE MB4-5 / KRP","count":6},{"item":"WAGYU POINT END BRISKET MB6-7 / KRP","count":3},{"item":"갈비 SHORT RIBS / SR+","count":10},{"item":"갈비 SHORT RIBS / TARA","count":9},{"item":"냉동목살 COLLAR BUTT / SUNPORK","count":5},{"item":"냉동양지 POINT END BRISKET / SR4+","count":3},{"item":"너클 KNUCKLE / AMG","count":3},{"item":"돈등심 PORK BECKSTRAP / SUNPORK","count":17},{"item":"롱대패 슬라이스LONG SLICED BELLY / BULK","count":5},{"item":"목살 COLLAR BUTT / SUNPORK","count":4},{"item":"생삼겹 PORK BELLY BLRL / RIVALEA","count":12},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":14},{"item":"샤브 BEEF SLICE SHABU / BULK","count":10},{"item":"와규샤브 WAGYU SLICE SHABU MB6-7 / KR (BULK)","count":10},{"item":"우설 BEEF TONGUE / JOSDALE","count":5},{"item":"작업사골 BEEF MARROW BONE / CUT","count":3},{"item":"전지 PORK SHOULDER / SUNPORK","count":8}],"오픈":[{"item":"목살슬라이스 SLICED COLALR BUTT (2.5mm)","count":8},{"item":"사골국(S) BEEF MARROW BONE SOUP (20p/CTN)","count":8},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":7},{"item":"소불고기 BEEF KNUCKLE SLICE (2mm)","count":36},{"item":"앵거스 차돌슬라이스 ANGUS PE BRISKET SLICE","count":13},{"item":"전지슬라이스 SLICED PORK SHOULDER","count":27},{"item":"차돌슬라이스 PE BRISKET SLICE","count":14},{"item":"플랩밋 FLAP MEAT / KIDMAN","count":3}],"데일리":[{"item":"갈비 LA SHORT RIBS LA CUT / TARA","count":9},{"item":"꼬리곰탕 BEEF TAIL SOUP","count":6},{"item":"대패삼겹슬라이스 PORK BELLY  SLICED","count":3},{"item":"돈까스 DONKASTU (18p/ctn)","count":6},{"item":"돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":10},{"item":"돈민스 MINCED PORK","count":14},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":3},{"item":"소불고기 BEEF SLICE","count":9},{"item":"스지 TENDON / TEYS","count":10},{"item":"아롱사태 CONICAL MUSCLE / STOCK YARD","count":4},{"item":"양지 POINT END BRISKET MB2+ / AMG","count":3},{"item":"재단사골 BEEF MARROW BONE CUT /","count":10},{"item":"제육용 전지슬라이스 SLICED PORK SHOULDER","count":13},{"item":"차돌슬라이스 PE BRISKET SLICE","count":3},{"item":"치즈돈까스 CHEESE DONKASTU (18p/ctn)","count":6},{"item":"탕갈비 SHORT RIBS / TARA / SR+","count":4}],"빨고":[{"item":"돈등심 PORK BECKSTRAP / SUNPORK","count":3},{"item":"돈목뼈 PORK NECK BONE / SUNPORK /","count":4},{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL /","count":9},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK /","count":13},{"item":"백립 BACK RIB / JACKS","count":4},{"item":"백립 BACK RIB / TEYS","count":3},{"item":"소민스 MINCED BEEF","count":6},{"item":"앵거스 소불고기 BEEF SLICE","count":6},{"item":"앵거스 차돌슬라이스 ANGUS PE BRISKET SLICE","count":3},{"item":"와규 소불고기 WAGYU BEEF SLICE","count":25},{"item":"와규샤브 WAGYU SLICE SHABU BOLAR BLADE","count":4},{"item":"육회 EYE ROUND FOR SASHIMI/ SIR HARRY MB6-7","count":3},{"item":"재단갈비LA SHORT RIB LA CUT / TARA","count":21},{"item":"제육 전지슬라이스 SLICED PORK SHOULDER (3mm)","count":3}],"뉴카슬":[{"item":"대패돌돌이 PORK BELLY ROLLED PACK","count":6},{"item":"돈목살돌돌이 COLLAR BUTT SLICED&ROLLED","count":6},{"item":"돈중족 PORK HOCK / WIL MEAT","count":5},{"item":"생삼겹 PORK BELLY BLRL 6p","count":4},{"item":"샤브 BEEF SLICE SHABU PACK","count":5},{"item":"소불고기 BEEF CHUCK SLICE (4kg*3 BULK)","count":3},{"item":"소불고기 BEEF SLICE","count":5},{"item":"알치마살 ANGUS FLAP MEAT","count":4},{"item":"양념소불 MARINATED BEEF SLICE PACK","count":4},{"item":"와규샤브 WAGYU BEEF SLICE SHABU","count":3},{"item":"우삼겹돌돌이 NAVEL END BRISKET ROLLED PACK","count":5},{"item":"작업항정 PORK JOWLS","count":3},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm) / BULK 3kg*3","count":3},{"item":"차돌돌돌이 ANGUS PE BRISKET ROLLED","count":7}],"반상":[{"item":"곱창 SMALL INTESTINE","count":11},{"item":"돈까스 DONKASTU/PACK","count":6},{"item":"돈목뼈 PORK NECK BONE / PACIFIC","count":3},{"item":"목살슬라이스 SLICED COLALR BUTT (2.5mm)","count":20},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":4},{"item":"삼겹슬라이스 SLICED PORK BELLY B/LR/L (3mm)","count":18},{"item":"소불고기 BEEF CHUCK SLICE","count":31},{"item":"재단 돈목뼈 PORK NECK BONE CUT / PACIFIC","count":14},{"item":"탕갈비 SHORT RIBS 3-4cm CUT / SR+","count":3}],"아리네":[{"item":"돈갈비 PORK RIBLET / SUNPORK","count":3},{"item":"돈등심 PORK BECKSTRAP / SUNPORK","count":7},{"item":"돈민스 MINCED PORK","count":17},{"item":"샤브 BEEF SLICE SHABU","count":8},{"item":"소불고기 BEEF KNUCKLE SLICE (2mm)","count":25},{"item":"작업돈목뼈 PORK NECK BONE 4cm CUT / PACIFIC","count":8},{"item":"재단 돈갈비 PORK RIBLET CUT (7cm) / SUNPORK","count":4},{"item":"전지슬라이스 SLICED PORK SHOULDER (2.5mm)","count":22},{"item":"짜장용 전지슬라이스 SLICED PORK SHOULDER (2cm)","count":4},{"item":"찌개용 전지슬라이스 SLICED PORK SHOULDER (2cm)","count":3},{"item":"차돌슬라이스 PE BRISKET SLICE","count":3}],"🅱":[{"item":"10689 WAGYU KNUCKLE MB4-5 2mm SLICE","count":7},{"item":"16529 CHUCK EYE ROLL 2mm SLICE","count":25},{"item":"16530 KNUCKLE 2mm SLICE","count":9},{"item":"16532 ANGUS BRISKET 2mm SLICE","count":6},{"item":"16534 WAGYU KNUCKLE MB8-9 2mm SLICE","count":5},{"item":"16536 PORK SHOULDER 2mm SLICE","count":9},{"item":"16537 PORK NECK 3mm SLICE","count":3},{"item":"16538 PORK BELLY B/L R/L 2mm SLICE","count":8},{"item":"16579 PORK BELLY B/L R/L 5mm SLICE","count":9},{"item":"16774 FZ BEEF MELTIQUE CUT 240g 5kg-6kg","count":3},{"item":"16844 WAGYU BEEF MINCE COARSE","count":3},{"item":"19974 OYSTER BLADE 2mm SLICE","count":3}],"명장":[{"item":"돈등심 PORK BECKSTRAP / SUNPORK","count":15},{"item":"목살 COLLAR BUTT / SUNPORK","count":4},{"item":"삼겹 PORK BELLY BLRL / SUNPORK","count":7},{"item":"양지 POINT END BRISKET MB2+ / AMG","count":3},{"item":"양지 POINT END BRISKET MB4+ / AMG","count":4},{"item":"우대갈비 SHORT RIB GALBI HALF CUT / SR2+","count":3},{"item":"우설 BEEF TONGUE / JOSDALE","count":13},{"item":"재단갈비 SHORT RIB LA 8mm / SR2+","count":4},{"item":"재단갈비LA SHORT RIB LA CUT / TARA","count":9}],"4U":[{"item":"WAGYU CHUCK EYE ROLL MB8-9 / BLACK OPAL","count":4},{"item":"WAGYU SHIN SHANK (D) / KR","count":4},{"item":"갈비 SHORT RIBS / SR+","count":12},{"item":"갈비 SHORT RIBS / SR2+","count":7},{"item":"돈머리 작업 PORK SKULL WHOLE","count":5},{"item":"목살 COLLAR BUTT / BECAMPBELL","count":5},{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL","count":3},{"item":"미박삼겹 PORK BELLY BLRO / RIVALEA","count":3},{"item":"백립  BACK RIB / JACKS","count":10},{"item":"백립 BACK RIB / 36 DEGREE","count":8},{"item":"사골 BEEF MARROW BONE / TARA","count":6},{"item":"생삼겹 PORK BELLY BLRL / RIVALEA","count":15},{"item":"앵거스 너클 ANGUS KNUCKLE / AMG","count":3},{"item":"앵거스 너클 ANGUS KNUCKLE SLICE (2mm)","count":3}],"MART":[{"item":"샤브 BEEF SLICE SHABU (20p/CTN)","count":16},{"item":"갈비탕 BEEF RIB SOUP (18p/CTN)","count":4},{"item":"돈까스 DONKASTU","count":7},{"item":"사골국(L) BEEF MARROW BONE SOUP (12p/CTN)","count":14},{"item":"사골국(S) BEEF MARROW BONE SOUP (20p/CTN)","count":5},{"item":"와규샤브 WAGYU BEEF SLICE SHABU (20p/CTN)","count":7},{"item":"와규우삼겹 WAGYU NEB SLICE 16p","count":3},{"item":"차돌돌돌이 PE BRISKET ROLLED PACK (16p/CTN)","count":14},{"item":"치즈돈까스 CHEESE DONKASTU (18p/ctn)","count":4},{"item":"튀긴롱롱돈까스DEEP FRIED LONG DONKASTU 400g (18p)","count":5}],"돈돈":[{"item":"대패 돌돌이 ROLLED PORK BELLY","count":17},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":6},{"item":"소불고기 BEEF CHUCK SLICE","count":14},{"item":"작업사골 BEEF MARROW BONE CUT","count":8},{"item":"재단갈비LA SHORT RIBS LA  CUT / TARA","count":8},{"item":"제육용 전지슬라이스 SLICED PORK SHOULDER (2mm)","count":5},{"item":"제육용 전지슬라이스 SLICED PORK SHOULDER (3mm)","count":11}],"HWA":[{"item":"대패 돌돌이 SLICE PORK BELLY / TRAY PACK 5p","count":3},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK 2p","count":5},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (6mm)","count":4},{"item":"샤브 BEEF SLICE SHABU 250g","count":14},{"item":"샤브 BEEF SLICE SHABU 400g","count":16},{"item":"재단갈비LA SHORT RIB LA CUT / TARA","count":18},{"item":"재단찜갈비 SHORT RIB CUT / TARA","count":5},{"item":"재단찜갈비 SHORT RIBS CUT / SR+","count":11}],"주막":[{"item":"대패 돌돌이 SLICE PORK BELLY / BULK","count":14},{"item":"돈목뼈 PORK NECK BONE NO CUT / SUNPORK","count":6},{"item":"사태 CONICAL MUSCLE / STOCK YARD GOLD","count":3},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (7mm)","count":7},{"item":"소불고기 BEEF KNUCKLE SLICE (2mm)","count":15},{"item":"육회 EYE ROUND FOR SASHIMI","count":6},{"item":"족발 PORK HOCK / WIL MEAT","count":13},{"item":"차돌슬라이스 PE BRISKET SLICE","count":7}],"CHEF":[{"item":"AMERICAN RIB RLBI FULL PLATE / BE CAMPBELL","count":3},{"item":"갈비 SHORT RIBS / SR+","count":14},{"item":"갈비 SHORT RIBS / SR2+","count":4},{"item":"냉동목살 COLLAR BUTT / BE CAMPBELL","count":4},{"item":"냉동목살 PORK COLLARBUTT / SUNPORK","count":5},{"item":"냉동삼겹 FROZEN PORK BELLY BLRL / RIVALEA","count":3},{"item":"로인립 PORK LOIN RIB / BE CAMPBELL","count":13},{"item":"생삼겹 PORK BELLY BLRL / RIVALEA","count":10},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":7},{"item":"스지 TENDON / TEYS","count":3},{"item":"훈제오리 SMOKED DUCK/ kg","count":9}],"청담":[{"item":"돈목뼈 PORK NECK BONE / PACIFIC","count":19},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":7},{"item":"백립 BACK RIB / JACK'S","count":3},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (7mm)","count":3},{"item":"선지 BLOOD JELLY / PACK","count":5},{"item":"소불고기 BEEF KNUCKLE SLICE","count":14},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":5},{"item":"제육용 전지슬라이스 SLICED PORK SHOULDER (2mm)","count":14}],"JS":[{"item":"너클 ANGUS KNUCKLE / DIAMANTINA","count":4},{"item":"목살 COLLAR BUTT / SUNPORK","count":15},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":15},{"item":"앵거스 너클 ANGUS KNUCKLE / AMG","count":8},{"item":"전지 PORK SHOULDER / SUNPORK","count":7},{"item":"항정 PORK JOWLS / BE CAMPBELL","count":15}],"KOU":[{"item":"로인립 PORK LOIN RIB / BE CAMPBELL","count":16},{"item":"목살슬라이스 SLICED COLALR BUTT  (2mm)","count":14},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":14},{"item":"소불고기 BEEF CHUCK SLICE (2.5mm)","count":18}],"STAFF":[{"item":"갈비탕 BEEF RIB SOUP","count":4},{"item":"돈목살 PORK COLLAR BUTT","count":10},{"item":"목살 돌돌이 SLICED&ROLLED COLLAR BUTT","count":3},{"item":"사골국 BEEF BONE SOUP (L)","count":3},{"item":"삼겹슬 SLICED PORK BELLY BLRL","count":11},{"item":"생삼겹 PORK BELLY BLRL /","count":3},{"item":"샤브 BEEF SHABU SLICED","count":4},{"item":"소불고기 CHUCK SLICED","count":3},{"item":"양념돈불 MARINATED PORK SLICE (450g)","count":4},{"item":"육회 EYE ROUND","count":5},{"item":"차돌돌돌이 PE BRISKET ROLLED","count":4},{"item":"차돌슬라이스 PE BRISKET SLICE","count":3}],"신전":[{"item":"앵거스 너클슬라이스 SLICED KNUCKLE(1.3mm)2.5kg bag/half cut","count":50},{"item":"앵거스 너클슬라이스 SLICED KNUCKLE (1.3mm)","count":11}],"국앤밥":[{"item":"돈목뼈 PORK NECK BONE 8CM / PACIFIC / RIVALEA","count":11},{"item":"돈심장 PORK HEART (14kg/ctn) / SUNPORK","count":8},{"item":"돈위 SCALDED MAWS (10kg/ctn) / SUNPORK","count":9},{"item":"선지 BLOOD JELLY","count":10}],"GBLM":[{"item":"곱창 COOKED SMALL INTESTINE / LOCKYER","count":3},{"item":"돈단족 PORK TROTTER / BE CAMPBELL","count":3},{"item":"돈목뼈 PORK NECK BONE 4cm CUT / PACIFIC","count":5},{"item":"돈목뼈 PORK NECK BONE 6cm CUT / PACIFIC","count":3},{"item":"돈위 SCALDED MAWS (10kg/ctn) / SUNPORK","count":5},{"item":"돈중족 PORK HOCK / WIL MEAT","count":9},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (2.5mm)","count":3},{"item":"소불고기 BEEF SLICE (2mm)","count":5},{"item":"스지 BEEF TENDON / TEYS","count":4},{"item":"작업사골 BEEF MARROW BONE CUT / OAKDALE","count":4},{"item":"재단 사골 BEEF MARROW BONE CUT","count":3},{"item":"전지슬라이스 SLICED PORK SHOULDER (2.5mm)","count":5}],"CHA":[{"item":"돈막창 RECTUMS / SUNPORK (10KG/CTN)","count":3},{"item":"목살 COLLAR BUTT / SUNPORK","count":3},{"item":"백립  BACK RIB CUT / JACKS","count":4},{"item":"사골 BEEF MARROW BONE","count":4},{"item":"소불고기 CHUCK EYE ROLL SLICE (1.8mm)","count":5},{"item":"재단갈비 SHORT RIBS CUT / SR+","count":3},{"item":"재단갈비 SHORT RIBS CUT / SR2+","count":3},{"item":"재단갈비LA SHORT RIB LA CUT / TARA","count":6},{"item":"재단돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":3},{"item":"제육 전지슬라이스 SLICED PORK SHOULDER","count":7},{"item":"차돌 돌돌이 PE BRISKET ROLLED","count":6}],"여동식":[{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL","count":4},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":3},{"item":"재단 돈목뼈 PORK NECK BONE 8cm CUT","count":21},{"item":"탕갈비 SHORT RIBS 50mm CUT","count":5},{"item":"탕갈비 SHORT RIBS CUT / TARA","count":12},{"item":"항정 PORK JOWLS / BE CAMPBELL","count":6}],"베스토어":[{"item":"WAGYU POINT END BRISKET MB8-9 / BLACK OPAL","count":4},{"item":"WAGYU POINT END BRISKET MB8-9 / KRP  ** SPECIAL **","count":4},{"item":"대창 LARGE INTESTINE / LOCKYER VALLEY","count":4},{"item":"돈목뼈 PORK NECK BONE / PACIFIC","count":9},{"item":"생목살 COLLAR BUTT / SUNPORK","count":12},{"item":"생삼겹 PORK BELLY BLRL / RIVALEA","count":3},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":10},{"item":"치마 FLANK STEAK / YARRABAH","count":3}],"치킨브이":[{"item":"너클슬라이스 SLICED KNUCKLE","count":17},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":6},{"item":"재단갈비 SHORT RIBS CUT / SR+","count":3},{"item":"재단갈비 SHORT RIBS CUT / TARA","count":13},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":8}],"만석":[{"item":"곱창 SMALL INTESTINE","count":23},{"item":"대창 LARGE INTESTINE / LOCKYER VALLEY","count":6},{"item":"목살 COLLAR BUTT / SUNPORK 2p","count":3},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK 1p","count":3},{"item":"소막창 BEEF ABOMASUM / EVERSONS","count":3},{"item":"소막창 BEEF ABOMASUM / LOCKYER","count":3},{"item":"전지슬라이스 SLICED PORK SHOULDER (1.5mm)","count":4}],"888":[{"item":"소불고기 BEEF CHUCK SLICE (2kg/bag)","count":37}],"Pork":[{"item":"작업돈등심 PORK BACKSTRAPS","count":24},{"item":"전지슬라이스 SLICED PORK SHOULDER (2cm)","count":5},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":13}],"JONG":[{"item":"WAGYU INTERCOSATL MB8-9 / KRP \\n** SPECIAL **","count":7},{"item":"목살 COLLAR BUTT / SUNPORK","count":5},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":23}],"S키친":[{"item":"목살슬라이스 SLICED COLLAR BUTT (1cm)","count":9},{"item":"소불고기 BEEF CHUCK SLICE","count":18},{"item":"작업사골 BEEF MARROW BONE CUT","count":8},{"item":"작업우족 BEEF FEET CUT / OKAEY","count":3},{"item":"스지 BEEF TENDON / TEYS","count":3}],"유메":[{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (1.3mm)","count":12},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (5mm)","count":12},{"item":"와규슬라이스 WAGYU KNUCKLE SLICE MB6-7 (1.3mm)","count":14},{"item":"재단돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":3}],"동서":[{"item":"WAGYU CHUCK TENDER MB6-7 / KIMBARA","count":3},{"item":"갈비 SHORT RIBS / TARA","count":9},{"item":"돈목뼈 PORK NECK BONE / SUNPORK","count":3},{"item":"생목살 COLLAR BUTT / SUNPORK","count":6},{"item":"생삼겹 PORK BELLY BLRL / RIVALEA","count":4},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":9},{"item":"앵거스 양지 ANGUS POINT END BRISKET MB4+ / AMG","count":3}],"에이엠":[{"item":"로인립 PORK LOIN RIB / BE CAMPBELL","count":4},{"item":"사골 BEEF MARROW BONE","count":3},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":3},{"item":"소불고기 BEEF SLICE","count":7},{"item":"양지 POINT END BRISKET MB2+ / AMG","count":3},{"item":"재단갈비LA SHORT RIB LA CUT / TARA","count":3},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":7},{"item":"차돌슬라이스 PE BRISKET SLICE","count":4}],"MAD":[{"item":"갈비 SHORT RIB / TARA","count":15},{"item":"양지 POINT END BRISKET MB2+ / AMG","count":13}],"오봉집0영주권":[{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":36}],"JANG":[{"item":"WAGYU CHUCK TAIL FLAP MB8-9+ / 2GR","count":3},{"item":"WAGYU OYSTER BLADE MB8-9 / KRP","count":3},{"item":"생삼겹 PORK BELLY BLRL / BE CAMPBELL","count":7},{"item":"재단뼈삼 PORK BELLY BIRL / WIL MEAT","count":3},{"item":"재단뼈삼 PORK BELLY BIRL/ BE CAMPBELL","count":3},{"item":"재단타라갈비 SHORT RIBS CUT / TARA","count":8},{"item":"항정 PORK JOWLS / BE CAMPBELL","count":4}],"만개":[{"item":"WAGYU CONICAL MUSCLE (E) / KR","count":3},{"item":"돈민스 MINCED PORK","count":4},{"item":"사태 CONICAL MUSCLE / QUEENSLAND","count":3},{"item":"사태 CONICAL MUSCLE / STOCK YARD","count":4},{"item":"와규육회 WAGYU EYE ROUND FOR SASHIMI /200G","count":12},{"item":"육전용 홍두깨 WAGYU EYE ROUND (2mm)","count":8}],"카시나":[{"item":"목살슬라이스 SLICED COLALR BUTT (2.5mm)","count":4},{"item":"부채 OYSTER BLADE / TARA","count":3},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":3},{"item":"샤브 BEEF KUCKLE SLICE SHABU","count":7},{"item":"소불고기 BEEF SLICE (1.8mm)","count":11},{"item":"제육목살슬라이스 SLICED COLALR BUTT (2.5mm)","count":3}],"오봉집":[{"item":"목살 COLLAR BUTT / SUNPORK","count":7},{"item":"생삼겹 PORK BELLY BLRL / BE CAMPBELL","count":15}],"조금자":[{"item":"돈등심 PORK BECKSTRAP / SUNPORK","count":4},{"item":"미박삼겹 PORK BELLY BLRO / SUNPORK","count":11},{"item":"소불고기 BEEF KNUCKLE SLICE","count":6},{"item":"작업돈목뼈 PORK NECK BONE CUT","count":9}],"PBS":[{"item":"돈목뼈 PORK NECK BONE / PACIFIC","count":11},{"item":"돈목뼈 PORK NECK BONE / RIVALEA","count":4},{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL","count":4},{"item":"재단돈목뼈 PORK NECK BONE 5cm CUT / PACIFIC","count":4},{"item":"재단돈목뼈 PORK NECK BONE 8cm CUT / RIVALEA","count":5}],"CNC":[{"item":"일반소세지 KRANSKY","count":10},{"item":"치즈소세지 CHEESE KRANSKY","count":10},{"item":"치즈돈까스 CHEESE DONKASTU (18p/ctn)","count":4},{"item":"훈제오리 SMOKED DUCK","count":3},{"item":"차돌돌돌이 PE BRISKET ROLLED 16p","count":3}],"신카이":[{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":11},{"item":"와규소불고기 WAGYU BEEF SLICE (WAGYU NECK MEAT)","count":7},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":11}],"토모야":[{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":5},{"item":"소불고기 BEEF KNUCKLE SLICE","count":15},{"item":"양지 POINT END BRISKET MB2+ / AMG 1p","count":3},{"item":"전지슬라이스 SLICED PORK SHOULDER (3mm)","count":3},{"item":"척소불고기 BEEF CHUCK SLICE","count":3}],"돈돈토모야":[{"item":"백립 BACK RIB / BARCOO","count":6},{"item":"백립 BACK RIB / JACKS","count":5},{"item":"차돌돌돌이 PE BRISKET ROLLED","count":16}],"씨유반찬":[{"item":"샤브 BEEF SLICE SHABU","count":3},{"item":"소불고기 BEEF KNUCKLE SLICE","count":12},{"item":"제육 전지슬라이스 SLICED PORK SHOULDER","count":12}],"토리치":[{"item":"ANGUS SHABU SLICE (1.6mm)","count":6},{"item":"돈등심 PORK LOIN / SUNPORK","count":3},{"item":"돈목살 COLLAR BUTT / SUNPORK","count":11},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":4}],"BOYS":[{"item":"WAGYU FLAP MEAT MB8-9 / LAKE","count":4},{"item":"WAGYU KARUBI PLATE MB6-7 / STOCK YARD","count":3},{"item":"냉동너클 ANGUS KNUCKLE / AMG","count":3},{"item":"대창 LARGE INTESTINE / LOCKYER BALLEY","count":3},{"item":"목살 COLLAR BUTT / SUNPORK","count":3},{"item":"앵거스 너클 ANGUS KNUCKLE / AMG","count":5},{"item":"훈제오리 SMOKDE DUCK","count":5}],"EW":[{"item":"특양구이 BEEF TRIPE (220g /PACK) 20p/CTN","count":18},{"item":"대창구이 LARGE INTESTINE (300g /PACK)","count":8}],"오봉집영주권성심":[{"item":"소불고기 BEEF CHUCK SLICE","count":26}],"EGG":[{"item":"양념소불고기 MARINATED BEEF SLICE","count":15},{"item":"양념돈불고기 MARINATED PORK SLICE","count":5},{"item":"돈민스 MINCED PORK","count":5}],"고기마KUJIP":[{"item":"일반소세지SMOKED KRANSKY (12P/B)","count":25}],"노스록MART":[{"item":"대패 돌돌이 PORK BELLY ROLLED PACK (16p/CTN)","count":15}],"석기":[{"item":"갈비 SHORT RIBS / TARA","count":21},{"item":"갈비 SHORT RIB SG / AMG","count":3}],"우리엥청담":[{"item":"재단갈비LA SHORT RIB LA CUT / TARA","count":24}],"자갈치":[{"item":"대패돌돌이 SLICE PORK BELLY ROLLED","count":7},{"item":"돈등심 PORK BECKSTRAP / SUNPORK 2p","count":3},{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL 2p","count":3},{"item":"와규육회 WAGYU EYE ROUND FOR SASHIMI / 200G","count":7},{"item":"전지슬라이스 SLICED PORK SHOULDER (2mm)","count":4}],"성심":[{"item":"육전용 WAGYU EYE ROUND FOR SASHIMI (2-2.5mm)","count":17},{"item":"육회 EYE ROUND FOR SASHIMI (4mm)","count":6}],"HAAK":[{"item":"양념돈불 MARINATED PORK SHOULDER SLICE","count":11},{"item":"소불고기 BEEF SLICE (2mm)","count":3}],"원밋":[{"item":"작업비 WAGYU CHUCK ROLL CUTTING FEE","count":9},{"item":"작업비 WAGYU BOLAR SLICE CUTTING FEE","count":4}],"DOJO":[{"item":"소불고기 BEEF KNUCKLE SLICED/ 1kg bag","count":7},{"item":"전지슬라이스 SLICED PORK SHOULDER 1kg/bag","count":4},{"item":"소불고기 BEEF CHUCK ROLL SLICED/ 1kg bag","count":3}],"담아드림":[{"item":"갈비 LA SHORT RIBS LA CUT / TARA","count":9},{"item":"소불고기 BEEF KNUCKLE SLICE (2mm)","count":5},{"item":"제육 목살슬라이스 SLICED COLALR BUTT","count":4}],"벤토야도모":[{"item":"소불고기 BEEF KNUCKLE SLICE (1.6mm)","count":21}],"C3":[{"item":"목살슬라이스 연육 COLLAR BUTT / 0.7cm","count":4},{"item":"샤브 BEEF SLICE SHABU 1kg bag","count":8},{"item":"재단 돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":3},{"item":"전지슬라이스 SLICED PORK SHOULDER","count":5}],"매뱅":[{"item":"생삼겹 PORK BELLY BLRL / RIVALEA","count":5},{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":6},{"item":"양지 POINT END BRISKET MB2+ / AMG","count":6},{"item":"양지 POINT END BRISKET MB4+ / AMG","count":3}],"888-1":[{"item":"전지슬라이스 SLICED PORK SHOULDER (2.5mm)","count":16}],"스토리":[{"item":"돼지 불고기 전지슬라이스 SLICED PORK SHOULDER (2mm)","count":5},{"item":"소불고기 BEEF SLICE (2mm)","count":6},{"item":"작업돈목뼈 PORK NECK BONE 5cm CUT / PACIFIC","count":4},{"item":"재단탕갈비 SHORT RIB CUT / TARA","count":4}],"월남쌈":[{"item":"샤브 BEEF SLICE SHABU","count":12},{"item":"재단돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":7}],"YUZU":[{"item":"와규슬라이스 WAGYU KUCKLE SLICE MB8-9 / KR","count":14},{"item":"돈등심 PORK BACKSTRAPS / SUNPORK 2p","count":4}],"한상NMS":[{"item":"선지 BLOOD JELLY","count":18}],"B":[{"item":"유류비 TEMPORARY FUEL LEVY","count":17}],"TANYS":[{"item":"WAGYU FLAP MEAT MB6-7 / SIR HARRY","count":8},{"item":"WAGYU FLAP MEAT MB6-7 / 2GR","count":6},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL(2.5mm)","count":3}],"리정":[{"item":"갈비 SHORT RIBS / TARA","count":11},{"item":"곱창 SMALL INTESTINE","count":3},{"item":"전지 PORK SHOULDER / SUNPORK","count":3}],"오봉집.성심":[{"item":"샤브 돌돌이 BEEF SLICE SHABU ROLL","count":16}],"wagyu":[{"item":"와규차돌돌돌이 WAGYU PE BRISKET MB8-9 ROLLED","count":15}],"만선":[{"item":"와규 육회 WAGYU EYE ROUND / BULK","count":6},{"item":"곱창 SMALL INTESTINE","count":6},{"item":"재단탕갈비 SHORT RIBS CUT / TARA","count":3}],"EW행사":[{"item":"롱대패 슬라이스 LONG SLICED BELLY","count":14}],"MANNA":[{"item":"제육용전지슬라이스 SLICED PORK SHOULDER (2mm)","count":9},{"item":"소불고기 BEEF KNUCKLE SLICE (1.8mm)","count":5}],"beef":[{"item":"갈비탕 BEEF RIB SOUP(18/ctn)","count":8},{"item":"앵거스플랩밋 ANGUS FLAP MEAT","count":3},{"item":"플랩밋 FLAP MEAT","count":3}],"888-3":[{"item":"너클슬라이스 SLICED KNUCKLE (1.4mm) 2kg/bag","count":13}],"CW2EW":[{"item":"냉동양지 POINT END BRISKET MB2+ / AMG","count":10},{"item":"냉동양지 POINT END BRISKET MB4+ / AMG","count":3}],"FISH":[{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (3mm)","count":9},{"item":"소불고기 BEEF SLICE (2mm)","count":4}],"수라":[{"item":"ANGUS KNUCKLE SLICE (2mm) / JACKS","count":7},{"item":"WAGYU TRIMMING 75CL / KR","count":3},{"item":"삼겹살 PORK BELLY BLRL / SUNPORK","count":3}],"스마일":[{"item":"치즈소세지 CHEESE KRANSKY","count":5},{"item":"일반소세지 KRANSKY","count":4},{"item":"WAGYU INTERCOSATL MB4-5 / KRP","count":4}],"888고기":[{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":5},{"item":"생삼겹 PORK BELLY BLRL / PACIFIC","count":4},{"item":"목살 COLLAR BUTT / SUNPORK","count":3}],"우리엥":[{"item":"재단돈목뼈 PORK NECK BONE 4cm CUT / PACIFIC","count":12}],"FISH_파라":[{"item":"양념소불 MARINATED BEEF SLICE","count":11}],"JMR":[{"item":"전지 돈까스용 SLICED PORK SHOULDER (8mm) 2kg*5","count":11}],"돈돈7토모야":[{"item":"재단돈목뼈 PORK NECK BONE 8cm / PACIFIC","count":8},{"item":"재단돈목뼈 PORK NECK BONE 4cm / PACIFIC","count":3}],"오픈CHEF":[{"item":"사골국(S) BEEF MARROW BONE SOUP (20p/CTN)","count":8},{"item":"사골국(S) BEEF MARROW BONE SOUP 20P/CTN","count":3}],"MIR":[{"item":"차돌슬라이스 PE BRISKET SLICE","count":4},{"item":"재단갈비LA SHORT RIB LA CUT / TARA","count":3},{"item":"삼겹슬라이스 SLICED PORK BELLY BLRL (7mm)","count":3}],"만석2GBLM":[{"item":"차돌슬라이스 PE BRISKET SLICE","count":10}],"서울바베큐":[{"item":"WAGYU CHUCK EYE ROLL MB4-5 (8mm) SLICE / KRP","count":4},{"item":"갈비 LA SHORT RIBS LA CUT / SR+","count":3},{"item":"대패 돌돌이 SLICE PORK BELLY (3mm)","count":3}],"스미마셍":[{"item":"WAGYU KNUCKLE SLICE MB8-9 (1.8mm)","count":6}],"황가":[{"item":"특양 BEEF TRIPE / EST","count":4},{"item":"특양 BEEF TRIPE / MIDFIELD","count":3},{"item":"대창 LARGE INTESTINE / JACKS","count":3}],"마마짱":[{"item":"돈갈비 PORK RIBLET / SUNPORK","count":9}],"브리스켓":[{"item":"전지슬라이스 SLICED PORK SHOULDER","count":5},{"item":"양지 POINT END BRISKET MB4+ / AMG","count":4}],"EWJNH":[{"item":"매운사태 BRAISED BEEF SHANK (24p/CTN)","count":8}],"beef58한상":[{"item":"재단백립 BACK RIB CUT/ 14cm","count":8}],"마스터":[{"item":"소불고기 BEEF CHUCK SLICE","count":4},{"item":"제육용 전지슬라이스 SLICED PORK SHOULDER","count":4}],"명장돈돈토모야":[{"item":"생삼겹 PORK BELLY BLRL / SUNPORK","count":4},{"item":"생삼겹 PORK BELLY BLRL / PACIFIC","count":3}],"차림":[{"item":"깐양 HONEY COMB","count":4},{"item":"돈심장 PORK HEART / SUNPORK (14KG/CTN)","count":3}],"KIMCH":[{"item":"소불고기 BEEF KNUCKLE SLICE (1.6mm)","count":3},{"item":"전지슬라이스 SLICED PORK SHOULDER (3mm)","count":3}],"미스터":[{"item":"앵거스차돌슬라이스 ANGUS PE BRISKET SLICE","count":3},{"item":"대패삼겹슬라이스 SLICE PORK BELLY","count":3}],"EGGHAT":[{"item":"와규 소민스 WAGYU BEEF MINCE (10% FAT)","count":5}],"bros":[{"item":"돈까스 DONKASTU (18p/ctn)","count":5}],"셀리스":[{"item":"소불고기 BEEF KNUCKLE SLICE (1.4mm)","count":5}],"JFN":[{"item":"WAGYU CHUCK SLICE MB (1.6mm) 1kg / bag #25","count":4}],"양은이네":[{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL","count":4}],"영주권":[{"item":"재단백립 BACK RIB 8cm CUT / JACKS","count":4}],"정원":[{"item":"재단갈비 LA SHORT RIBS LA 1cm CUT  / TARA","count":4}],"CENTRAL":[{"item":"특양구이 BEEF TRIPE (220g /PACK)","count":3}],"강경두":[{"item":"WAGYU INSIDE SKIRT MB4-5 / KRP","count":3}],"라이드":[{"item":"사골 BEEF MARROW BONE","count":3}],"리안":[{"item":"전지 PORK SHOULDER / SUNPORK","count":3}],"미트밋":[{"item":"ANGUS BEEF TONGUE / JOSDALE","count":3}],"벤토야":[{"item":"미박삼겹 PORK BELLY BLRO / BE CAMPBELL 1p","count":3}],"영주권오봉집":[{"item":"재단돈목뼈 PORK NECK BONE 8cm CUT / PACIFIC","count":3}],"유주":[{"item":"와규슬라이스 WAGYU SLICE","count":3}],"유치원TO":[{"item":"소불고기 BEEF CHUCK SLICE","count":3}],"키즈":[{"item":"소불고기 BEEF KNUCKLE SLICE (2mm)","count":3}],"토이":[{"item":"갈비 SHORT RIBS / TARA","count":3}]}`);
+
+function _favParseItem(item) {
+  let s = (item || '').replace(/\*\*[^*]+\*\*/g, '').trim();
+  const parts = s.split(/\s+\/\s+/);
+  const main = parts[0];
+  const brands = [];
+  for (const bp of parts.slice(1)) {
+    let bc = bp.replace(/\([^)]*\)/g, '').replace(/\s*\d+\s*p\b.*$/i, '').trim();
+    if (bc && !/^\d/.test(bc)) brands.push(bc);
+  }
+  const specs = [];
+  const sm = main.matchAll(/\(([^)]+)\)/g);
+  for (const m of sm) specs.push(m[1]);
+  const mainNoParen = main.replace(/\s*\([^)]*\)/g, '').trim();
+  let korean = '';
+  let i = 0;
+  while (i < mainNoParen.length) {
+    const c = mainNoParen[i];
+    const cc = c.charCodeAt(0);
+    if ((cc >= 0xAC00 && cc <= 0xD7A3) || /[\s\d.,]/.test(c)) { korean += c; i++; }
+    else break;
+  }
+  korean = korean.trim();
+  const english = mainNoParen.substring(i).trim();
+  return { korean: korean, english: english, brands: brands, specs: specs };
+}
+
+function _favScoreProduct(parsed, prod) {
+  let score = 0;
+  const nm = prod.name || '';
+  const pbrand = prod.brand || '';
+  const nmNorm = nm.replace(/\s+/g, '').toLowerCase();
+  const koInName = parsed.korean && nm.indexOf(parsed.korean) >= 0;
+  if (koInName) {
+    score += nm.startsWith(parsed.korean) ? 4 : 2;
+  } else if (parsed.korean) {
+    for (const w of parsed.korean.split(/\s+/)) {
+      if (w && nm.indexOf(w) >= 0) { score += 1; break; }
+    }
+  }
+  if (parsed.english) {
+    for (const w of parsed.english.split(/\s+/)) {
+      if (w.length >= 3 && nm.toUpperCase().indexOf(w.toUpperCase()) >= 0) score += 1;
+    }
+  }
+  if (parsed.brands.length && pbrand) {
+    for (const b of parsed.brands) {
+      if (!b) continue;
+      const bn = b.replace(/\s+/g,'').toUpperCase();
+      const pn = pbrand.replace(/\s+/g,'').toUpperCase();
+      if (bn === pn) { score += 5; break; }
+      if (bn.indexOf(pn) >= 0 || pn.indexOf(bn) >= 0) { score += 3; break; }
+    }
+  } else if (!parsed.brands.length && !pbrand && koInName) {
+    score += 1;
+  }
+  for (const spec of parsed.specs) {
+    const sn = spec.replace(/\s+/g,'').toLowerCase();
+    if (sn && nmNorm.indexOf(sn) >= 0) score += 3;
+  }
+  return score;
+}
+
+function favFindProductMatches(itemStr, limit) {
+  limit = limit || 6;
+  const parsed = _favParseItem(itemStr);
+  const cands = [];
+  for (const p of DB.products) {
+    if (!p.active) continue;
+    const s = _favScoreProduct(parsed, p);
+    if (s >= 3) cands.push({ score: s, id: p.id, name: p.name, brand: p.brand || '' });
+  }
+  cands.sort(function(a,b){ return b.score - a.score; });
+  return cands.slice(0, limit);
+}
+
+function favFindCustomerMatches(excelName, limit) {
+  limit = limit || 5;
+  const target = (excelName || '').toLowerCase().replace(/\s+/g, '');
+  if (!target) return [];
+  const cands = [];
+  for (const c of DB.customers) {
+    if (c.active === false) continue;
+    const nm = (c.name || '').toLowerCase().replace(/\s+/g, '');
+    const code = (c.code || '').toLowerCase().replace(/\s+/g, '');
+    let score = 0;
+    if (nm === target || code === target) score = 100;
+    else if (nm.startsWith(target) || code.startsWith(target)) score = 50;
+    else if (target.startsWith(nm) && nm.length >= 2) score = 40;
+    else if (nm.indexOf(target) >= 0) score = 30;
+    else if (target.indexOf(nm) >= 0 && nm.length >= 2) score = 20;
+    if (score > 0) cands.push({ score: score, id: c.id, name: c.name, code: c.code });
+  }
+  cands.sort(function(a,b){ return b.score - a.score; });
+  return cands.slice(0, limit);
+}
+
+let FAV_IMPORT_STATE = null;
+
+function openFavImportModal() {
+  if (!confirm('엑셀에서 ' + Object.keys(ATM_FAVS_IMPORT_DATA).length +
+      '개 거래처 / ' +
+      Object.values(ATM_FAVS_IMPORT_DATA).reduce(function(a,b){return a+b.length;},0) +
+      '개 즐겨찾기 항목을 가져옵니다.\n\n' +
+      '현재 시스템 데이터와 매칭한 결과를 확인 후 적용합니다. 계속할까요?')) return;
+  FAV_IMPORT_STATE = buildFavImportState();
+  renderFavImportModal();
+}
+
+function buildFavImportState() {
+  const state = { customers: [], totals: { custAuto:0, custNone:0, itemAuto:0, itemAmbi:0, itemNone:0 } };
+  for (const excelName in ATM_FAVS_IMPORT_DATA) {
+    const items = ATM_FAVS_IMPORT_DATA[excelName];
+    const custCands = favFindCustomerMatches(excelName, 8);
+    const selectedCustId = (custCands[0] && custCands[0].score >= 30) ? custCands[0].id : '';
+    if (selectedCustId) state.totals.custAuto++; else state.totals.custNone++;
+    const itemRows = items.map(function(it) {
+      const cands = favFindProductMatches(it.item, 6);
+      let status = 'none';
+      let selectedProdId = '';
+      if (cands.length === 0) status = 'none';
+      else if (cands[0].score >= 7) { status = 'auto'; selectedProdId = cands[0].id; }
+      else { status = 'ambi'; selectedProdId = cands[0].id; }
+      if (status === 'auto') state.totals.itemAuto++;
+      else if (status === 'ambi') state.totals.itemAmbi++;
+      else state.totals.itemNone++;
+      return { item: it.item, count: it.count, candidates: cands,
+               selectedProdId: selectedProdId, status: status, apply: status !== 'none' };
+    });
+    state.customers.push({ excelName: excelName, candidates: custCands,
+                          selectedCustId: selectedCustId, items: itemRows, expanded: false });
+  }
+  return state;
+}
+
+function renderFavImportModal() {
+  const s = FAV_IMPORT_STATE;
+  if (!s) return;
+  let modal = document.getElementById('favImportModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'favImportModal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.55); z-index:9999; display:flex; align-items:center; justify-content:center; padding:20px;';
+    document.body.appendChild(modal);
+  }
+  const t = s.totals;
+  modal.innerHTML = `
+    <div style="background:#fff; width:100%; max-width:1200px; max-height:92vh; border-radius:12px; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:16px 22px; border-bottom:1px solid #ddd; background:#F5F7FA;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="margin:0;">📊 엑셀 즐겨찾기 일괄 가져오기 — 매칭 컨펌</h3>
+          <button class="btn secondary sm" onclick="closeFavImportModal()">× 닫기</button>
+        </div>
+        <div style="margin-top:10px; font-size:13px; color:#555;">
+          <b>거래처:</b> 자동매칭 <span style="color:#2E7D32; font-weight:700;">${t.custAuto}</span> /
+          매칭없음 <span style="color:#C62828; font-weight:700;">${t.custNone}</span>
+          &nbsp;|&nbsp;
+          <b>품목:</b> 자동 <span style="color:#2E7D32; font-weight:700;">${t.itemAuto}</span> /
+          후보있음 <span style="color:#EF6C00; font-weight:700;">${t.itemAmbi}</span> /
+          매칭없음 <span style="color:#C62828; font-weight:700;">${t.itemNone}</span>
+        </div>
+        <div style="margin-top:8px; font-size:12px;">
+          <button class="btn sm secondary" onclick="favImportToggleAll(true)">전체 펼치기</button>
+          <button class="btn sm secondary" onclick="favImportToggleAll(false)">전체 접기</button>
+          <button class="btn sm secondary" onclick="favImportExpandUnmatched()">⚠ 매칭 필요한 것만 펼치기</button>
+          <span style="color:#888; margin-left:10px;">※ 거래처 매칭 안된 항목은 자동 스킵됩니다.</span>
+        </div>
+      </div>
+      <div id="favImportListBody" style="flex:1; overflow-y:auto; padding:16px 22px;"></div>
+      <div style="padding:14px 22px; border-top:1px solid #ddd; background:#FAFAFA; display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:12px; color:#666;">기존 즐겨찾기에 <b>추가</b>됩니다 (덮어쓰지 않음).</span>
+        <div>
+          <button class="btn secondary" onclick="closeFavImportModal()">취소</button>
+          <button class="btn" onclick="applyFavImport()" style="background:#2E7D32;">✅ 선택 항목 적용</button>
+        </div>
+      </div>
+    </div>
+  `;
+  renderFavImportList();
+}
+
+function renderFavImportList() {
+  const s = FAV_IMPORT_STATE;
+  const body = document.getElementById('favImportListBody');
+  if (!body) return;
+  body.innerHTML = s.customers.map(function(cust, ci) {
+    const matchedCust = cust.selectedCustId ? DB.customers.find(function(x){return x.id===cust.selectedCustId;}) : null;
+    const headerColor = matchedCust ? '#2E7D32' : '#C62828';
+    const headerIcon = matchedCust ? '✅' : '❌';
+    const itemsCnt = cust.items.length;
+    const autoCnt = cust.items.filter(function(it){return it.status==='auto';}).length;
+    const ambiCnt = cust.items.filter(function(it){return it.status==='ambi';}).length;
+    const noneCnt = cust.items.filter(function(it){return it.status==='none';}).length;
+    const exp = cust.expanded;
+    return `
+      <div style="border:1px solid #ddd; border-radius:8px; margin-bottom:10px; background:#fff;">
+        <div style="padding:10px 14px; background:#FAFAFA; border-bottom:${exp?'1px solid #ddd':'none'}; cursor:pointer; display:flex; align-items:center; gap:10px;"
+             onclick="favImportToggle(${ci})">
+          <span style="font-size:18px;">${exp?'▼':'▶'}</span>
+          <span style="font-weight:700; color:${headerColor};">${headerIcon} ${cust.excelName}</span>
+          <span style="color:#666; font-size:13px;">→</span>
+          <select onclick="event.stopPropagation()" onchange="favImportSetCust(${ci}, this.value)"
+                  style="padding:4px 8px; border:1px solid #ccc; border-radius:5px; min-width:240px; font-size:13px;">
+            <option value="">— 매칭없음 (스킵) —</option>
+            ${cust.candidates.map(function(c){
+              return `<option value="${c.id}" ${c.id===cust.selectedCustId?'selected':''}>${c.name} (${c.code})${c.score>=100?' ★':''}</option>`;
+            }).join('')}
+            <optgroup label="── 전체 거래처 ──">
+              ${DB.customers.map(function(c){
+                if (cust.candidates.some(function(x){return x.id===c.id;})) return '';
+                return `<option value="${c.id}" ${c.id===cust.selectedCustId?'selected':''}>${c.name} (${c.code})</option>`;
+              }).join('')}
+            </optgroup>
+          </select>
+          <span style="margin-left:auto; font-size:12px; color:#666;">
+            ${itemsCnt}개 (✅${autoCnt} ⚠️${ambiCnt} ❌${noneCnt})
+          </span>
+        </div>
+        ${exp ? `
+          <div style="padding:8px 14px;">
+            <table style="width:100%; font-size:13px; border-collapse:collapse;">
+              <thead><tr style="background:#F0F0F0;">
+                <th style="padding:6px; text-align:center; width:30px;"><input type="checkbox"
+                    ${cust.items.every(function(it){return it.apply || it.status==='none';}) && cust.items.some(function(it){return it.apply;})?'checked':''}
+                    onchange="favImportToggleAllItems(${ci}, this.checked)"></th>
+                <th style="padding:6px; text-align:left;">엑셀 항목</th>
+                <th style="padding:6px; text-align:left;">시스템 품목 매칭</th>
+                <th style="padding:6px; text-align:center; width:60px;">횟수</th>
+              </tr></thead>
+              <tbody>
+                ${cust.items.map(function(it, ii){
+                  const stColor = it.status==='auto'?'#2E7D32':(it.status==='ambi'?'#EF6C00':'#C62828');
+                  const stIcon = it.status==='auto'?'✅':(it.status==='ambi'?'⚠️':'❌');
+                  return `<tr style="border-top:1px solid #eee;">
+                    <td style="padding:6px; text-align:center;">
+                      <input type="checkbox" ${it.apply?'checked':''}
+                             onchange="favImportSetApply(${ci},${ii},this.checked)">
+                    </td>
+                    <td style="padding:6px;">
+                      <span style="color:${stColor};">${stIcon}</span> ${it.item}
+                    </td>
+                    <td style="padding:6px;">
+                      <select onchange="favImportSetProd(${ci},${ii},this.value)"
+                              style="width:100%; padding:3px 6px; border:1px solid #ccc; border-radius:4px; font-size:12px;">
+                        <option value="">— 선택안함 —</option>
+                        ${it.candidates.map(function(c){
+                          return `<option value="${c.id}" ${c.id===it.selectedProdId?'selected':''}>${c.name}${c.brand?' / '+c.brand:''} (${c.score}점)</option>`;
+                        }).join('')}
+                        <optgroup label="── 전체 품목 ──">
+                          ${DB.products.filter(function(p){return p.active;}).map(function(p){
+                            if (it.candidates.some(function(x){return x.id===p.id;})) return '';
+                            return `<option value="${p.id}" ${p.id===it.selectedProdId?'selected':''}>${p.name}${p.brand?' / '+p.brand:''}</option>`;
+                          }).join('')}
+                        </optgroup>
+                      </select>
+                    </td>
+                    <td style="padding:6px; text-align:center; color:#666;">${it.count}</td>
+                  </tr>`;
+                }).join('')}
+              </tbody>
+            </table>
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
+}
+
+function favImportToggle(ci) {
+  FAV_IMPORT_STATE.customers[ci].expanded = !FAV_IMPORT_STATE.customers[ci].expanded;
+  renderFavImportList();
+}
+function favImportToggleAll(exp) {
+  FAV_IMPORT_STATE.customers.forEach(function(c){ c.expanded = exp; });
+  renderFavImportList();
+}
+function favImportExpandUnmatched() {
+  FAV_IMPORT_STATE.customers.forEach(function(c){
+    c.expanded = !c.selectedCustId || c.items.some(function(it){ return it.status !== 'auto'; });
+  });
+  renderFavImportList();
+}
+function favImportSetCust(ci, custId) {
+  FAV_IMPORT_STATE.customers[ci].selectedCustId = custId;
+  // re-render header only — easier to re-render all
+  renderFavImportList();
+}
+function favImportSetProd(ci, ii, prodId) {
+  const it = FAV_IMPORT_STATE.customers[ci].items[ii];
+  it.selectedProdId = prodId;
+  it.apply = !!prodId;
+}
+function favImportSetApply(ci, ii, on) {
+  FAV_IMPORT_STATE.customers[ci].items[ii].apply = on;
+}
+function favImportToggleAllItems(ci, on) {
+  FAV_IMPORT_STATE.customers[ci].items.forEach(function(it){
+    if (it.selectedProdId) it.apply = on;
+  });
+  renderFavImportList();
+}
+
+function applyFavImport() {
+  const s = FAV_IMPORT_STATE;
+  if (!s) return;
+  let custAffected = 0, itemsAdded = 0, itemsSkipped = 0;
+  for (const cust of s.customers) {
+    if (!cust.selectedCustId) {
+      itemsSkipped += cust.items.filter(function(it){return it.apply;}).length;
+      continue;
+    }
+    const dbCust = DB.customers.find(function(x){return x.id===cust.selectedCustId;});
+    if (!dbCust) continue;
+    dbCust.favoriteProductIds = dbCust.favoriteProductIds || [];
+    let added = 0;
+    for (const it of cust.items) {
+      if (!it.apply || !it.selectedProdId) continue;
+      if (dbCust.favoriteProductIds.indexOf(it.selectedProdId) >= 0) continue;
+      dbCust.favoriteProductIds.push(it.selectedProdId);
+      added++;
+    }
+    if (added > 0) {
+      custAffected++;
+      itemsAdded += added;
+      try { saveEntityField('customers', dbCust.id, 'favoriteProductIds'); } catch(e) { console.warn(e); }
+    }
+  }
+  closeFavImportModal();
+  alert('✅ 일괄 적용 완료\n\n  · 거래처 ' + custAffected + '개 업데이트\n  · 즐겨찾기 ' + itemsAdded + '개 추가\n  · 거래처 미매칭 스킵: ' + itemsSkipped + '개');
+  // Refresh the favorites admin view if currently on it
+  if (location.hash.indexOf('#admin') === 0) {
+    const tab = new URL(location.href.replace('#','?')).searchParams.get('tab');
+    if (tab === 'favorites') location.reload();
+  }
+}
+
+function closeFavImportModal() {
+  const m = document.getElementById('favImportModal');
+  if (m) m.remove();
+  FAV_IMPORT_STATE = null;
 }
 
 function renderCompanyAdmin() {
