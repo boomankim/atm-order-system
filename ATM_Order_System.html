@@ -3395,26 +3395,32 @@ function dailyReportComputeRows(dateISO) {
     // 현잔액 = 전미수금 + 매출액 - 입금액
     const currentBalance = priorBalance + todaySales - todayPaid;
 
-    // Overdue: 선택일까지 FIFO 정산 후 결제텀 초과 미결제 합
-    const invoicesAsOf = allInvoices
-      .filter(x => x.dateISO <= dateISO)
-      .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
-    let totalPaymentAsOf = allPayments
-      .filter(p => (p.date||'') <= dateISO)
-      .reduce((s,p)=>s+p.amount,0);
+    // Overdue 정책 (2026-06-16 변경):
+    //   - 외상 거래처: due date(인보이스 발행일 + 결제텀일) 이후 추가로 7일 grace period가 지나야 Overdue
+    //     예) 7일 외상 → 발행일 + 14일 이후 미결제분, 14일 외상 → 발행일 + 21일 이후
+    //   - 현금/계좌이체(termsDays=0): Overdue 계산 자체에서 제외 (사용자 정책)
+    const GRACE_DAYS = 7;
     let overdue = 0;
-    for (const inv of invoicesAsOf) {
-      let unpaid = inv.amount;
-      if (totalPaymentAsOf > 0) {
-        const applied = Math.min(totalPaymentAsOf, unpaid);
-        unpaid -= applied;
-        totalPaymentAsOf -= applied;
-      }
-      if (unpaid > 0.001) {
-        const invDate = new Date(inv.dateISO + 'T00:00:00');
-        const dueDate = new Date(invDate.getTime());
-        dueDate.setDate(dueDate.getDate() + days);
-        if (dueDate < todayCutoff) overdue += unpaid;
+    if (days > 0) {
+      const invoicesAsOf = allInvoices
+        .filter(x => x.dateISO <= dateISO)
+        .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+      let totalPaymentAsOf = allPayments
+        .filter(p => (p.date||'') <= dateISO)
+        .reduce((s,p)=>s+p.amount,0);
+      for (const inv of invoicesAsOf) {
+        let unpaid = inv.amount;
+        if (totalPaymentAsOf > 0) {
+          const applied = Math.min(totalPaymentAsOf, unpaid);
+          unpaid -= applied;
+          totalPaymentAsOf -= applied;
+        }
+        if (unpaid > 0.001) {
+          const invDate = new Date(inv.dateISO + 'T00:00:00');
+          const overdueDate = new Date(invDate.getTime());
+          overdueDate.setDate(overdueDate.getDate() + days + GRACE_DAYS);
+          if (overdueDate < todayCutoff) overdue += unpaid;
+        }
       }
     }
     return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue };
