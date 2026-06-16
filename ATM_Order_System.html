@@ -2317,8 +2317,12 @@ function renderFavoritesAdmin(params) {
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
         <h3 style="margin:0;">거래처별 즐겨찾기 (자주 주문하는 품목 등록)</h3>
-        <button class="btn" onclick="openFavImportModal()"
-                style="background:#1976D2;">📊 엑셀에서 일괄 가져오기</button>
+        <div style="display:flex; gap:6px; flex-wrap:wrap;">
+          <button class="btn" onclick="openCustomerMappingTool()"
+                  style="background:#6A1B9A;">🔗 거래처명 매핑</button>
+          <button class="btn" onclick="openFavImportModal()"
+                  style="background:#1976D2;">📊 엑셀에서 일괄 가져오기</button>
+        </div>
       </div>
       <div class="field" style="margin-top:14px;">
         <label>거래처 선택</label>
@@ -2523,11 +2527,21 @@ function openFavImportModal() {
 }
 
 function buildFavImportState() {
-  const state = { customers: [], totals: { custAuto:0, custNone:0, itemAuto:0, itemAmbi:0, itemNone:0 } };
+  const state = { customers: [], totals: { custAuto:0, custNone:0, custSaved:0, itemAuto:0, itemAmbi:0, itemNone:0 } };
+  const savedMap = (DB.settings && DB.settings.favsCustMap) || {};
   for (const excelName in ATM_FAVS_IMPORT_DATA) {
     const items = ATM_FAVS_IMPORT_DATA[excelName];
     const custCands = favFindCustomerMatches(excelName, 8);
-    const selectedCustId = (custCands[0] && custCands[0].score >= 30) ? custCands[0].id : '';
+    // Priority 1: saved mapping (from 거래처명 매핑 도구)
+    // Priority 2: top fuzzy candidate with score >= 30
+    let selectedCustId = '';
+    const saved = savedMap[excelName];
+    if (saved && DB.customers.find(function(c){return c.id === saved;})) {
+      selectedCustId = saved;
+      state.totals.custSaved++;
+    } else if (custCands[0] && custCands[0].score >= 30) {
+      selectedCustId = custCands[0].id;
+    }
     if (selectedCustId) state.totals.custAuto++; else state.totals.custNone++;
     const itemRows = items.map(function(it) {
       const cands = favFindProductMatches(it.item, 6);
@@ -2567,7 +2581,8 @@ function renderFavImportModal() {
           <button class="btn secondary sm" onclick="closeFavImportModal()">× 닫기</button>
         </div>
         <div style="margin-top:10px; font-size:13px; color:#555;">
-          <b>거래처:</b> 자동매칭 <span style="color:#2E7D32; font-weight:700;">${t.custAuto}</span> /
+          <b>거래처:</b> 자동매칭 <span style="color:#2E7D32; font-weight:700;">${t.custAuto}</span>
+          ${t.custSaved ? `(💾 저장된 매핑 <b>${t.custSaved}</b>개 사용)` : ''} /
           매칭없음 <span style="color:#C62828; font-weight:700;">${t.custNone}</span>
           &nbsp;|&nbsp;
           <b>품목:</b> 자동 <span style="color:#2E7D32; font-weight:700;">${t.itemAuto}</span> /
@@ -2753,6 +2768,218 @@ function closeFavImportModal() {
   const m = document.getElementById('favImportModal');
   if (m) m.remove();
   FAV_IMPORT_STATE = null;
+}
+
+// =========================================================================
+//  CUSTOMER NAME MAPPING TOOL  (Excel 거래처명 ↔ 시스템 거래처 매핑)
+//  매핑은 DB.settings.favsCustMap 에 저장되며 일괄 import 시 자동 사용됨.
+// =========================================================================
+let CUST_MAP_STATE = null;
+
+function openCustomerMappingTool() {
+  const savedMap = (DB.settings && DB.settings.favsCustMap) || {};
+  const excelNames = Object.keys(ATM_FAVS_IMPORT_DATA);
+  const entries = excelNames.map(function(name) {
+    const cands = favFindCustomerMatches(name, 10);
+    const saved = savedMap[name];
+    let selected = '';
+    if (saved && DB.customers.find(function(c){return c.id === saved;})) {
+      selected = saved;
+    } else if (cands[0] && cands[0].score >= 30) {
+      selected = cands[0].id;
+    }
+    return {
+      excelName: name,
+      candidates: cands,
+      selectedId: selected,
+      itemCount: ATM_FAVS_IMPORT_DATA[name].length
+    };
+  });
+  CUST_MAP_STATE = { entries: entries, filter: 'all', search: '' };
+  renderCustomerMappingModal();
+}
+
+function renderCustomerMappingModal() {
+  const s = CUST_MAP_STATE;
+  if (!s) return;
+  let modal = document.getElementById('custMapModal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'custMapModal';
+    modal.style.cssText = 'position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(0,0,0,0.55); z-index:9999; display:flex; align-items:center; justify-content:center; padding:20px;';
+    document.body.appendChild(modal);
+  }
+  const mapped = s.entries.filter(function(e){return e.selectedId;}).length;
+  const total = s.entries.length;
+  const ratioPct = total ? Math.round(mapped*100/total) : 0;
+  // Detect duplicate system customer assignments
+  const dupCount = {};
+  for (const e of s.entries) if (e.selectedId) dupCount[e.selectedId] = (dupCount[e.selectedId]||0)+1;
+  const dupTotal = Object.keys(dupCount).filter(function(k){return dupCount[k]>1;}).length;
+
+  modal.innerHTML = `
+    <div style="background:#fff; width:100%; max-width:1100px; max-height:92vh; border-radius:12px; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:16px 22px; border-bottom:1px solid #ddd; background:#F5F7FA;">
+        <div style="display:flex; justify-content:space-between; align-items:center;">
+          <h3 style="margin:0;">🔗 엑셀 ↔ 시스템 거래처 매핑</h3>
+          <button class="btn secondary sm" onclick="closeCustomerMappingModal()">× 닫기</button>
+        </div>
+        <div style="margin-top:8px; font-size:13px; color:#555;">
+          매핑됨 <span style="color:#2E7D32; font-weight:700;">${mapped}</span> /
+          전체 <span style="font-weight:700;">${total}</span>
+          (<b>${ratioPct}%</b>)
+          ${dupTotal > 0 ? `&nbsp;|&nbsp;<span style="color:#C62828;">⚠️ 중복 할당: <b>${dupTotal}</b>개</span>` : ''}
+        </div>
+        <div style="margin-top:10px; display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
+          <input id="custMapSearch" placeholder="🔍 엑셀 거래처명 검색"
+                 value="${(s.search||'').replace(/"/g,'&quot;')}"
+                 oninput="custMapSetSearch(this.value)"
+                 style="padding:6px 10px; border:1px solid #ccc; border-radius:5px; font-size:13px; flex:1; min-width:200px;">
+          <select onchange="custMapSetFilter(this.value)" style="padding:6px 10px; border:1px solid #ccc; border-radius:5px; font-size:13px;">
+            <option value="all" ${s.filter==='all'?'selected':''}>전체 보기</option>
+            <option value="mapped" ${s.filter==='mapped'?'selected':''}>매핑된 것만</option>
+            <option value="unmapped" ${s.filter==='unmapped'?'selected':''}>매핑없는 것만</option>
+            <option value="dup" ${s.filter==='dup'?'selected':''}>⚠️ 중복 할당만</option>
+          </select>
+          <button class="btn sm secondary" onclick="custMapAutoFillAll()">🤖 빈 항목 자동매칭</button>
+          <button class="btn sm secondary" onclick="custMapClearAll()">🧹 전체 매핑 초기화</button>
+        </div>
+      </div>
+      <div id="custMapListBody" style="flex:1; overflow-y:auto; padding:8px 22px;"></div>
+      <div style="padding:14px 22px; border-top:1px solid #ddd; background:#FAFAFA; display:flex; justify-content:space-between; align-items:center;">
+        <span style="font-size:12px; color:#666;">💾 저장 시 매핑이 Firebase 에도 동기화되어 다음 일괄 import 에 자동 사용됩니다.</span>
+        <div>
+          <button class="btn secondary" onclick="closeCustomerMappingModal()">취소</button>
+          <button class="btn" onclick="saveCustomerMapping()" style="background:#2E7D32;">💾 매핑 저장</button>
+        </div>
+      </div>
+    </div>
+  `;
+  renderCustomerMappingList();
+}
+
+function renderCustomerMappingList() {
+  const s = CUST_MAP_STATE;
+  const body = document.getElementById('custMapListBody');
+  if (!body) return;
+  const q = (s.search || '').toLowerCase().replace(/\s+/g, '');
+  const dupCount = {};
+  for (const e of s.entries) if (e.selectedId) dupCount[e.selectedId] = (dupCount[e.selectedId]||0)+1;
+  const filtered = s.entries.filter(function(e, idx){
+    const isDup = e.selectedId && dupCount[e.selectedId] > 1;
+    if (s.filter === 'mapped' && !e.selectedId) return false;
+    if (s.filter === 'unmapped' && e.selectedId) return false;
+    if (s.filter === 'dup' && !isDup) return false;
+    if (q) {
+      const nm = e.excelName.toLowerCase().replace(/\s+/g, '');
+      if (nm.indexOf(q) < 0) return false;
+    }
+    return true;
+  });
+  if (filtered.length === 0) {
+    body.innerHTML = '<div style="padding:30px; text-align:center; color:#888;">조건에 맞는 항목 없음</div>';
+    return;
+  }
+  body.innerHTML = `
+    <table style="width:100%; font-size:13px; border-collapse:collapse;">
+      <thead style="position:sticky; top:0; background:#F0F0F0; z-index:1;">
+        <tr>
+          <th style="padding:8px; text-align:left; width:200px;">엑셀 거래처명</th>
+          <th style="padding:8px; text-align:center; width:60px;">품목수</th>
+          <th style="padding:8px; text-align:left;">시스템 거래처</th>
+          <th style="padding:8px; text-align:center; width:50px;"></th>
+        </tr>
+      </thead>
+      <tbody>
+        ${filtered.map(function(e){
+          const idx = s.entries.indexOf(e);
+          const matched = e.selectedId ? DB.customers.find(function(c){return c.id===e.selectedId;}) : null;
+          const isDup = e.selectedId && dupCount[e.selectedId] > 1;
+          const statusIcon = matched ? (isDup ? '⚠️' : '✅') : '❌';
+          const statusColor = matched ? (isDup ? '#EF6C00' : '#2E7D32') : '#C62828';
+          return `<tr style="border-top:1px solid #eee;">
+            <td style="padding:8px; font-weight:600;">
+              <span style="color:${statusColor};">${statusIcon}</span> ${e.excelName}
+            </td>
+            <td style="padding:8px; text-align:center; color:#666;">${e.itemCount}</td>
+            <td style="padding:8px;">
+              <select onchange="custMapSet(${idx}, this.value)"
+                      style="width:100%; padding:5px 8px; border:1px solid #ccc; border-radius:5px; font-size:13px;">
+                <option value="">— 매핑없음 —</option>
+                ${e.candidates.map(function(c){
+                  const star = c.score >= 100 ? ' ★완전일치' : (c.score >= 50 ? ' (높음)' : '');
+                  return `<option value="${c.id}" ${c.id===e.selectedId?'selected':''}>${c.name} (${c.code})${star}</option>`;
+                }).join('')}
+                <optgroup label="── 전체 거래처 ──">
+                  ${DB.customers.map(function(c){
+                    if (e.candidates.some(function(x){return x.id===c.id;})) return '';
+                    return `<option value="${c.id}" ${c.id===e.selectedId?'selected':''}>${c.name} (${c.code})</option>`;
+                  }).join('')}
+                </optgroup>
+              </select>
+              ${isDup ? '<div style="font-size:11px; color:#EF6C00; margin-top:2px;">다른 엑셀명과 같은 거래처에 매핑됨</div>' : ''}
+            </td>
+            <td style="padding:8px; text-align:center;">
+              ${e.selectedId ? `<button class="btn sm secondary" onclick="custMapClear(${idx})" title="매핑 해제">✕</button>` : ''}
+            </td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+function custMapSet(idx, custId) {
+  CUST_MAP_STATE.entries[idx].selectedId = custId;
+  renderCustomerMappingModal();  // re-render to refresh stats + dup detection
+}
+function custMapClear(idx) {
+  CUST_MAP_STATE.entries[idx].selectedId = '';
+  renderCustomerMappingModal();
+}
+function custMapClearAll() {
+  if (!confirm('모든 매핑을 초기화하시겠습니까?')) return;
+  CUST_MAP_STATE.entries.forEach(function(e){ e.selectedId = ''; });
+  renderCustomerMappingModal();
+}
+function custMapAutoFillAll() {
+  let filled = 0;
+  CUST_MAP_STATE.entries.forEach(function(e){
+    if (e.selectedId) return;
+    if (e.candidates[0] && e.candidates[0].score >= 30) {
+      e.selectedId = e.candidates[0].id;
+      filled++;
+    }
+  });
+  renderCustomerMappingModal();
+  alert(filled + '개 빈 항목에 자동매칭 적용됨');
+}
+function custMapSetFilter(v) {
+  CUST_MAP_STATE.filter = v;
+  renderCustomerMappingList();
+}
+function custMapSetSearch(v) {
+  CUST_MAP_STATE.search = v;
+  renderCustomerMappingList();
+}
+
+function saveCustomerMapping() {
+  const map = {};
+  let count = 0;
+  for (const e of CUST_MAP_STATE.entries) {
+    if (e.selectedId) { map[e.excelName] = e.selectedId; count++; }
+  }
+  DB.settings = DB.settings || {};
+  DB.settings.favsCustMap = map;
+  try { saveDB(); } catch(err) { console.warn(err); alert('저장 실패: ' + err.message); return; }
+  closeCustomerMappingModal();
+  alert('💾 거래처 매핑 저장 완료\n\n' + count + '개 매핑 저장됨\n\n이제 「📊 엑셀에서 일괄 가져오기」 실행 시 이 매핑이 자동 적용됩니다.');
+}
+
+function closeCustomerMappingModal() {
+  const m = document.getElementById('custMapModal');
+  if (m) m.remove();
+  CUST_MAP_STATE = null;
 }
 
 function renderCompanyAdmin() {
