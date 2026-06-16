@@ -388,6 +388,65 @@ function migrateProducts() {
       if (typeof showToast === 'function') showToast('✅ 품목 마스터가 최신 목록으로 업데이트됐습니다 (' + DB.products.length + '개)');
     }, 500);
   }
+  // 부위(cut) 마이그레이션: 기타→공산품, lamb→양고기, 가공품→가공육, 새 리스트에 없는 값→공산품
+  migrateCuts();
+  // 품목명 한영 병기 일괄 정규화 (1회 실행)
+  migrateProductNames();
+}
+
+// 품목명 한영 병기 일괄 마이그레이션 — productNameVersion 플래그로 1회만 실행
+function migrateProductNames() {
+  if (DB.productNameVersion === PRODUCT_NAME_MIGRATION_VERSION) return;
+  if (!Array.isArray(DB.products)) return;
+  let changed = 0;
+  DB.products.forEach(p => {
+    if (!p || !p.name) return;
+    const newName = normalizeProductName(p.name);
+    if (newName !== p.name) {
+      p.name = newName;
+      changed++;
+    }
+  });
+  DB.productNameVersion = PRODUCT_NAME_MIGRATION_VERSION;
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try {
+      DB_REF.child('products').set(DB.products);
+      DB_REF.child('productNameVersion').set(PRODUCT_NAME_MIGRATION_VERSION);
+    } catch(e) { console.warn('품목명 마이그레이션 Firebase 저장 실패:', e); }
+  }
+  console.info('품목명 한영 병기 마이그레이션 완료 — ' + changed + '개 품목 갱신 (총 ' + DB.products.length + '개)');
+  if (changed > 0) {
+    setTimeout(() => {
+      if (typeof showToast === 'function') showToast('✅ 품목명이 한글/영어 병기로 갱신되었습니다 (' + changed + '개)');
+    }, 800);
+  }
+}
+
+// 부위 값 정규화 — 기존 데이터의 cut 값을 새 표준에 맞춰 보정
+function migrateCuts() {
+  if (!Array.isArray(DB.products)) return;
+  let changed = 0;
+  DB.products.forEach(p => {
+    if (!p) return;
+    const before = p.cut;
+    let after = before;
+    if (before === '기타') after = '공산품';
+    else if (before === '가공품') after = '가공육';
+    else if ((before || '').toLowerCase() === 'lamb') after = '양고기';
+    else if (before && CUT_ORDER.indexOf(before) < 0) after = '공산품';
+    if (after !== before) {
+      p.cut = after;
+      changed++;
+    }
+  });
+  if (changed > 0) {
+    saveLocalDB();
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      try { DB_REF.child('products').set(DB.products); } catch(e) { console.warn('cut 마이그레이션 Firebase 저장 실패:', e); }
+    }
+    console.info('부위(cut) 마이그레이션 완료 — ' + changed + '개 품목 보정');
+  }
 }
 let _lastSaveTime = 0;
 let _isOrderEntry = false;
@@ -1598,6 +1657,279 @@ function renderProductsAdmin() {
   document.getElementById('prodSearch').oninput = e => renderProductList(e.target.value);
   renderProductList('');
 }
+// =========================================================================
+//  품목명 한영 병기 마이그레이션 사전 (2026-06-16)
+// =========================================================================
+const PRODUCT_NAME_MIGRATION_VERSION = '2026-06-16';
+
+// 한글 줄임말 → 완성형 (사용자 컨펌 받은 매핑만)
+const KO_COMPLETE = {
+  '삼겹': '삼겹살',
+  '안창': '안창살',
+  '채끝': '채끝등심',
+  '살치': '살치살',
+  '치마': '치맛살',
+  '항정': '항정살',
+  '부채': '부채살',
+  '늑간': '늑간살',
+  '뼈삼': '뼈삼겹살'
+  // 양지/척롤/안심/돈등심/우삼겹 등은 그대로 유지
+};
+
+// 한글 → 영문 매칭 사전 (사용자 컨펌)
+const KO_TO_EN = {
+  // 와규/소고기 부위
+  '갈비': 'Short Rib',
+  '양지': 'Brisket',
+  '사태': 'Shin Shank',
+  '안창살': 'Thin Skirt',
+  '백립': 'Back Rib',
+  '척롤': 'Chuck Roll',
+  '너클': 'Knuckle',
+  '우설': 'Tongue',
+  '스지': 'Tendon',
+  '깐양': 'Tripe',
+  '사골': 'Beef Bone',
+  '우족': 'Beef Foot',
+  '꼬리': 'Tail',
+  '곱창': 'Small Intestine',
+  '대창': 'Large Intestine',
+  '특양': 'Mountain Chain',
+  '천엽': 'Book Tripe',
+  '뽈살': 'Cheek Meat',
+  '선지': 'Blood',
+  '플랩밋': 'Flap Meat',
+  '안심': 'Tenderloin',
+  '안심추리': 'Tenderloin',
+  '홍두깨': 'Eye Round',
+  '우삼겹': 'Karuby',
+  '치맛살': 'Flank Steak',
+  '삼각살': 'Tri Tip',
+  '부채살': 'Oyster Blade',
+  '늑간살': 'Intercostal',
+  '꽃살': 'Chuck Rib Meat',
+  '진갈비': 'Round Short Rib',
+  '넥밋': 'Neck Meat',
+  '립캡': 'Rib Cap',
+  '립핑거': 'Rib Finger',
+  '큐브롤': 'Cube Roll',
+  '설도': 'Knuckle',
+  '소막창': 'Beef Abomasum',
+  '삶은곱창': 'Boiled Small Intestine',
+  '소잡뼈': 'Beef Misc Bone',
+  '우목뼈': 'Beef Neck Bone',
+  '아롱사태': 'Conical Muscle',
+  '알치마': 'Flap Meat',
+  '살치살': 'Chuck Tail Flap',
+  '채끝등심': 'Strip Loin',
+
+  // 돼지고기
+  '삼겹살': 'Pork Belly (S/Off, Boneless)',
+  '미박삼겹': 'Pork Belly (S/On)',
+  '목살': 'Pork Collar',
+  '돈등심': 'Pork Loin',
+  '전지': 'Pork Shoulder',
+  '항정살': 'Pork Jowl',
+  '뼈삼겹살': 'Pork Belly (Bone In)',
+  '돈갈비': 'Pork Rib',
+  '단족': 'Pork Trotter',
+  '껍데기': 'Pork Skin',
+  '오돌뼈': 'Pork Cartilage',
+  '돈간': 'Pork Liver',
+  '돈혀': 'Pork Tongue',
+  '돈머리': 'Pork Head',
+  '돈사골': 'Pork Bone',
+  '중족': 'Pork Foot',
+  '돈위': 'Pork Stomach',
+  '돈심장': 'Pork Heart',
+  '돈막창': 'Pork Stomach',
+  '돈곱창': 'Pork Intestine',
+  '돈목뼈': 'Pork Neck Bone',
+  '로인립': 'Loin Rib',
+  '돼지피': 'Pork Blood',
+
+  // 오리
+  '오가살': 'Duck Brisket',
+
+  // 작업육
+  '소불고기': 'Sliced Beef',
+  '소불고기 척롤슬라이스': 'Sliced Chuck Roll',
+  '소불고기 너클슬라이스': 'Sliced Knuckle',
+  '샤브슬라이스': 'Shabu Slice',
+  '우삼겹슬라이스': 'Karuby Slice',
+  '차돌슬라이스': 'Brisket Slice',
+  '대패슬라이스': 'Thin Slice',
+  '삼겹살슬라이스': 'Pork Belly Slice',
+  '목살슬라이스': 'Pork Collar Slice',
+  '전지슬라이스': 'Pork Shoulder Slice',
+  '전지 다이스': 'Pork Shoulder Dice',
+  '와규소불슬라이스': 'Wagyu Beef Slice',
+  '와규 너클슬라이스': 'Wagyu Knuckle Slice',
+  '와규소불 탑사이드슬라이스': 'Wagyu Topside Slice',
+  '와규샤브 넥밋슬라이스': 'Wagyu Neck Slice',
+  '와규 가루비슬라이스': 'Wagyu Karuby Slice',
+  '와규 척롤': 'Wagyu Chuck Roll',
+  '소민스': 'Beef Mince',
+  '돈민스': 'Pork Mince',
+  '재단갈비': 'Trimmed Short Rib',
+  '재단백립': 'Trimmed Back Rib',
+  '재단돈목뼈': 'Trimmed Pork Neck Bone',
+  '재단꼬리': 'Trimmed Tail',
+  '양념갈비': 'Marinated Short Rib',
+  '양념소불': 'Marinated Bulgogi',
+  '양념돈불': 'Marinated Pork Bulgogi',
+  '갈비탕': 'Galbi-tang',
+  '사골국': 'Bone Soup',
+  '꼬리곰탕': 'Tail Soup',
+  '매운사태찜': 'Spicy Beef Shin Stew',
+
+  // 가공품 / 가공육
+  '훈제오리': 'Smoked Duck',
+  '소시지': 'Sausage',
+  '치즈소시지': 'Cheese Sausage',
+  '돈까스': 'Pork Cutlet',
+  '치즈돈까스': 'Cheese Pork Cutlet',
+  '롱롱돈까스': 'Long Pork Cutlet',
+  '튀김롱롱돈까스': 'Fried Long Pork Cutlet',
+  '모짜렐라치즈': 'Mozzarella Cheese',
+  '베타믹스': 'Bata Mix',
+
+  // 공산품
+  '간장': 'Soy Sauce',
+  '미림': 'Mirin',
+  '물엿': 'Corn Syrup',
+  '고추장': 'Gochujang',
+  '설탕': 'Sugar',
+  '오일': 'Oil',
+  '참소스': 'Sesame Sauce',
+  '돈까스소스': 'Tonkatsu Sauce',
+  '마늘간장소스': 'Garlic Soy Sauce',
+  '골절기 톱날': 'Bone Saw Blade',
+  '목장갑': 'Cotton Gloves',
+  '라텍스장갑': 'Latex Gloves',
+  '랩': 'Cling Wrap',
+  '실링컨테이너': 'Sealing Container',
+  '진공필름': 'Vacuum Film',
+  '포장용기 양념볼': 'Marinade Container',
+  '후추': 'Pepper',
+  '임가네 고추가루': 'Imgane Chili Powder'
+};
+
+function _hasHangulText(s) { return /[가-힯㄰-㆏]/.test(s); }
+function _hasEnglishText(s) { return /[A-Za-z]/.test(s); }
+
+function _toTitleCase(s) {
+  return String(s || '').replace(/([A-Za-z])([A-Za-z0-9]*)/g, function(_, first, rest) {
+    return first.toUpperCase() + rest.toLowerCase();
+  });
+}
+
+// 한글 시퀀스와 영문/숫자 시퀀스 분리
+function _splitKoEn(s) {
+  let ko = '', en = '';
+  let i = 0;
+  while (i < s.length) {
+    const ch = s.charAt(i);
+    if (/[가-힯㄰-㆏]/.test(ch)) {
+      let j = i;
+      while (j < s.length && /[가-힯㄰-㆏\s]/.test(s.charAt(j))) j++;
+      ko += s.substring(i, j) + ' ';
+      i = j;
+    } else {
+      let j = i;
+      while (j < s.length && !/[가-힯㄰-㆏]/.test(s.charAt(j))) j++;
+      en += s.substring(i, j) + ' ';
+      i = j;
+    }
+  }
+  return [ko.replace(/\s+/g, ' ').trim(), en.replace(/\s+/g, ' ').trim()];
+}
+
+function _completeKorean(ko) {
+  if (KO_COMPLETE[ko]) return KO_COMPLETE[ko];
+  const firstSpace = ko.indexOf(' ');
+  if (firstSpace > 0) {
+    const first = ko.substring(0, firstSpace);
+    if (KO_COMPLETE[first]) return KO_COMPLETE[first] + ko.substring(firstSpace);
+  }
+  return ko;
+}
+
+function _lookupEnglish(ko) {
+  if (KO_TO_EN[ko]) return KO_TO_EN[ko];
+  // 긴 키 먼저 매칭 (예: '소불고기 척롤슬라이스' 가 '소불고기' 보다 우선)
+  const sorted = Object.keys(KO_TO_EN).sort((a, b) => b.length - a.length);
+  for (const key of sorted) {
+    if (ko === key) return KO_TO_EN[key];
+    if (ko.startsWith(key)) {
+      const next = ko.charAt(key.length);
+      // 키워드 뒤가 한글이면 다른 단어 → 매칭 X (갈비탕에 갈비 매칭되는 거 방지)
+      // 키워드 뒤가 공백/숫자/특수/끝이면 매칭
+      if (next === ' ' || next === '' || /[0-9.()*&_+\-/]/.test(next)) {
+        const suffix = ko.substring(key.length).trim();
+        return KO_TO_EN[key] + (suffix ? ' ' + suffix : '');
+      }
+    }
+  }
+  return null;
+}
+
+// 품목명을 "한글명 / English Name" 형식으로 정규화
+function normalizeProductName(rawName) {
+  if (!rawName) return rawName;
+  let name = rawName.trim();
+  // 이미 슬래시 형식이면 그대로 (수동 편집 보호)
+  if (name.indexOf(' / ') >= 0) return name;
+
+  const hasKo = _hasHangulText(name);
+  const hasEn = _hasEnglishText(name);
+
+  if (hasEn && !hasKo) {
+    // 영문만 → 그대로 (사용자 요구)
+    return name;
+  }
+  if (hasKo && hasEn) {
+    // 한글+영문 혼재 → 분리 후 슬래시로 합침
+    const [koRaw, enRaw] = _splitKoEn(name);
+    const ko = _completeKorean(koRaw);
+    const en = _toTitleCase(enRaw);
+    return ko + (en ? ' / ' + en : '');
+  }
+  if (hasKo && !hasEn) {
+    // 한글만 → 완성형 + 영문 매칭
+    const ko = _completeKorean(name);
+    const en = _lookupEnglish(ko);
+    return en ? ko + ' / ' + en : ko;
+  }
+  return name;
+}
+
+// =========================================================================
+
+// 부위(cut) 정렬 순서 — 와규부터 공산품까지 고정 순서
+const CUT_ORDER = ['와규','소고기','돼지고기','작업육','가공육','양고기','오리','공산품'];
+// 부위 표시 라벨 — 한글 / English 병기
+const CUT_LABEL = {
+  '와규': '와규 / Wagyu',
+  '소고기': '소고기 / Beef',
+  '돼지고기': '돼지고기 / Pork',
+  '작업육': '작업육 / Processed',
+  '가공육': '가공육 / Cured',
+  '양고기': '양고기 / Lamb',
+  '오리': '오리 / Duck',
+  '공산품': '공산품 / Goods'
+};
+function cutLabel(c) { return CUT_LABEL[c] || (c || '-'); }
+function compareCut(a, b) {
+  const ia = CUT_ORDER.indexOf(a);
+  const ib = CUT_ORDER.indexOf(b);
+  // 정의된 순서에 없으면 맨 뒤
+  const va = ia < 0 ? 999 : ia;
+  const vb = ib < 0 ? 999 : ib;
+  if (va !== vb) return va - vb;
+  return (a || '').localeCompare(b || '', 'ko-KR');
+}
+
 // 첫 글자가 한글인지 확인 (음절·자모·호환자모 포함)
 function isHangulChar(ch) {
   if (!ch) return false;
@@ -1622,9 +1954,10 @@ function renderProductList(q) {
     const s = (p.name + ' ' + p.cut + ' ' + p.brand).toLowerCase();
     return s.includes(q.toLowerCase());
   });
-  // 부위 1차 → 품목명 2차. 각각 한글 가나다 → 영어 알파벳 순.
+  // 부위 1차 (고정 순서: 와규→소고기→돼지고기→작업육→가공육→양고기→오리→공산품)
+  // 품목명 2차 (한글 가나다 → 영어 알파벳 순)
   filt.sort((p1, p2) => {
-    const c = compareKorEng(p1.cut, p2.cut);
+    const c = compareCut(p1.cut, p2.cut);
     if (c !== 0) return c;
     return compareKorEng(p1.name, p2.name);
   });
@@ -1636,7 +1969,7 @@ function renderProductList(q) {
       </tr></thead>
       <tbody>${filt.map(p => `
         <tr>
-          <td><span class="chip">${p.cut}</span></td>
+          <td><span class="chip" title="${p.cut}">${cutLabel(p.cut)}</span></td>
           <td><b>${p.name}</b></td>
           <td><input class="inline-edit" type="text" value="${p.brand.replace(/"/g,'&quot;')}" onblur="updateProductField('${p.id}','brand',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
           <td class="num"><input class="inline-edit num" type="number" step="0.01" min="0" value="${(p.priceKg||0).toFixed(2)}" onblur="this.value=parseFloat(this.value||0).toFixed(2); updateProductField('${p.id}','priceKg',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
@@ -1674,14 +2007,14 @@ function updateProductField(prodId, field, value) {
   saveEntityField('products', prodId, field);
 }
 function editProduct(id) {
-  const p = id ? DB.products.find(x => x.id === id) : { id: uid('p'), name:'', cut:'소고기', brand:'', boxKg:0, packKg:0, priceKg:0, active:true };
+  const p = id ? DB.products.find(x => x.id === id) : { id: uid('p'), name:'', cut:'와규', brand:'', boxKg:0, packKg:0, priceKg:0, active:true };
   openModal(`
     <h3>${id?'품목 수정':'품목 추가'}</h3>
-    <div class="field"><label>품목명 *</label><input id="m_name" value="${p.name}"></div>
+    <div class="field"><label>품목명 * <small style="color:var(--muted); font-weight:400;">(한글 / English 병기 권장 — 예: 삼겹살 / Pork Belly)</small></label><input id="m_name" value="${p.name}"></div>
     <div class="grid-2">
       <div class="field"><label>부위 (분류)</label>
         <select id="m_cut">
-          ${['소고기','와규','돼지고기','오리','작업육','가공육','공산품','기타'].map(c=>`<option ${c===p.cut?'selected':''}>${c}</option>`).join('')}
+          ${CUT_ORDER.map(c=>`<option value="${c}" ${c===p.cut?'selected':''}>${cutLabel(c)}</option>`).join('')}
         </select>
       </div>
       <div class="field"><label>브랜드 / 원산지</label>
