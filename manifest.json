@@ -1,0 +1,56 @@
+{
+  "name": "ATM Order System — ALL THAT MEAT",
+  "short_name": "ATM 주문",
+  "description": "ALL THAT MEAT WHOLESALE 주문·계근·인보이스 통합 관리 시스템",
+  "lang": "ko-KR",
+  "start_url": "./ATM_Order_System.html",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "any",
+  "background_color": "#FAF6F1",
+  "theme_color": "#5C0F0F",
+  "categories": ["business", "productivity"],
+  "icons": [
+    {
+      "src": "icon-192.png",
+      "sizes": "192x192",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "any"
+    },
+    {
+      "src": "icon-maskable-512.png",
+      "sizes": "512x512",
+      "type": "image/png",
+      "purpose": "maskable"
+    }
+  ],
+  "shortcuts": [
+    {
+      "name": "주문 등록",
+      "short_name": "주문",
+      "description": "거래처 주문 입력",
+      "url": "./ATM_Order_System.html#enter",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "작업장 계근",
+      "short_name": "계근",
+      "description": "작업장 중량 입력",
+      "url": "./ATM_Order_System.html#warehouse",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    },
+    {
+      "name": "사무실",
+      "short_name": "사무실",
+      "description": "인보이스 발행 및 매출 일보",
+      "url": "./ATM_Order_System.html#office",
+      "icons": [{ "src": "icon-192.png", "sizes": "192x192" }]
+    }
+  ]
+}
