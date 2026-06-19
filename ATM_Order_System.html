@@ -7054,44 +7054,65 @@ if (FIREBASE_READY && DB_REF) {
 <!-- =============================================================== -->
 <script>
 (function setupPWA() {
-  // ---------------- Service Worker 등록 + 자동 업데이트 ----------------
+  // ---------------- Service Worker 등록 + 수동 업데이트 배너 ----------------
+  // 정책:
+  //   · 자동 reload 안 함 (admin 작업 중 데이터 유실처럼 보이는 문제 방지)
+  //   · 새 버전 감지 시 상단 배너만 표시 → 사용자가 직접 탭해야 reload
+  //   · admin(#admin) 화면에서는 배너도 띄우지 않음 (해시 바뀌면 다시 표시 시도)
+  let _atmPendingUpdate = false;  // 새 SW가 대기 중인지
+
+  function _isAdminRoute() {
+    return (location.hash || '').startsWith('#admin');
+  }
+
   function showUpdateBanner() {
     if (document.getElementById('atmUpdateBanner')) return;
+    if (_isAdminRoute()) return;  // admin 작업 중에는 배너 숨김
     const bar = document.createElement('div');
     bar.id = 'atmUpdateBanner';
-    bar.textContent = '🔄 새 버전 업데이트됨 — 탭하여 새로고침';
     bar.style.cssText =
       'position:fixed; top:0; left:0; right:0; z-index:99999;' +
       'background:#1976D2; color:#fff; padding:10px 14px;' +
-      'font-size:13px; font-weight:600; text-align:center; cursor:pointer;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,0.2); font-family:inherit;';
-    bar.addEventListener('click', () => location.reload());
+      'font-size:13px; font-weight:600; text-align:center;' +
+      'box-shadow:0 2px 8px rgba(0,0,0,0.2); font-family:inherit;' +
+      'display:flex; align-items:center; justify-content:center; gap:12px;';
+    bar.innerHTML =
+      '<span style="cursor:pointer; flex:1;">🔄 새 버전 있음 — 탭하여 새로고침</span>' +
+      '<button id="atmUpdateDismiss" style="background:rgba(255,255,255,0.2); color:#fff;' +
+      'border:none; border-radius:4px; padding:4px 10px; font-size:12px; cursor:pointer;">나중에</button>';
+    bar.querySelector('span').addEventListener('click', () => location.reload());
+    bar.querySelector('#atmUpdateDismiss').addEventListener('click', e => {
+      e.stopPropagation();
+      bar.remove();
+    });
     document.body.appendChild(bar);
   }
 
+  // 해시 변경 시: admin 벗어났고 업데이트 대기 중이면 배너 재시도
+  window.addEventListener('hashchange', () => {
+    if (_atmPendingUpdate && !_isAdminRoute()) showUpdateBanner();
+  });
+
   if ('serviceWorker' in navigator) {
     window.addEventListener('load', () => {
-      // controllerchange — 한 번만 새로고침
-      let refreshed = false;
-      navigator.serviceWorker.addEventListener('controllerchange', () => {
-        if (refreshed) return;
-        refreshed = true;
-        location.reload();
-      });
-
       navigator.serviceWorker.register('sw.js').then(reg => {
         console.info('[PWA] Service Worker 등록 완료:', reg.scope);
 
-        // 새 워커 감지 → 배너 + 5초 뒤 자동 reload
+        // 이미 대기 중인 워커가 있으면 즉시 배너
+        if (reg.waiting && navigator.serviceWorker.controller) {
+          _atmPendingUpdate = true;
+          showUpdateBanner();
+        }
+
+        // 새 워커 감지 → 배너만 표시 (자동 reload 없음)
         reg.addEventListener('updatefound', () => {
           const sw = reg.installing;
           if (!sw) return;
           sw.addEventListener('statechange', () => {
             if (sw.state === 'installed' && navigator.serviceWorker.controller) {
-              console.info('[PWA] 새 버전 감지 — 5초 후 자동 새로고침');
+              console.info('[PWA] 새 버전 감지 — 배너 표시 (수동 새로고침 대기)');
+              _atmPendingUpdate = true;
               showUpdateBanner();
-              sw.postMessage('SKIP_WAITING');
-              setTimeout(() => location.reload(), 5000);
             }
           });
         });
