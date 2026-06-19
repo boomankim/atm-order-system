@@ -1,16 +1,17 @@
 /* ATM Order System — Service Worker
  *
- * 전략:
- *   - App Shell (HTML, manifest, icons): cache-first
- *   - CDN 라이브러리 (jsPDF, html2canvas, Firebase SDK): stale-while-revalidate
- *   - Firebase Realtime Database 요청: 네트워크 우선 (실시간 동기화)
- *   - 그 외 동일 출처 GET: cache-first → 네트워크 fallback
+ * 자동 업데이트 전략:
+ *   - install: skipWaiting() — 새 SW가 즉시 활성화 대기열로 이동
+ *   - activate: 옛 캐시 전부 삭제 + clients.claim() — 즉시 페이지 제어
+ *   - fetch:
+ *       · navigate 요청 (메인 HTML): network-first, 실패 시 캐시 fallback
+ *       · 정적 파일 (.png, manifest 등): cache-first
+ *       · CDN: stale-while-revalidate
+ *       · Firebase RTDB: 항상 네트워크
  *
- * 캐시 버전을 올리면 구버전 캐시는 activate에서 정리됨.
+ * 배포 시 아래 CACHE 버전만 올리면 옛 캐시가 자동 정리되고 새 HTML이 즉시 적용됨.
  */
-const CACHE_VERSION = 'atm-v1-2026-06-16';
-const APP_SHELL_CACHE = `${CACHE_VERSION}-shell`;
-const CDN_CACHE = `${CACHE_VERSION}-cdn`;
+const CACHE = 'atm-cache-v20260619';
 
 // 앱 셸 — 첫 install 시 미리 캐싱
 const APP_SHELL = [
@@ -23,7 +24,7 @@ const APP_SHELL = [
   './icon-maskable-512.png'
 ];
 
-// CDN 도메인 (캐싱 대상)
+// CDN 도메인 (stale-while-revalidate)
 const CDN_HOSTS = [
   'cdnjs.cloudflare.com',
   'www.gstatic.com'
@@ -36,9 +37,10 @@ const FIREBASE_HOSTS = [
   'googleapis.com'
 ];
 
+// ---------------- install ----------------
 self.addEventListener('install', event => {
   event.waitUntil(
-    caches.open(APP_SHELL_CACHE).then(cache => {
+    caches.open(CACHE).then(cache => {
       // 일부 항목 실패해도 install 진행
       return Promise.all(
         APP_SHELL.map(url =>
@@ -49,10 +51,11 @@ self.addEventListener('install', event => {
   );
 });
 
+// ---------------- activate ----------------
 self.addEventListener('activate', event => {
   event.waitUntil(
     caches.keys().then(keys =>
-      Promise.all(keys.filter(k => !k.startsWith(CACHE_VERSION)).map(k => caches.delete(k)))
+      Promise.all(keys.filter(k => k !== CACHE).map(k => caches.delete(k)))
     ).then(() => self.clients.claim())
   );
 });
@@ -63,7 +66,11 @@ function isCdnRequest(url) {
 function isFirebaseRequest(url) {
   return FIREBASE_HOSTS.some(h => url.hostname.endsWith(h));
 }
+function isStaticAsset(url) {
+  return /\.(png|jpg|jpeg|svg|webp|ico|gif|woff2?|ttf|json|css)$/i.test(url.pathname);
+}
 
+// ---------------- fetch ----------------
 self.addEventListener('fetch', event => {
   const req = event.request;
   if (req.method !== 'GET') return;
@@ -77,7 +84,7 @@ self.addEventListener('fetch', event => {
   // CDN — stale-while-revalidate
   if (isCdnRequest(url)) {
     event.respondWith(
-      caches.open(CDN_CACHE).then(async cache => {
+      caches.open(CACHE).then(async cache => {
         const cached = await cache.match(req);
         const network = fetch(req).then(res => {
           if (res && res.status === 200) cache.put(req, res.clone());
@@ -89,34 +96,50 @@ self.addEventListener('fetch', event => {
     return;
   }
 
-  // 동일 출처 — cache-first
-  if (url.origin === self.location.origin) {
+  // 동일 출처만 처리
+  if (url.origin !== self.location.origin) return;
+
+  // navigate 요청 (메인 HTML) — network-first
+  if (req.mode === 'navigate' || (req.destination === 'document')) {
+    event.respondWith(
+      fetch(req).then(res => {
+        if (res && res.status === 200) {
+          const copy = res.clone();
+          caches.open(CACHE).then(cache => cache.put(req, copy));
+        }
+        return res;
+      }).catch(() => caches.match(req).then(c => c || caches.match('./ATM_Order_System.html')))
+    );
+    return;
+  }
+
+  // 정적 파일 — cache-first
+  if (isStaticAsset(url)) {
     event.respondWith(
       caches.match(req).then(cached => {
-        if (cached) {
-          // 백그라운드에서 최신본 갱신
-          fetch(req).then(res => {
-            if (res && res.status === 200) {
-              caches.open(APP_SHELL_CACHE).then(cache => cache.put(req, res.clone()));
-            }
-          }).catch(() => {});
-          return cached;
-        }
+        if (cached) return cached;
         return fetch(req).then(res => {
-          if (res && res.status === 200 && req.url.match(/\.(html|js|css|png|jpg|svg|webp|json)$/)) {
+          if (res && res.status === 200) {
             const copy = res.clone();
-            caches.open(APP_SHELL_CACHE).then(cache => cache.put(req, copy));
+            caches.open(CACHE).then(cache => cache.put(req, copy));
           }
           return res;
-        }).catch(() => {
-          // 오프라인 fallback — 메인 페이지 반환
-          if (req.mode === 'navigate') {
-            return caches.match('./ATM_Order_System.html');
-          }
         });
       })
     );
+    return;
   }
+
+  // 기타 동일 출처 — network-first with cache fallback
+  event.respondWith(
+    fetch(req).then(res => {
+      if (res && res.status === 200) {
+        const copy = res.clone();
+        caches.open(CACHE).then(cache => cache.put(req, copy));
+      }
+      return res;
+    }).catch(() => caches.match(req))
+  );
 });
 
 // HTML 페이지가 보내는 메시지 (캐시 강제 갱신 등)
