@@ -2570,7 +2570,7 @@ function openFavImportModal() {
 
 function buildFavImportState() {
   const state = { customers: [], totals: { custAuto:0, custNone:0, custSaved:0, itemAuto:0, itemAmbi:0, itemNone:0 } };
-  const savedMap = (DB.settings && DB.settings.favsCustMap) || {};
+  const savedMap = _favsCustNameToId();
   for (const excelName in ATM_FAVS_IMPORT_DATA) {
     const items = ATM_FAVS_IMPORT_DATA[excelName];
     const custCands = favFindCustomerMatches(excelName, 8);
@@ -2585,7 +2585,7 @@ function buildFavImportState() {
       selectedCustId = custCands[0].id;
     }
     if (selectedCustId) state.totals.custAuto++; else state.totals.custNone++;
-    const savedItemMap = (DB.settings && DB.settings.favsItemMap) || {};
+    const savedItemMap = _favsItemNameToId();
     const itemRows = items.map(function(it) {
       const cands = favFindProductMatches(it.item, 6);
       let status = 'none';
@@ -2826,11 +2826,16 @@ function closeFavImportModal() {
 // =========================================================================
 //  CUSTOMER NAME MAPPING TOOL  (Excel 거래처명 ↔ 시스템 거래처 매핑)
 //  매핑은 DB.settings.favsCustMap 에 저장되며 일괄 import 시 자동 사용됨.
+//
+//  ⚠️ Firebase 키 제약: '.', '#', '$', '/', '[', ']' 사용 불가
+//  → favsCustMap 키로 거래처 id를 사용 (id 없으면 안전 치환 키)
+//  → 값은 엑셀 거래처명 원문 (점·슬래시 포함 가능)
+//  → 읽기는 _favsCustNameToId() 가 양쪽 포맷 모두 호환
 // =========================================================================
 let CUST_MAP_STATE = null;
 
 function openCustomerMappingTool() {
-  const savedMap = (DB.settings && DB.settings.favsCustMap) || {};
+  const savedMap = _favsCustNameToId();
   const excelNames = Object.keys(ATM_FAVS_IMPORT_DATA);
   const entries = excelNames.map(function(name) {
     const cands = favFindCustomerMatches(name, 10);
@@ -3017,10 +3022,19 @@ function custMapSetSearch(v) {
 }
 
 function saveCustomerMapping() {
+  // Firebase-safe 저장 포맷:
+  //   key = customerId (Firebase-safe, c_xxx 형식)
+  //   value = 엑셀 거래처명 원문 (점·슬래시 등 제약 없음)
+  //   customerId 가 없으면 (rare) sanitize 된 엑셀명을 키로 사용
+  // 동일 customerId 가 여러 엑셀명에 매핑되면 마지막 항목이 우선 — 다른 엑셀명은
+  // 일괄 import 시 fuzzy match 로 fallback 됨 (점수 30+ 후보)
   const map = {};
   let count = 0;
   for (const e of CUST_MAP_STATE.entries) {
-    if (e.selectedId) { map[e.excelName] = e.selectedId; count++; }
+    if (!e.selectedId) continue;
+    const key = e.selectedId || _favSafeKey(e.excelName);
+    map[key] = e.excelName;
+    count++;
   }
   DB.settings = DB.settings || {};
   DB.settings.favsCustMap = map;
@@ -3039,7 +3053,62 @@ function closeCustomerMappingModal() {
 //  ITEM NAME MAPPING TOOL  (Excel 품목명 ↔ 시스템 product 매핑)
 //  매핑은 DB.settings.favsItemMap 에 저장되며 일괄 import 시 자동 사용됨.
 //  엑셀 중복 품목은 dedupe — 동일 문자열은 한 행으로 모임 (사용 거래처 수 표시)
+//
+//  ⚠️ Firebase 키 제약: '.', '#', '$', '/', '[', ']' 사용 불가
+//  → favsItemMap 키로 품목 id를 사용 (id 없으면 안전 치환 키)
+//  → 값은 엑셀 품목명 원문 (역방향 조회용)
+//  → 읽기는 _favsItemNameToId() 가 양쪽 포맷 모두 호환
 // =========================================================================
+const _FB_BAD_KEY_RE = /[.#$/\[\]]/g;
+function _favSafeKey(s) {
+  return (s == null ? '' : String(s)).replace(_FB_BAD_KEY_RE, '_');
+}
+// 저장 형식 양쪽 모두 지원하는 역방향 조회:
+//   신규: { productId: excelName, ... }
+//   구버전: { excelName: productId, ... }
+//   폴백: { safeName: productId, ... }  (id가 없는 경우)
+// 반환: { excelName: productId } — 룩업용
+function _favsItemNameToId() {
+  const raw = (DB.settings && DB.settings.favsItemMap) || {};
+  const result = {};
+  if (!Array.isArray(DB.products)) return result;
+  const idSet = new Set(DB.products.map(p => p.id));
+  for (const k in raw) {
+    const v = raw[k];
+    if (typeof v !== 'string' || !v) continue;
+    if (idSet.has(k)) {
+      // 신규 포맷: k=productId, v=excelName
+      result[v] = k;
+    } else if (idSet.has(v)) {
+      // 구버전 포맷: k=excelName, v=productId
+      result[k] = v;
+    }
+    // 어느 쪽도 아니면 skip (orphan)
+  }
+  return result;
+}
+// favsCustMap 동일 패턴 — Firebase 키 제약 우회
+//   신규: { customerId: excelName, ... }
+//   구버전: { excelName: customerId, ... }
+// 반환: { excelName: customerId } — 룩업용
+function _favsCustNameToId() {
+  const raw = (DB.settings && DB.settings.favsCustMap) || {};
+  const result = {};
+  if (!Array.isArray(DB.customers)) return result;
+  const idSet = new Set(DB.customers.map(c => c.id));
+  for (const k in raw) {
+    const v = raw[k];
+    if (typeof v !== 'string' || !v) continue;
+    if (idSet.has(k)) {
+      // 신규 포맷: k=customerId, v=excelName
+      result[v] = k;
+    } else if (idSet.has(v)) {
+      // 구버전 포맷: k=excelName, v=customerId
+      result[k] = v;
+    }
+  }
+  return result;
+}
 let ITEM_MAP_STATE = null;
 
 function openItemMappingTool() {
@@ -3054,7 +3123,7 @@ function openItemMappingTool() {
       uniq[key].customers.push(excelName);
     }
   }
-  const savedMap = (DB.settings && DB.settings.favsItemMap) || {};
+  const savedMap = _favsItemNameToId();
   const entries = Object.values(uniq).map(function(u) {
     const cands = favFindProductMatches(u.item, 8);
     const saved = savedMap[u.item];
@@ -3245,10 +3314,19 @@ function itemMapSetSearch(v) {
 }
 
 function saveItemMapping() {
+  // Firebase-safe 저장 포맷:
+  //   key = productId (Firebase-safe, 항상 [a-z0-9_가-힣] 영역)
+  //   value = 엑셀 품목명 원문 (값에는 Firebase 제약 없음 — 슬래시 OK)
+  //   productId 가 없으면 (rare) sanitize 된 엑셀명을 키로 사용
+  // 동일 productId 가 여러 엑셀명에 매핑되면 마지막 항목이 우선 — 다른 엑셀명은
+  // 일괄 import 시 fuzzy match 로 fallback 됨 (점수 7+ 후보)
   const map = {};
   let count = 0;
   for (const e of ITEM_MAP_STATE.entries) {
-    if (e.selectedId) { map[e.item] = e.selectedId; count++; }
+    if (!e.selectedId) continue;
+    const key = e.selectedId || _favSafeKey(e.item);
+    map[key] = e.item;
+    count++;
   }
   DB.settings = DB.settings || {};
   DB.settings.favsItemMap = map;
