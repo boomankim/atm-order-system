@@ -392,16 +392,107 @@ function saveLocalDB() {
 }
 function getInvoiceItems(o) { return o.invoiceItems || o.items; }
 
+// =========================================================================
+//  자주 주문 (favoritePairs) — 품목 + 품목 요청사항 짝 헬퍼
+//  데이터 모델: c.favoritePairs = [{productId, notes}]
+//  기존 c.favoriteProductIds (string[]) 는 자동 마이그레이션됨.
+// =========================================================================
+function getFavoriteProductIds(c) {
+  if (!c) return [];
+  const pairs = Array.isArray(c.favoritePairs) ? c.favoritePairs : [];
+  const seen = new Set();
+  const ids = [];
+  for (const pair of pairs) {
+    if (pair && pair.productId && !seen.has(pair.productId)) {
+      seen.add(pair.productId);
+      ids.push(pair.productId);
+    }
+  }
+  return ids;
+}
+function normalizeFavNotes(n) { return (n == null ? '' : String(n)).trim(); }
+function findFavoritePair(cust, productId, notes) {
+  if (!cust || !Array.isArray(cust.favoritePairs)) return -1;
+  const n = normalizeFavNotes(notes);
+  return cust.favoritePairs.findIndex(p =>
+    p && p.productId === productId && normalizeFavNotes(p.notes) === n);
+}
+function addFavoritePair(cust, productId, notes) {
+  if (!cust || !productId) return false;
+  cust.favoritePairs = Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [];
+  if (findFavoritePair(cust, productId, notes) >= 0) return false;
+  cust.favoritePairs.push({ productId: productId, notes: normalizeFavNotes(notes) });
+  return true;
+}
+function removeFavoritePair(cust, productId, notes) {
+  if (!cust || !productId || !Array.isArray(cust.favoritePairs)) return false;
+  const before = cust.favoritePairs.length;
+  if (notes === undefined) {
+    // Remove all pairs for this product
+    cust.favoritePairs = cust.favoritePairs.filter(p => !(p && p.productId === productId));
+  } else {
+    const n = normalizeFavNotes(notes);
+    cust.favoritePairs = cust.favoritePairs.filter(p =>
+      !(p && p.productId === productId && normalizeFavNotes(p.notes) === n));
+  }
+  return cust.favoritePairs.length < before;
+}
+function updateFavoritePairNotes(cust, productId, oldNotes, newNotes) {
+  if (!cust || !productId || !Array.isArray(cust.favoritePairs)) return false;
+  const oldN = normalizeFavNotes(oldNotes);
+  const newN = normalizeFavNotes(newNotes);
+  if (oldN === newN) return false;
+  const idx = findFavoritePair(cust, productId, oldN);
+  if (idx < 0) return false;
+  // If a pair with newN already exists, just drop the old one (dedup)
+  const dupIdx = cust.favoritePairs.findIndex((p, i) => i !== idx && p && p.productId === productId && normalizeFavNotes(p.notes) === newN);
+  if (dupIdx >= 0) {
+    cust.favoritePairs.splice(idx, 1);
+  } else {
+    cust.favoritePairs[idx].notes = newN;
+  }
+  return true;
+}
+// 마이그레이션: favoriteProductIds (string[]) → favoritePairs ({productId,notes}[])
+function migrateFavoritePairs() {
+  if (!Array.isArray(DB.customers)) return;
+  let changed = 0;
+  for (const c of DB.customers) {
+    if (!c) continue;
+    if (!Array.isArray(c.favoritePairs)) {
+      const old = Array.isArray(c.favoriteProductIds) ? c.favoriteProductIds : [];
+      c.favoritePairs = old.map(id => ({ productId: id, notes: '' }));
+      changed++;
+    }
+  }
+  if (changed > 0) {
+    saveLocalDB();
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      try {
+        DB.customers.forEach((c, idx) => {
+          if (c && Array.isArray(c.favoritePairs)) {
+            DB_REF.child('customers/' + idx + '/favoritePairs').set(c.favoritePairs);
+          }
+        });
+      } catch(e) { console.warn('favoritePairs Firebase 저장 실패:', e); }
+    }
+    console.info('favoritePairs 마이그레이션 완료 — ' + changed + '개 거래처 변환');
+  }
+}
+
 
 function migrateProducts() {
   if (DB.productsVersion !== PRODUCTS_VERSION) {
     DB.products = seed().products;
     DB.productsVersion = PRODUCTS_VERSION;
-    // Clean up stale favoriteProductIds in all customers
+    // Clean up stale favoriteProductIds + favoritePairs in all customers
     const validIds = new Set(DB.products.map(p => p.id));
     (DB.customers || []).forEach(c => {
       if (c.favoriteProductIds) {
         c.favoriteProductIds = c.favoriteProductIds.filter(id => validIds.has(id));
+      }
+      if (Array.isArray(c.favoritePairs)) {
+        c.favoritePairs = c.favoritePairs.filter(p => p && validIds.has(p.productId));
       }
     });
     saveDB();  // localStorage + Firebase 모두 저장
@@ -2116,7 +2207,7 @@ function renderCustomerList(q) {
           <td>${c.contact||'-'}</td>
           <td>${c.phone||'-'}</td>
           <td>${c.terms||'-'}</td>
-          <td>${(c.favoriteProductIds||[]).length}개</td>
+          <td>${(Array.isArray(c.favoritePairs) ? c.favoritePairs.length : (c.favoriteProductIds||[]).length)}개</td>
           <td class="act">
             <button class="btn sm ${blocked ? 'success' : 'danger'}" onclick="toggleCustomerBlock('${c.id}')"
               title="${blocked ? '차단 해제 — 주문 접수 허용' : '차단 — 주문 접수 불가'}">
@@ -2159,7 +2250,7 @@ function splitCustomerCode(code) {
 
 function editCustomer(id) {
   const nextNum = nextCustomerCodeNumber();
-  const c = id ? DB.customers.find(x => x.id === id) : { id: uid('c'), code: nextNum, name:'', contact:'', phone:'', email:'', address:'', favoriteProductIds:[], terms:'현금', active:true };
+  const c = id ? DB.customers.find(x => x.id === id) : { id: uid('c'), code: nextNum, name:'', contact:'', phone:'', email:'', address:'', favoritePairs:[], favoriteProductIds:[], terms:'현금', active:true };
   const split = splitCustomerCode(c.code);
   // 신규일 때는 prefix 빈 칸 + 자동 순번, 수정일 때는 기존 prefix/숫자 유지
   const prefixVal = id ? split.prefix : '';
@@ -2296,6 +2387,8 @@ function saveCustomer(id, isNew, favs) {
   } else {
     const i = DB.customers.findIndex(c => c.id === id);
     obj.favoriteProductIds = DB.customers[i].favoriteProductIds || [];
+    // 즐겨찾기 짝(품목+요청사항)도 보존
+    if (Array.isArray(DB.customers[i].favoritePairs)) obj.favoritePairs = DB.customers[i].favoritePairs;
     // Feature 1: 맞춤 단가도 보존 (수정창에서 단가 섹션 안 만져도 유지됨)
     if (DB.customers[i].customPrices) obj.customPrices = DB.customers[i].customPrices;
     DB.customers[i] = obj;
@@ -2386,21 +2479,21 @@ function renderFavoritesList(custId) {
          border:2px solid var(--brand); border-radius:10px; padding:12px 14px; margin-bottom:16px;
          box-shadow:0 2px 8px rgba(0,0,0,0.08);">
       <div style="font-size:12px; font-weight:700; color:var(--brand); margin-bottom:8px;">
-        ⭐ 즐겨찾는 품목 / Favourite Items &nbsp;
+        ⭐ 자주 주문 짝 (품목 + 품목 요청사항) &nbsp;
         <span id="favCount" style="background:var(--brand); color:#fff; border-radius:10px; padding:1px 8px; font-size:11px;">0개</span>
-        <span style="font-weight:400; color:var(--muted); font-size:11px;"> · 칩을 클릭하면 제거 / Click chip to remove</span>
+        <span style="font-weight:400; color:var(--muted); font-size:11px;"> · 칩 클릭 = 제거 / 📝 클릭 = 요청사항 수정</span>
       </div>
       <div id="favChips" style="display:flex; flex-wrap:wrap; gap:6px; min-height:26px;"></div>
     </div>
     <div class="notice" style="margin-bottom:12px;">
-      <b>${cust.name}</b> — 아래 품목을 클릭해 즐겨찾기에 추가/제거하세요.<br>
-      거래처가 주문 페이지를 열면 즐겨찾기 품목이 맨 위에 먼저 표시됩니다.
+      <b>${cust.name}</b> — 아래 품목을 클릭해 빈 짝(요청사항 없이) 추가/모두 제거.<br>
+      같은 품목이라도 요청사항이 다르면 별개의 짝으로 자동 학습됩니다 (주문/인보이스 단계에서).
     </div>
     ${cuts.map(cut => `
       <h4 style="margin-top:18px; color:var(--brand-dark);">${CUT_DISPLAY[cut]||cut}</h4>
       <div class="quick-add">
         ${DB.products.filter(p => p.active && p.cut === cut).map(p => {
-          const isFav = (cust.favoriteProductIds||[]).includes(p.id);
+          const isFav = getFavoriteProductIds(cust).includes(p.id);
           return `<span class="qa ${isFav?'fav':''}" id="qa_${p.id}"
                        onclick="toggleFav('${custId}','${p.id}')">
             ${isFav?'⭐ ':''}${p.name}
@@ -2417,43 +2510,97 @@ function renderFavChips(custId) {
   const chipsEl = document.getElementById('favChips');
   const countEl = document.getElementById('favCount');
   if (!cust || !chipsEl) return;
-  const favs = (cust.favoriteProductIds || [])
-    .map(id => DB.products.find(p => p.id === id)).filter(Boolean);
-  countEl.textContent = favs.length + '개';
-  chipsEl.innerHTML = favs.length === 0
-    ? `<span style="color:var(--muted); font-size:13px;">없음 — 아래 품목을 클릭해 추가하세요 / None yet</span>`
-    : favs.map(p => {
-        const lbl = CUT_DISPLAY[p.cut] || p.cut;
-        return `<span onclick="toggleFav('${custId}','${p.id}')"
-          style="background:var(--brand); color:#fff; border-radius:20px; padding:5px 12px;
-                 font-size:12px; font-weight:600; cursor:pointer; display:inline-flex;
-                 align-items:center; gap:5px; user-select:none;"
-          title="클릭하면 제거">
-          <span style="opacity:0.75; font-size:10px;">${lbl}</span>${p.name}&nbsp;×
-        </span>`;
-      }).join('');
+  const pairs = (Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [])
+    .map((pair, idx) => {
+      if (!pair || !pair.productId) return null;
+      const p = DB.products.find(x => x.id === pair.productId);
+      if (!p) return null;
+      return { product: p, notes: normalizeFavNotes(pair.notes), idx };
+    })
+    .filter(Boolean);
+  countEl.textContent = pairs.length + '개';
+  if (pairs.length === 0) {
+    chipsEl.innerHTML = `<span style="color:var(--muted); font-size:13px;">없음 — 아래 품목을 클릭해 추가하세요 / None yet</span>`;
+    return;
+  }
+  chipsEl.innerHTML = pairs.map(({product: p, notes, idx}) => {
+    const lbl = CUT_DISPLAY[p.cut] || p.cut;
+    const notesPart = notes
+      ? `&nbsp;—&nbsp;<span style="opacity:0.9; font-style:italic;">${notes}</span>`
+      : `&nbsp;<span style="opacity:0.6; font-size:10px;">(요청사항 없음)</span>`;
+    return `<span style="background:var(--brand); color:#fff; border-radius:20px; padding:5px 8px 5px 12px;
+                 font-size:12px; font-weight:600; display:inline-flex;
+                 align-items:center; gap:6px; user-select:none;">
+        <span style="opacity:0.75; font-size:10px;">${lbl}</span><span>${p.name}</span>${notesPart}
+        <button onclick="editFavPairNotes('${custId}', ${idx})"
+          style="background:rgba(255,255,255,0.2); border:none; color:#fff; border-radius:50%;
+                 width:20px; height:20px; cursor:pointer; padding:0; font-size:11px;" title="요청사항 수정">📝</button>
+        <button onclick="removeFavPairByIdx('${custId}', ${idx})"
+          style="background:rgba(255,255,255,0.2); border:none; color:#fff; border-radius:50%;
+                 width:20px; height:20px; cursor:pointer; padding:0; font-size:13px; font-weight:700;" title="이 짝 제거">×</button>
+      </span>`;
+  }).join('');
 }
 function toggleFav(custId, prodId) {
   const cust = DB.customers.find(c => c.id === custId);
-  cust.favoriteProductIds = cust.favoriteProductIds || [];
-  const wasFav = cust.favoriteProductIds.includes(prodId);
-  if (wasFav)
-    cust.favoriteProductIds = cust.favoriteProductIds.filter(x => x !== prodId);
-  else
-    cust.favoriteProductIds.push(prodId);
-  // Phase 2 동시성: favoriteProductIds 만 부분 업데이트 (다른 거래처 작업 안전)
-  saveEntityField('customers', custId, 'favoriteProductIds');
-  // Update chip panel (instant, no scroll jump)
+  if (!cust) return;
+  cust.favoritePairs = Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [];
+  const hasAny = getFavoriteProductIds(cust).includes(prodId);
+  if (hasAny) {
+    // 해당 품목의 모든 짝 제거
+    removeFavoritePair(cust, prodId);
+  } else {
+    // 빈 요청사항 짝 1개 추가
+    addFavoritePair(cust, prodId, '');
+  }
+  saveEntityField('customers', custId, 'favoritePairs');
+  // Refresh chip panel + the clicked item badge
   renderFavChips(custId);
-  // Update the clicked item badge in the list
   const el = document.getElementById('qa_' + prodId);
   if (el) {
-    const nowFav = !wasFav;
+    const nowFav = !hasAny;
     el.className = 'qa' + (nowFav ? ' fav' : '');
     const p = DB.products.find(x => x.id === prodId);
     el.textContent = (nowFav ? '⭐ ' : '') + (p ? p.name : prodId);
   }
 }
+window.editFavPairNotes = function(custId, idx) {
+  const cust = DB.customers.find(c => c.id === custId);
+  if (!cust || !Array.isArray(cust.favoritePairs)) return;
+  const pair = cust.favoritePairs[idx];
+  if (!pair) return;
+  const newNotes = prompt('품목 요청사항 수정:', pair.notes || '');
+  if (newNotes === null) return; // cancel
+  const newN = normalizeFavNotes(newNotes);
+  if (newN === normalizeFavNotes(pair.notes)) return;
+  // Dedup: if another pair already has same product+notes, just remove this one
+  const dup = cust.favoritePairs.findIndex((p, i) => i !== idx && p && p.productId === pair.productId && normalizeFavNotes(p.notes) === newN);
+  if (dup >= 0) {
+    cust.favoritePairs.splice(idx, 1);
+  } else {
+    pair.notes = newN;
+  }
+  saveEntityField('customers', custId, 'favoritePairs');
+  renderFavChips(custId);
+};
+window.removeFavPairByIdx = function(custId, idx) {
+  const cust = DB.customers.find(c => c.id === custId);
+  if (!cust || !Array.isArray(cust.favoritePairs)) return;
+  const pair = cust.favoritePairs[idx];
+  if (!pair) return;
+  cust.favoritePairs.splice(idx, 1);
+  saveEntityField('customers', custId, 'favoritePairs');
+  renderFavChips(custId);
+  // Update item badge if no more pairs left for this product
+  if (!getFavoriteProductIds(cust).includes(pair.productId)) {
+    const el = document.getElementById('qa_' + pair.productId);
+    if (el) {
+      el.className = 'qa';
+      const p = DB.products.find(x => x.id === pair.productId);
+      el.textContent = p ? p.name : pair.productId;
+    }
+  }
+};
 
 // =========================================================================
 //  FAVORITES BULK IMPORT  (Excel data → matched per-customer favorites)
@@ -2794,18 +2941,17 @@ function applyFavImport() {
     }
     const dbCust = DB.customers.find(function(x){return x.id===cust.selectedCustId;});
     if (!dbCust) continue;
-    dbCust.favoriteProductIds = dbCust.favoriteProductIds || [];
+    dbCust.favoritePairs = Array.isArray(dbCust.favoritePairs) ? dbCust.favoritePairs : [];
     let added = 0;
     for (const it of cust.items) {
       if (!it.apply || !it.selectedProdId) continue;
-      if (dbCust.favoriteProductIds.indexOf(it.selectedProdId) >= 0) continue;
-      dbCust.favoriteProductIds.push(it.selectedProdId);
-      added++;
+      // 일괄 임포트는 빈 요청사항 짝으로 추가
+      if (addFavoritePair(dbCust, it.selectedProdId, '')) added++;
     }
     if (added > 0) {
       custAffected++;
       itemsAdded += added;
-      try { saveEntityField('customers', dbCust.id, 'favoriteProductIds'); } catch(e) { console.warn(e); }
+      try { saveEntityField('customers', dbCust.id, 'favoritePairs'); } catch(e) { console.warn(e); }
     }
   }
   closeFavImportModal();
@@ -3722,26 +3868,36 @@ function viewOrder(params) {
 function renderFavQuick(cust) {
   const div = document.getElementById('favList');
   const card = document.getElementById('favCard');
-  // Filter to only valid (currently active) products
-  const favs = (cust.favoriteProductIds || [])
-    .map(id => DB.products.find(p => p.id === id))
+  // 짝(productId + notes) 단위로 카드 분리. 유효한 활성 품목만.
+  const pairs = (Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [])
+    .map(pair => {
+      if (!pair || !pair.productId) return null;
+      const p = DB.products.find(x => x.id === pair.productId);
+      if (!p || !p.active) return null;
+      return { product: p, notes: normalizeFavNotes(pair.notes) };
+    })
     .filter(Boolean);
   if (card) card.style.display = '';  // always show the card
-  if (favs.length === 0) {
+  if (pairs.length === 0) {
     div.innerHTML = `<div style="color:var(--muted); font-size:13px; padding:6px 4px;">
       주문하면 자동으로 여기에 추가됩니다. / Items you order will appear here automatically.
     </div>`;
     return;
   }
-  div.innerHTML = favs.map(p => {
+  div.innerHTML = pairs.map(({product: p, notes}) => {
     const cutLabel = CUT_DISPLAY[p.cut] || p.cut;
-    return `<div onclick="addToCart('${p.id}')"
+    const notesAttr = notes.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    const notesPart = notes
+      ? `<br><small style="color:var(--brand-dark); font-weight:600; margin-left:8px;">📝 ${notes}</small>`
+      : '';
+    return `<div onclick="addToCart('${p.id}', '${notesAttr}')"
          onmouseover="this.style.background='#FFF5D6'"
          onmouseout="this.style.background='transparent'"
-         style="cursor:pointer; padding:3px 4px; font-size:14px; text-align:left; line-height:1.5;">
+         style="cursor:pointer; padding:5px 4px; font-size:14px; text-align:left; line-height:1.5; border-bottom:1px dashed var(--line);">
       <span style="color:var(--brand); font-weight:600; font-size:11px; letter-spacing:0.3px;">${cutLabel}</span>
       <span style="color:var(--ink); font-weight:700;"> ${p.name}</span>
       ${p.brand ? '<span style="font-weight:400; color:var(--muted); font-size:12px;"> · ' + p.brand + '</span>' : ''}
+      ${notesPart}
     </div>`;
   }).join('');
 }
@@ -3755,7 +3911,7 @@ function renderCatalog(q, custId) {
     <h4 style="margin-top:14px; margin-bottom:4px; color:var(--brand); font-size:12px; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--line); padding-bottom:4px;">${CUT_DISPLAY[cut] || cut}</h4>
     <div>
       ${filt.filter(p => p.cut === cut).map(p => {
-        const isFav = cust ? (cust.favoriteProductIds||[]).includes(p.id) : false;
+        const isFav = cust ? getFavoriteProductIds(cust).includes(p.id) : false;
         const favBtn = (isStaff && custId)
           ? `<button onclick="event.stopPropagation(); toggleCatalogFav('${custId}','${p.id}',this)"
                title="${isFav ? 'Remove from Favourites / 자주 주문에서 제거' : 'Add to Favourites / 자주 주문에 추가'}"
@@ -3778,34 +3934,37 @@ function renderCatalog(q, custId) {
     </div>
   `).join('') || `<div class="empty">검색 결과 없음</div>`;
 }
-function addToCart(prodId) {
+function addToCart(prodId, notes) {
   const p = DB.products.find(x => x.id === prodId);
   if (!p) return;
   CART.push({
-    productId: prodId, unit: '박스', quantity: 1, actualWeightKg: null, notes: ''
+    productId: prodId, unit: '박스', quantity: 1, actualWeightKg: null,
+    notes: (notes == null ? '' : String(notes))
   });
   renderCart();
 }
 
 // Staff: toggle a product into/out of the current customer's favourites from the catalogue
+// 카탈로그에는 요청사항 컨텍스트가 없으므로 빈 notes 짝으로 추가/모든 짝 제거.
 function toggleCatalogFav(custId, prodId, btn) {
   const cust = DB.customers.find(c => c.id === custId);
   if (!cust) return;
-  cust.favoriteProductIds = cust.favoriteProductIds || [];
-  const isFav = cust.favoriteProductIds.includes(prodId);
+  cust.favoritePairs = Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [];
+  const isFav = getFavoriteProductIds(cust).includes(prodId);
   if (isFav) {
-    cust.favoriteProductIds = cust.favoriteProductIds.filter(x => x !== prodId);
+    // Remove ALL pairs for this product
+    removeFavoritePair(cust, prodId);
     btn.textContent = '☆';
     btn.title = 'Add to Favourites / 자주 주문에 추가';
     btn.style.color = '#aaa';
   } else {
-    cust.favoriteProductIds.push(prodId);
+    addFavoritePair(cust, prodId, '');
     btn.textContent = '⭐';
     btn.title = 'Remove from Favourites / 자주 주문에서 제거';
     btn.style.color = '#F0B400';
   }
   // Phase 2 동시성: 이 거래처의 favorites 만 부분 업데이트
-  saveEntityField('customers', custId, 'favoriteProductIds');
+  saveEntityField('customers', custId, 'favoritePairs');
   // Refresh favourites panel without re-rendering whole page
   const custObj = DB.customers.find(c => c.id === custId);
   if (custObj) renderFavQuick(custObj);
@@ -3842,7 +4001,7 @@ function renderCart() {
             </div>
           </div>
           <div class="notes-row">
-            <input placeholder="요청사항 (예: 3mm 슬라이스, 진공포장, 비계 제거 등)" value="${item.notes||''}"
+            <input placeholder="품목 요청사항 (예: 3mm 슬라이스, 진공포장, 비계 제거 등) — 다음 주문에 기억됩니다" value="${item.notes||''}"
               onchange="CART[${idx}].notes=this.value;">
           </div>
         </div>
@@ -3997,14 +4156,13 @@ async function submitOrder(custId) {
   };
   DB.orders.push(order);
 
-  // Auto-add ordered products to customer favourites
+  // Auto-add ordered (productId + notes) pairs to customer favourites
+  // Same product with different notes => separate favorite cards.
   const custForFav = DB.customers.find(c => c.id === custId);
   if (custForFav) {
-    custForFav.favoriteProductIds = custForFav.favoriteProductIds || [];
+    custForFav.favoritePairs = Array.isArray(custForFav.favoritePairs) ? custForFav.favoritePairs : [];
     CART.forEach(item => {
-      if (!custForFav.favoriteProductIds.includes(item.productId)) {
-        custForFav.favoriteProductIds.push(item.productId);
-      }
+      addFavoritePair(custForFav, item.productId, item.notes || '');
     });
   }
 
@@ -4044,7 +4202,7 @@ async function submitOrder(custId) {
     }, (error, committed) => {
       if (committed && !error) {
         // 거래처 favorites 부분 업데이트 (fire-and-forget)
-        if (custForFav) saveEntityField('customers', custId, 'favoriteProductIds');
+        if (custForFav) saveEntityField('customers', custId, 'favoritePairs');
         finish(true);
       } else {
         // 트랜잭션 실패 시 전체 저장으로 폴백
@@ -4144,7 +4302,7 @@ function viewWeigh(params) {
         예: 삼겹살 1박스 주문 → 박스 계근 <b>15.6 kg</b> 입력 / 대패삼겹살 5kg 주문 → 작업 후 실제 <b>5.05 kg</b> 입력
       </div>
       <table class="t">
-        <thead><tr><th>품목</th><th>주문</th><th class="num">실제중량(kg) *</th><th>비고</th></tr></thead>
+        <thead><tr><th>품목</th><th>주문</th><th class="num">실제중량(kg) *</th></tr></thead>
         <tbody>
           ${order.items.map((it, i) => {
             const p = DB.products.find(x => x.id === it.productId);
@@ -4154,8 +4312,11 @@ function viewWeigh(params) {
             const pName  = p ? p.name  : `(ID: ${it.productId.slice(0,12)}…)`;
             const pBrand = p ? p.brand : '';
             const pCut   = p ? p.cut   : '';
+            const itemNote = it.notes
+              ? `<br><small style="color:var(--brand-dark); font-weight:600;">📝 품목 요청사항: ${it.notes}</small>`
+              : '';
             return `<tr>
-              <td><b>${pName}</b><br><small style="color:var(--muted);">${pBrand}${pBrand&&pCut?' · ':''}${pCut}</small></td>
+              <td><b>${pName}</b><br><small style="color:var(--muted);">${pBrand}${pBrand&&pCut?' · ':''}${pCut}</small>${itemNote}</td>
               <td>${orderDisplay}</td>
               <td class="num">
                 <input type="number" step="0.01" value="${it.actualWeightKg != null ? it.actualWeightKg.toFixed(2) : ''}"
@@ -4163,7 +4324,6 @@ function viewWeigh(params) {
                   onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"
                   onchange="updateWeighing('${order.id}', ${i}, this.value)">
               </td>
-              <td><small>${it.notes||''}</small></td>
             </tr>`;
           }).join('')}
         </tbody>
@@ -5228,7 +5388,7 @@ function exportHistoryCSV(detailed) {
   if (orders.length === 0) return alert('내보낼 데이터가 없습니다.');
   const rows = [];
   if (detailed) {
-    rows.push(['주문일','주문번호','거래처코드','거래처','상태','인보이스번호','발행일','품목','브랜드','분류','주문단위','주문수량','실측중량_kg','단가_per_kg','금액_GST포함','요청사항']);
+    rows.push(['주문일','주문번호','거래처코드','거래처','상태','인보이스번호','발행일','품목','브랜드','분류','주문단위','주문수량','실측중량_kg','단가_per_kg','금액_GST포함','품목요청사항']);
     orders.forEach(o => {
       const c = DB.customers.find(x => x.id === o.customerId);
       o.items.forEach(it => {
@@ -5419,7 +5579,16 @@ function renderPrepTbody(o) {
       : '';
     var cancelNote = isCancelled && it._cancelNote ? '<br><small style="color:#E74C3C;">사유: ' + it._cancelNote + '</small>' : '';
     var addNote    = !isCancelled && it._addNote   ? '<br><small style="color:var(--muted);">📝 ' + it._addNote + '</small>' : '';
-    var itemNote   = it.notes ? '<br><small style="color:var(--muted);">※ ' + it.notes + '</small>' : '';
+    // 품목 요청사항: 편집 가능. 저장 시 거래처 자주 주문 짝도 동기화됨.
+    var notesValueAttr = (it.notes || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
+    var itemNote = isCancelled ? '' :
+      '<div style="margin-top:4px;">'
+      + '<input type="text" value="' + notesValueAttr + '"'
+      +   ' placeholder="📝 품목 요청사항 (수정하면 다음 주문에 기억됨)"'
+      +   ' style="width:100%; padding:5px 7px; border:1px dashed var(--line); border-radius:4px;'
+      +          ' font-size:11px; color:var(--brand-dark); background:#FFFCF5; box-sizing:border-box;"'
+      +   ' onchange="updatePrepItemNotes(window._prepOid,' + i + ',this.value)">'
+      + '</div>';
     var pName  = p ? p.name         : '(품목없음)';
     var pBrand = p ? (p.brand || '') : '';
     var lineP  = isCancelled ? 0 : (it.lineUnitPrice || 0);
@@ -5597,6 +5766,37 @@ function updatePrepPrice(orderId, idx, val) {
   renderPrepTbody(o);
   renderPrepTotals(o);
 }
+// 사무실: 인보이스 준비 단계에서 품목 요청사항(notes) 수정.
+// 이 주문 라인 + 해당 거래처의 자주 주문 짝(같은 품목+이전 요청사항) 동기화.
+function updatePrepItemNotes(orderId, idx, newVal) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  if (!o) return;
+  var item = getInvoiceItems(o)[idx];
+  if (!item) return;
+  var oldN = normalizeFavNotes(item.notes);
+  var newN = normalizeFavNotes(newVal);
+  if (oldN === newN) return;
+  item.notes = newN;
+  // 1) 주문 라인 부분 업데이트
+  var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
+  saveOrderItemField(orderId, listKey, idx, 'notes');
+  // 2) 거래처 자주 주문 짝 동기화
+  var cust = DB.customers.find(function(x){ return x.id === o.customerId; });
+  if (cust && item.productId) {
+    cust.favoritePairs = Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [];
+    var oldIdx = findFavoritePair(cust, item.productId, oldN);
+    if (oldIdx >= 0) {
+      // 기존 짝의 요청사항을 정리된 버전으로 교체 (중복 시 dedup)
+      updateFavoritePairNotes(cust, item.productId, oldN, newN);
+    } else {
+      // 짝이 아직 없으면 새 짝으로 추가 (자동 학습)
+      addFavoritePair(cust, item.productId, newN);
+    }
+    saveEntityField('customers', cust.id, 'favoritePairs');
+  }
+  if (typeof showToast === 'function') showToast('✏️ 품목 요청사항 저장 — 다음 주문에 기억됩니다');
+}
+
 function renderPrepTotals(o) {
   var t = computeTotals(o);
   var div = document.getElementById('prepTotals');
@@ -6887,6 +7087,7 @@ function initApp(data) {
   if (!DB.settings)  DB.settings  = seed().settings;
   if (!DB.company)   DB.company   = seed().company;
   migrateProducts();
+  migrateFavoritePairs();
   route();
   // 자동 백업: 1) 앱 열림 트리거 (태블릿/핸드폰용), 2) 30분마다 스케줄 트리거 (PC용)
   setTimeout(() => checkAutoBackup({ onOpen: true }), 3000); // 3초 후 — 폴더 권한·DB 로드 안정화 대기
