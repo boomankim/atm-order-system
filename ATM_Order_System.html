@@ -341,9 +341,10 @@ const CUT_DISPLAY = {
   '돼지고기':'Pork',            // 한글 제거, 영문만
   '오리':    'Duck',            // 한글 제거, 영문만
   'LAMB':    'Lamb',
-  '작업육':  '작업육/Processed',
-  '가공품':  '가공품/Packaged',
-  '공산품':  '공산품/Supplies'
+  '작업육':  '작업육/cut',
+  '가공육':  'Cured',
+  '가공품':  'Cured',
+  '공산품':  'Supplies'
 };
 let DB = null;
 
@@ -2020,7 +2021,7 @@ function normalizeProductName(rawName) {
 // =========================================================================
 
 // 분류(cut) 정렬 순서 — 와규부터 공산품까지 고정 순서
-const CUT_ORDER = ['와규','소고기','돼지고기','작업육','가공육','양고기','오리','공산품'];
+const CUT_ORDER = ['와규','소고기','돼지고기','작업육','가공육','오리','양고기','공산품'];
 // 분류 표시 라벨 — 한글 / English 병기
 const CUT_LABEL = {
   '와규': '와규 / Wagyu',
@@ -2460,10 +2461,14 @@ function renderFavoritesAdmin(params) {
         </div>
       </div>
       <div class="field" style="margin-top:14px;">
-        <label>거래처 선택</label>
-        <select id="favCust" onchange="location.hash='#admin?tab=favorites&c='+this.value">
-          ${DB.customers.map(c=>`<option value="${c.id}" ${c.id===custId?'selected':''}>${c.name} (${c.code})</option>`).join('')}
-        </select>
+        <label>거래처 선택 (이름·코드·담당자 입력하면 좁혀집니다)</label>
+        ${renderCustomerSearchSelect({
+          selectId: 'favCust',
+          selectedId: custId,
+          placeholder: '— 거래처를 선택하세요 —',
+          includeInactive: true,
+          onChange: "if(this.value)location.hash='#admin?tab=favorites&c='+this.value"
+        })}
       </div>
       <div id="favList"></div>
     </div>
@@ -3877,6 +3882,15 @@ function renderFavQuick(cust) {
       return { product: p, notes: normalizeFavNotes(pair.notes) };
     })
     .filter(Boolean);
+  // 분류 우선순위 (와규 → 소고기 → 돼지고기 → 작업육 → 가공육 → 오리 → 양고기 → 공산품)
+  // 같은 분류 안에서는 품목명 가나다순, 그 다음 요청사항순.
+  pairs.sort((a, b) => {
+    const c = compareCut(a.product.cut, b.product.cut);
+    if (c !== 0) return c;
+    const n = (a.product.name || '').localeCompare(b.product.name || '', 'ko-KR');
+    if (n !== 0) return n;
+    return a.notes.localeCompare(b.notes, 'ko-KR');
+  });
   if (card) card.style.display = '';  // always show the card
   if (pairs.length === 0) {
     div.innerHTML = `<div style="color:var(--muted); font-size:13px; padding:6px 4px;">
@@ -4384,7 +4398,13 @@ function renderWeighingTotal(o) {
 function viewOffice() {
   const app = document.getElementById('app');
   const ready = DB.orders.filter(o => o.status === 'weighed');
-  const all = DB.orders.filter(o => o.status === 'invoiced' || o.status === 'delivered');
+  // 발행 완료 — 당일 발행분만 (invoicedAt 기준). 이전 발행 건은 #history 에서 조회.
+  const todayISO = new Date().toISOString().slice(0,10);
+  const all = DB.orders.filter(o => {
+    if (o.status !== 'invoiced' && o.status !== 'delivered') return false;
+    const ref = (o.invoicedAt || '').slice(0,10);
+    return ref === todayISO;
+  });
   app.innerHTML = `
     <h2 class="page-title">📋 사무실 — 인보이스 발행
       <button class="btn sm" style="float:right; background:var(--info);" onclick="location.hash='#history'">📊 주문 이력 / CSV →</button>
@@ -4414,8 +4434,8 @@ function viewOffice() {
       </table>`}
     </div>
     <div class="card">
-      <h3>발행 완료 (${all.length}건)</h3>
-      ${all.length === 0 ? `<div class="empty">완료된 인보이스가 아직 없습니다.</div>` : `
+      <h3>오늘 발행 완료 (${all.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span></h3>
+      ${all.length === 0 ? `<div class="empty">오늘 발행된 인보이스가 없습니다.</div>` : `
       <table class="t">
         <thead><tr><th>인보이스#</th><th>주문번호</th><th>거래처</th><th class="num">금액</th><th>상태</th><th class="act"></th></tr></thead>
         <tbody>
