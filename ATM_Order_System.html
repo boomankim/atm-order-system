@@ -2179,8 +2179,6 @@ function renderCustomersAdmin() {
       <h3>거래처 마스터 (총 ${DB.customers.length}곳 · 활성 ${DB.customers.filter(c=>c.active!==false).length}곳 · <span style="color:#C62828;">차단 ${DB.customers.filter(c=>c.active===false).length}곳</span>)</h3>
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn success" onclick="editCustomer()">+ 거래처 추가</button>
-        <button class="btn warn" onclick="openCustomerRenumberModal()" title="기존 거래처 코드를 prefix+0001~ 형식으로 일괄 재부여 (테스트 CUST001/002 제외)">🔢 코드 일괄 재번호</button>
-        <button class="btn secondary" onclick="trimFiveDigitCodes()" title="끝 5자리 숫자 중 맨 앞이 0/2/3 인 코드를 4자리로 다듬기">✂️ 5→4자리 다듬기</button>
         <input id="custSearch" placeholder="거래처명 검색" style="flex:1; min-width:200px; padding:9px; border:1px solid var(--line); border-radius:6px;">
       </div>
       <div id="custList"></div>
@@ -2625,14 +2623,6 @@ function renderFavoritesAdmin(params) {
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px;">
         <h3 style="margin:0;">거래처별 즐겨찾기 (자주 주문하는 품목 등록)</h3>
-        <div style="display:flex; gap:6px; flex-wrap:wrap;">
-          <button class="btn" onclick="openCustomerMappingTool()"
-                  style="background:#6A1B9A;">🔗 거래처명 매핑</button>
-          <button class="btn" onclick="openItemMappingTool()"
-                  style="background:#00838F;">🥩 품목명 매핑</button>
-          <button class="btn" onclick="openFavImportModal()"
-                  style="background:#1976D2;">📊 엑셀에서 일괄 가져오기</button>
-        </div>
       </div>
       <div class="field" style="margin-top:14px;">
         <label>거래처 선택 (이름·코드·담당자 입력하면 좁혀집니다)</label>
