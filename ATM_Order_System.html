@@ -4680,10 +4680,12 @@ function dailyReportComputeRows(dateISO) {
   const todayCutoff = new Date(dateISO + 'T00:00:00');
   const rows = custs.map(c => {
     const days = termsDays(c.terms);
+    // 매출일보는 '배송완료(delivered)' 주문만 집계 — 배송완료 시점 자동 반영
+    // 날짜는 deliveredAt 우선 → invoicedAt → orderDate 순으로 폴백
     const allInvoices = DB.orders
-      .filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === c.id)
+      .filter(o => o.status === 'delivered' && o.customerId === c.id)
       .map(o => ({
-        dateISO: (o.invoicedAt || o.orderDate || '').slice(0,10),
+        dateISO: (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10),
         amount: computeTotals(o).grand
       }))
       .filter(x => x.dateISO);
@@ -6267,7 +6269,8 @@ function markDelivered(id) {
   o.status = 'delivered'; o.deliveredAt = new Date().toISOString();
   // Phase 2 동시성: 이 주문의 status/deliveredAt 만 부분 업데이트
   saveEntityFields('orders', id, { status: o.status, deliveredAt: o.deliveredAt });
-  alert('배송완료로 변경되었습니다.'); route();
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  alert('✅ 배송완료 처리됨.\n\n📊 ' + (cust ? cust.name : '해당 거래처') + ' → 오늘 매출일보에 자동 반영되었습니다.'); route();
 }
 function sendInvoice(id) {
   const o = DB.orders.find(x => x.id === id);
@@ -6401,7 +6404,7 @@ function viewOrderDetail(params) {
         <div class="notice" style="border-left-color: var(--info); background: #F0F5FB;">${statusMsg}</div>
 
         <table class="t">
-          <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th>비고</th><th>처리상태</th></tr></thead>
+          <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th>처리상태</th></tr></thead>
           <tbody>
             ${o.items.map(it => {
               const p = DB.products.find(x => x.id === it.productId);
@@ -6409,11 +6412,13 @@ function viewOrderDetail(params) {
               const weightStatus = it.actualWeightKg != null
                 ? `<span style="color:var(--ok); font-weight:600;">✅ ${it.actualWeightKg.toFixed(2)} kg</span>`
                 : `<span style="color:var(--warn);">⏳ 작업 대기</span>`;
+              const itemNote = it.notes
+                ? `<br><small style="color:var(--brand-dark); font-weight:600;">📝 품목 요청사항: ${it.notes}</small>`
+                : '';
               return `<tr>
-                <td><b>${p.name}</b></td>
+                <td><b>${p.name}</b>${itemNote}</td>
                 <td>${p.brand}</td>
                 <td>${orderDisplay}</td>
-                <td><small>${it.notes||'-'}</small></td>
                 <td>${weightStatus}</td>
               </tr>`;
             }).join('')}
@@ -6450,8 +6455,11 @@ function viewOrderDetail(params) {
             const w = it.actualWeightKg;
             const price = lineUnitPrice(it, p, cust);
             const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small style="color:var(--muted);">작업</small>` : `${it.quantity} ${it.unit}`;
+            const itemNote = it.notes
+              ? `<br><small style="color:var(--brand-dark); font-weight:600;">📝 품목 요청사항: ${it.notes}</small>`
+              : '';
             return `<tr>
-              <td><b>${p.name}</b>${it.notes?`<br><small style="color:var(--muted);">${it.notes}</small>`:''}</td>
+              <td><b>${p.name}</b>${itemNote}</td>
               <td>${p.brand}</td>
               <td>${orderDisplay}</td>
               <td class="num"><b>${w!=null?w.toFixed(2)+' kg':'<span style="color:var(--warn);">계근 대기</span>'}</b></td>
