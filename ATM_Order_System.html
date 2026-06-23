@@ -2180,6 +2180,7 @@ function renderCustomersAdmin() {
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn success" onclick="editCustomer()">+ 거래처 추가</button>
         <button class="btn warn" onclick="openCustomerRenumberModal()" title="기존 거래처 코드를 prefix+0001~ 형식으로 일괄 재부여 (테스트 CUST001/002 제외)">🔢 코드 일괄 재번호</button>
+        <button class="btn secondary" onclick="trimFiveDigitCodes()" title="끝 5자리 숫자 중 맨 앞이 0/2/3 인 코드를 4자리로 다듬기">✂️ 5→4자리 다듬기</button>
         <input id="custSearch" placeholder="거래처명 검색" style="flex:1; min-width:200px; padding:9px; border:1px solid var(--line); border-radius:6px;">
       </div>
       <div id="custList"></div>
@@ -2322,6 +2323,51 @@ function openCustomerRenumberModal() {
       row.querySelector('.renum-preview').textContent = this.value + num;
     };
   });
+}
+
+// ✂️ 끝 5자리 숫자 중 맨 앞자리가 0/2/3 인 거래처 코드를 4자리로 다듬기
+//    예) MW20001 → MW0001, AB30005 → AB0005, CD00012 → CD0012
+//    충돌(같은 코드가 이미 존재) 시 해당 건만 건너뜀
+function trimFiveDigitCodes() {
+  const re = /^(.*?)([023])(\d{4})\s*$/;
+  const targets = [];
+  for (const c of DB.customers) {
+    const m = (c.code || '').match(re);
+    if (m) targets.push({ cust: c, prefix: m[1], drop: m[2], keep: m[3], newCode: m[1] + m[3] });
+  }
+  if (targets.length === 0) {
+    alert('대상 거래처가 없습니다.\n(끝 5자리 숫자 중 맨 앞이 0/2/3 인 코드 없음)');
+    return;
+  }
+  // 충돌 검사
+  const existingCodes = new Set(DB.customers.map(c => (c.code || '').toUpperCase()));
+  const conflicts = [];
+  const safe = [];
+  for (const t of targets) {
+    const newUpper = t.newCode.toUpperCase();
+    // 자기 자신은 빼고 검사
+    const others = new Set(DB.customers.filter(c => c.id !== t.cust.id).map(c => (c.code || '').toUpperCase()));
+    if (others.has(newUpper)) conflicts.push(t);
+    else safe.push(t);
+  }
+  const previewSafe = safe.slice(0, 8).map(t => `  ${t.cust.name}: ${t.cust.code} → ${t.newCode}`).join('\n');
+  const previewConf = conflicts.slice(0, 5).map(t => `  ${t.cust.name}: ${t.cust.code} → ${t.newCode} (중복)`).join('\n');
+  let msg = `✂️ 5→4자리 다듬기 미리보기\n\n대상 ${targets.length}곳 중 적용 가능 ${safe.length}곳`;
+  if (conflicts.length) msg += ` / 충돌 ${conflicts.length}곳`;
+  msg += `\n\n[적용 예시]\n${previewSafe}${safe.length > 8 ? `\n  ... 외 ${safe.length - 8}곳` : ''}`;
+  if (conflicts.length) msg += `\n\n[충돌 — 건너뜀]\n${previewConf}${conflicts.length > 5 ? `\n  ... 외 ${conflicts.length - 5}곳` : ''}`;
+  msg += '\n\n적용하시겠습니까?';
+  if (!confirm(msg)) return;
+
+  let changed = 0;
+  for (const t of safe) {
+    t.cust.code = t.newCode;
+    changed++;
+    try { saveEntityField('customers', t.cust.id, 'code'); } catch(e) { console.warn('Firebase code 저장 실패:', t.cust.id, e); }
+  }
+  saveDB();
+  renderCustomersAdmin();
+  alert(`✅ ${changed}곳 다듬기 완료${conflicts.length ? ` / ${conflicts.length}곳은 중복으로 건너뜀` : ''}.`);
 }
 
 function applyCustomerRenumber() {
