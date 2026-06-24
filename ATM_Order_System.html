@@ -1228,9 +1228,9 @@ function viewHome() {
 function renderProcessingToday() {
   const div = document.getElementById('processingToday');
   if (!div) return;
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayLocalISO();
   const tomorrowDate = new Date(); tomorrowDate.setDate(tomorrowDate.getDate() + 1);
-  const tomorrow = tomorrowDate.toISOString().slice(0,10);
+  const tomorrow = toLocalISODate(tomorrowDate);
 
   // 작업육 품목 추출 → 배송일 기준으로 오늘/내일 2그룹으로 나눔
   // (실측중량은 item.procPreviewKg 라는 작업육 전용 필드만 사용 — actualWeightKg 와 분리)
@@ -1344,12 +1344,12 @@ function updateProcPreviewKg(orderId, productId, val) {
 
 function renderStats() {
   const now = new Date();
-  const today = now.toISOString().slice(0,10);
+  const today = toLocalISODate(now);
   // 이번 주 월요일 계산
   const dow = now.getDay(); // 0=일,1=월...6=토
   const diffToMon = (dow === 0) ? -6 : 1 - dow;
   const monday = new Date(now); monday.setDate(now.getDate() + diffToMon);
-  const weekStartStr = monday.toISOString().slice(0,10);
+  const weekStartStr = toLocalISODate(monday);
   const monthStr = today.slice(0,7);
 
   const dayCount   = DB.orders.filter(o => (o.orderDate||'').slice(0,10) === today).length;
@@ -1378,12 +1378,13 @@ function renderStats() {
 }
 function renderRecentOrders() {
   const div = document.getElementById('recentOrders');
-  const today = new Date().toISOString().slice(0,10);
+  const today = todayLocalISO();
+  // 배송일(deliveryDate) 기준 — 오늘 배송분만 표시 (내일 되면 그날 배송분만 자동 표시)
   const recent = [...DB.orders]
-    .filter(o => (o.orderDate||'').slice(0,10) === today)
+    .filter(o => (o.deliveryDate||'').slice(0,10) === today)
     .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
   if (recent.length === 0) {
-    div.innerHTML = `<div class="empty"><div class="icon">📭</div>오늘 접수된 주문이 없습니다.</div>`;
+    div.innerHTML = `<div class="empty"><div class="icon">📭</div>오늘(${today}) 배송 예정 주문이 없습니다.</div>`;
     return;
   }
   div.innerHTML = `
@@ -4025,7 +4026,7 @@ function viewOrder(params) {
   }
 
   CART = []; // reset on entry
-  const todayStr = new Date().toISOString().slice(0,10);
+  const todayStr = todayLocalISO();
   const todayDisplay = new Date().toLocaleDateString('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'short'});
   app.innerHTML = `
     <h2 class="page-title">🛒 ${cust.name}
@@ -4253,14 +4254,14 @@ window.confirmAndSubmitOrder = function(custId) {
   if (!Array.isArray(CART) || CART.length === 0) {
     return alert('주문 내역이 비어 있습니다.\nCart is empty.');
   }
-  const todayISO = new Date().toISOString().slice(0,10);
+  const todayISO = todayLocalISO();
   const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
-  const tomorrowISO = tmr.toISOString().slice(0,10);
+  const tomorrowISO = toLocalISODate(tmr);
   const todayDMY = formatDateDMY(todayISO);
   const tomorrowDMY = formatDateDMY(tomorrowISO);
   // 지정일 기본값: 모레
   const day3 = new Date(); day3.setDate(day3.getDate() + 2);
-  const day3ISO = day3.toISOString().slice(0,10);
+  const day3ISO = toLocalISODate(day3);
 
   openModal(`
     <h3 style="margin-top:0;">🚚 배송일 선택 / Choose Delivery Date</h3>
@@ -4359,7 +4360,7 @@ async function submitOrder(custId) {
 
   const order = {
     id: uid('o'),
-    orderNo: 'ATM-' + new Date().toISOString().slice(0,10).replace(/-/g,'') + '-' + String(orderSeq).padStart(3,'0'),
+    orderNo: 'ATM-' + todayLocalISO().replace(/-/g,'') + '-' + String(orderSeq).padStart(3,'0'),
     customerId: custId,
     orderDate: new Date().toISOString(),
     deliveryDate: val('deliveryDate'),
@@ -4599,7 +4600,7 @@ function viewOffice() {
   const app = document.getElementById('app');
   const ready = DB.orders.filter(o => o.status === 'weighed');
   // 발행 완료 — 당일 발행분만 (invoicedAt 기준). 이전 발행 건은 #history 에서 조회.
-  const todayISO = new Date().toISOString().slice(0,10);
+  const todayISO = todayLocalISO();
   const all = DB.orders.filter(o => {
     if (o.status !== 'invoiced' && o.status !== 'delivered') return false;
     const ref = (o.invoicedAt || '').slice(0,10);
@@ -4654,10 +4655,10 @@ function viewOffice() {
       </table>`}
     </div>
     <div class="card">
-      <h3>📊 매출 일보 — <span id="drDateLabel" style="color:var(--brand);">${formatDateDMY(new Date().toISOString().slice(0,10))}</span></h3>
+      <h3>📊 매출 일보 — <span id="drDateLabel" style="color:var(--brand);">${formatDateDMY(todayLocalISO())}</span></h3>
       <div style="display:flex; gap:8px; margin-bottom:8px; flex-wrap:wrap; align-items:center;">
         <label style="font-size:12px; color:var(--muted);">기준일자:</label>
-        <input type="date" id="drDate" value="${new Date().toISOString().slice(0,10)}" onchange="renderDailyReport()" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px;">
+        <input type="date" id="drDate" value="${todayLocalISO()}" onchange="renderDailyReport()" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px;">
         <button class="btn sm" onclick="setDrDateToday()">오늘</button>
         <button class="btn sm" onclick="togglePaymentPanel()">💳 입금 처리</button>
         <button class="btn sm secondary" onclick="location.hash='#statement'">📄 스테이트먼트</button>
@@ -4668,7 +4669,7 @@ function viewOffice() {
       </div>
       <div id="drFolderInfo" style="font-size:11px; color:var(--muted); margin-bottom:12px;"></div>
       ${(() => {
-        const today = new Date().toISOString().slice(0,10);
+        const today = todayLocalISO();
         return `<div id="inlinePaymentPanel" style="display:none; margin-bottom:14px; padding:14px 16px; background:var(--surface); border:1px solid var(--line); border-radius:8px;">
           <div class="grid-3">
             <div class="field"><label>거래처</label>
@@ -4703,6 +4704,22 @@ window.togglePaymentPanel = function() {
 // =========================================================================
 //  매출 일보 (Daily Sales Report)
 // =========================================================================
+// 🔧 시간대 헬퍼 — toISOString()은 UTC 기준이라 시드니 야간/새벽엔 날짜가 하루 어긋남.
+// 모든 "오늘" 비교는 로컬 시간 기준으로 통일해야 배송완료 직후 매출일보에 즉시 반영됨.
+function todayLocalISO() {
+  const d = new Date();
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+function toLocalISODate(input) {
+  if (!input) return '';
+  const s = String(input);
+  // 이미 YYYY-MM-DD 형식이면 그대로
+  if (/^\d{4}-\d{2}-\d{2}$/.test(s)) return s;
+  const d = new Date(s);
+  if (isNaN(d.getTime())) return s.slice(0,10);
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+}
+
 function formatDateDMY(iso) {
   if (!iso) return '-';
   const d = new Date(iso + 'T00:00:00');
@@ -4717,10 +4734,11 @@ function dailyReportComputeRows(dateISO) {
     const days = termsDays(c.terms);
     // 매출일보는 '배송완료(delivered)' 주문만 집계 — 배송완료 시점 자동 반영
     // 날짜는 deliveredAt 우선 → invoicedAt → orderDate 순으로 폴백
+    // ⚠️ toLocalISODate() 사용 — UTC ISO를 로컬 날짜로 변환해야 시드니 시각 기준으로 매칭됨
     const allInvoices = DB.orders
       .filter(o => o.status === 'delivered' && o.customerId === c.id)
       .map(o => ({
-        dateISO: (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10),
+        dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
         amount: computeTotals(o).grand
       }))
       .filter(x => x.dateISO);
@@ -4767,13 +4785,8 @@ function dailyReportComputeRows(dateISO) {
       }
     }
     return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue };
-  }).filter(r =>
-    Math.abs(r.priorBalance) > 0.001 ||
-    Math.abs(r.todaySales) > 0.001 ||
-    Math.abs(r.todayPaid) > 0.001 ||
-    Math.abs(r.currentBalance) > 0.001 ||
-    r.overdue > 0.001
-  );
+  });
+  // 거래 활동 없는 거래처도 모두 표시 — overdue 큰 순 → 잔액 큰 순 → 이름 가나다순
   rows.sort((a,b) => (b.overdue - a.overdue) || (b.currentBalance - a.currentBalance) || a.c.name.localeCompare(b.c.name, 'ko'));
   return rows;
 }
@@ -4832,21 +4845,21 @@ function dailyReportScreenTableHTML(rows) {
 window.setDrDateToday = function() {
   const el = document.getElementById('drDate');
   if (!el) return;
-  el.value = new Date().toISOString().slice(0,10);
+  el.value = todayLocalISO();
   renderDailyReport();
 };
 
 window.renderDailyReport = function() {
   const dateEl = document.getElementById('drDate');
   if (!dateEl) return;
-  const dateISO = dateEl.value || new Date().toISOString().slice(0,10);
+  const dateISO = dateEl.value || todayLocalISO();
   const rows = dailyReportComputeRows(dateISO);
   const wrap = document.getElementById('drTableWrap');
   if (wrap) wrap.innerHTML = dailyReportScreenTableHTML(rows);
   const dateLbl = document.getElementById('drDateLabel');
   if (dateLbl) dateLbl.textContent = formatDateDMY(dateISO);
   // 오늘 날짜 스냅샷만 자동 저장 (과거/미래 일자 조회는 저장 안 함)
-  const todayISO = new Date().toISOString().slice(0,10);
+  const todayISO = todayLocalISO();
   if (dateISO === todayISO) saveDailySalesSnapshot(dateISO, rows);
   // 저장 폴더 정보 표시 (비동기)
   refreshDailyReportFolderInfo(dateISO);
@@ -4858,7 +4871,7 @@ async function refreshDailyReportFolderInfo(dateISO) {
   try {
     const handle = await idbGet('dailyReportDirHandle');
     if (handle) {
-      const ym = (dateISO || new Date().toISOString().slice(0,10)).slice(0,7);
+      const ym = (dateISO || todayLocalISO()).slice(0,7);
       el.innerHTML = `📁 PDF 저장 폴더: <b style="color:var(--brand);">${handle.name}/${ym}/</b>ATM_매출일보_${dateISO}.pdf`;
     } else {
       el.innerHTML = `<span style="color:var(--warn);">⚠️ PDF 저장 폴더 미설정</span> — "📁 폴더 변경" 버튼으로 1회만 지정하면 이후 자동 저장됩니다`;
@@ -4894,7 +4907,7 @@ function saveDailySalesSnapshot(dateISO, rows) {
 
 window.printDailyReport = function() {
   const dateEl = document.getElementById('drDate');
-  const dateISO = (dateEl && dateEl.value) || new Date().toISOString().slice(0,10);
+  const dateISO = (dateEl && dateEl.value) || todayLocalISO();
   const rows = dailyReportComputeRows(dateISO);
   const totals = dailyReportTotals(rows);
   const dateDMY = formatDateDMY(dateISO);
@@ -5112,7 +5125,7 @@ function buildDailyReportPDFHTML(rows, totals, dateISO) {
 
 window.saveDailyReportPDF = async function() {
   const dateEl = document.getElementById('drDate');
-  const dateISO = (dateEl && dateEl.value) || new Date().toISOString().slice(0,10);
+  const dateISO = (dateEl && dateEl.value) || todayLocalISO();
   const rows = dailyReportComputeRows(dateISO);
   const totals = dailyReportTotals(rows);
 
@@ -5424,8 +5437,8 @@ function initHistoryFilter() {
   const today = new Date();
   const first = new Date(today.getFullYear(), today.getMonth(), 1);
   HISTORY_FILTER = {
-    dateFrom: first.toISOString().slice(0,10),
-    dateTo: today.toISOString().slice(0,10),
+    dateFrom: toLocalISODate(first),
+    dateTo: toLocalISODate(today),
     customerId: '',
     status: ''
   };
@@ -5511,8 +5524,8 @@ function setHistQuickRange(range) {
     case 'ytd':
       from = new Date(today.getFullYear(), 0, 1); to = today; break;
   }
-  document.getElementById('histFrom').value = from.toISOString().slice(0,10);
-  document.getElementById('histTo').value = to.toISOString().slice(0,10);
+  document.getElementById('histFrom').value = toLocalISODate(from);
+  document.getElementById('histTo').value = toLocalISODate(to);
 }
 
 function applyHistory() {
@@ -7100,7 +7113,7 @@ function viewPayment(params) {
   if (!ADMIN_UNLOCKED && !STAFF_UNLOCKED) { showStaffLogin(); return; }
   const app = document.getElementById('app');
   const preCid = (params && params.cid) ? params.cid : '';
-  const today = new Date().toISOString().slice(0, 10);
+  const today = toLocalISODate(new Date());
 
   function balanceFor(cid) {
     if (!cid) return null;
@@ -7216,8 +7229,8 @@ window.savePayment = function() {
 function viewStatement(params) {
   if (!ADMIN_UNLOCKED && !STAFF_UNLOCKED) { showStaffLogin(); return; }
   const app = document.getElementById('app');
-  const today = new Date().toISOString().slice(0, 10);
-  const firstDate = new Date(new Date().getFullYear(), 0, 1).toISOString().slice(0,10); // 올해 1월 1일
+  const today = toLocalISODate(new Date());
+  const firstDate = toLocalISODate(new Date(new Date().getFullYear(), 0, 1)); // 올해 1월 1일
   const preCid = (params && params.cid) || '';
 
   function buildStatement(cid, dateFrom, dateTo) {
@@ -7306,7 +7319,7 @@ function viewStatement(params) {
 window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   const cust = DB.customers.find(c => c.id === cid);
   const custName = cust ? cust.name : cid;
-  const today = new Date().toISOString().slice(0, 10);
+  const today = toLocalISODate(new Date());
   const methodLabel = { cash: '현금', cheque: '체크', bank: '은행이체' };
 
   const invoices = DB.orders.filter(o =>
@@ -7408,7 +7421,7 @@ async function checkAutoBackup(opts) {
     if (!enabled) return;
     if (!_backupDirHandle) return; // 폴더 미설정이면 자동 백업 skip (조용히)
 
-    const today = new Date().toISOString().slice(0,10);
+    const today = todayLocalISO();
     const last = localStorage.getItem(AUTO_BACKUP_KEY) || '';
     if (last === today) return; // 오늘 이미 자동 백업 완료
 
@@ -7818,12 +7831,12 @@ if (FIREBASE_READY && DB_REF) {
     document.getElementById('pwa-install-close')?.addEventListener('click', remove);
     document.getElementById('pwa-install-later')?.addEventListener('click', remove);
     document.getElementById('pwa-install-now')?.addEventListener('click', async () => {
-      if (!deferredPrompt) return;
+      if (!deferredPrompt) { remove(); return; }
       try {
         deferredPrompt.prompt();
         const choice = await deferredPrompt.userChoice;
-        console.info('[PWA] 사용자 선택:', choice.outcome);
-      } catch(e) { console.warn('[PWA] prompt 실패:', e); }
+        if (choice && choice.outcome === 'accepted') markDismissed();
+      } catch(e) { console.warn('[PWA] install prompt 실패:', e); }
       deferredPrompt = null;
       banner.remove();
     });
