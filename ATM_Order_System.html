@@ -1229,82 +1229,117 @@ function renderProcessingToday() {
   const div = document.getElementById('processingToday');
   if (!div) return;
   const today = new Date().toISOString().slice(0,10);
+  const tomorrowDate = new Date(); tomorrowDate.setDate(tomorrowDate.getDate() + 1);
+  const tomorrow = tomorrowDate.toISOString().slice(0,10);
 
-  // 품목 분류(cut)가 '작업육'인 모든 품목을 거래처별로 묶는다
-  // (하위호환: 품목명에 "작업"이 포함된 경우도 포함)
-  const byCust = {};
+  // 작업육 품목 추출 → 배송일 기준으로 오늘/내일 2그룹으로 나눔
+  // (실측중량은 item.procPreviewKg 라는 작업육 전용 필드만 사용 — actualWeightKg 와 분리)
+  const groups = { today: {}, tomorrow: {} };
   DB.orders.forEach(o => {
-    if ((o.orderDate || '').slice(0,10) !== today) return;
+    const dDate = (o.deliveryDate || '').slice(0,10);
+    let bucket;
+    if (dDate === today) bucket = 'today';
+    else if (dDate === tomorrow) bucket = 'tomorrow';
+    else return;
     o.items.forEach(it => {
       const p = DB.products.find(x => x.id === it.productId);
       if (!p) return;
       if (p.cut !== '작업육' && !p.name.includes('작업')) return;
-      if (!byCust[o.customerId]) byCust[o.customerId] = [];
-      byCust[o.customerId].push({ product: p, item: it, order: o });
+      if (!groups[bucket][o.customerId]) groups[bucket][o.customerId] = [];
+      groups[bucket][o.customerId].push({ product: p, item: it, order: o });
     });
   });
 
-  const custIds = Object.keys(byCust);
-  if (custIds.length === 0) {
-    div.innerHTML = `<div class="empty" style="padding:24px;"><div class="icon">🥩</div>오늘 작업할 품목이 없습니다.<br><small style="color:var(--muted);">품목명에 "작업"이 포함된 분류를 주문 받으면 여기에 거래처별로 정리됩니다.</small></div>`;
+  const hasAny = Object.values(groups).some(g => Object.keys(g).length > 0);
+  if (!hasAny) {
+    div.innerHTML = `<div class="empty" style="padding:24px;"><div class="icon">🥩</div>오늘·내일 배송 예정 작업육이 없습니다.<br><small style="color:var(--muted);">배송일이 오늘 또는 내일인 "작업육" 분류 주문이 여기에 표시됩니다.</small></div>`;
     return;
   }
 
-  // Totals across all customers
-  let totalItems = 0, totalKg = 0;
-  custIds.forEach(cid => {
-    byCust[cid].forEach(e => {
+  function renderGroupHTML(label, color, byCust) {
+    const custIds = Object.keys(byCust);
+    if (custIds.length === 0) return '';
+    let totalItems = 0, totalKg = 0;
+    custIds.forEach(cid => byCust[cid].forEach(e => {
       totalItems++;
-      if (e.item.actualWeightKg != null) totalKg += e.item.actualWeightKg;
-    });
-  });
-
-  let html = `
-    <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
-      거래처 <b>${custIds.length}</b>곳 · 작업 품목 <b>${totalItems}</b>건 · 계근완료분 합계 <b>${totalKg.toFixed(2)} kg</b>
-    </div>
-  `;
-  custIds.forEach(cid => {
-    const c = DB.customers.find(x => x.id === cid);
-    const items = byCust[cid];
-    let custKg = 0;
-    items.forEach(e => { if (e.item.actualWeightKg != null) custKg += e.item.actualWeightKg; });
-    html += `
-      <div style="margin-bottom:12px; padding:12px 14px; background:#FBF8F4; border-radius:8px; border-left:4px solid var(--brand);">
-        <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-          <b style="font-size:14px; color:var(--brand-dark);">🏪 ${c ? c.name : '(거래처 없음)'}</b>
-          <span style="font-size:12px; color:var(--muted);">${items.length}건 · ${custKg.toFixed(2)} kg</span>
-        </div>
-        <table style="width:100%; font-size:13px; border-collapse:collapse;">
-          <thead>
-            <tr style="color:var(--muted); font-size:11px;">
-              <th style="text-align:left; padding:4px 6px;">품목</th>
-              <th style="text-align:left; padding:4px 6px;">브랜드</th>
-              <th style="text-align:left; padding:4px 6px;">주문</th>
-              <th style="text-align:right; padding:4px 6px;">실측 중량</th>
-              <th style="text-align:center; padding:4px 6px;">상태</th>
-              <th style="text-align:center; padding:4px 6px;"></th>
-            </tr>
-          </thead>
-          <tbody>
-            ${items.map(({product, item, order}) => {
-              const w = item.actualWeightKg;
-              const orderDisp = item.unit === '작업중량' ? `${item.quantity} kg` : `${item.quantity} ${item.unit}`;
-              return `<tr style="border-top:1px solid #EDE3D6;">
-                <td style="padding:6px 6px;"><b>${product.name}</b>${item.notes ? '<br><small style="color:var(--muted);">' + item.notes + '</small>' : ''}</td>
-                <td style="padding:6px 6px;">${product.brand}</td>
-                <td style="padding:6px 6px;">${orderDisp}</td>
-                <td style="text-align:right; padding:6px 6px; font-weight:700; color:${w!=null?'var(--ok)':'var(--warn)'};">${w!=null ? w.toFixed(2)+' kg' : '대기'}</td>
-                <td style="text-align:center; padding:6px 6px;"><span class="pill ${order.status}" style="font-size:10px;">${statusLabel(order.status)}</span></td>
-                <td style="text-align:center; padding:6px 6px;"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${order.id}'">보기</button></td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
+      if (e.item.procPreviewKg != null) totalKg += Number(e.item.procPreviewKg) || 0;
+    }));
+    let inner = `
+      <div style="margin:18px 0 10px; display:flex; justify-content:space-between; align-items:baseline; border-bottom:2px solid ${color}; padding-bottom:6px;">
+        <h4 style="margin:0; color:${color}; font-size:15px;">${label}</h4>
+        <span style="font-size:12px; color:var(--muted);">거래처 ${custIds.length}곳 · 품목 ${totalItems}건 · 입력완료 합계 ${totalKg.toFixed(2)} kg</span>
       </div>
     `;
-  });
+    custIds.forEach(cid => {
+      const c = DB.customers.find(x => x.id === cid);
+      const items = byCust[cid];
+      let custKg = 0;
+      items.forEach(e => { if (e.item.procPreviewKg != null) custKg += Number(e.item.procPreviewKg) || 0; });
+      inner += `
+        <div style="margin-bottom:12px; padding:12px 14px; background:#FBF8F4; border-radius:8px; border-left:4px solid ${color};">
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <b style="font-size:14px; color:var(--brand-dark);">🏪 ${c ? c.name : '(거래처 없음)'}</b>
+            <span style="font-size:12px; color:var(--muted);">${items.length}건 · ${custKg.toFixed(2)} kg</span>
+          </div>
+          <table style="width:100%; font-size:13px; border-collapse:collapse;">
+            <thead>
+              <tr style="color:var(--muted); font-size:11px;">
+                <th style="text-align:left; padding:4px 6px;">품목</th>
+                <th style="text-align:left; padding:4px 6px;">브랜드</th>
+                <th style="text-align:left; padding:4px 6px;">주문</th>
+                <th style="text-align:right; padding:4px 6px;">실측 중량 (직접 입력)</th>
+                <th style="text-align:center; padding:4px 6px;">상태</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${items.map(({product, item, order}) => {
+                const w = item.procPreviewKg;
+                const hasW = w != null && w !== '';
+                const orderDisp = item.unit === '작업중량' ? `${item.quantity} kg` : `${item.quantity} ${item.unit}`;
+                const statusHtml = hasW
+                  ? `<span class="pill weighed" style="font-size:10px;">계근완료</span>`
+                  : `<span class="pill new" style="font-size:10px;">신규</span>`;
+                return `<tr style="border-top:1px solid #EDE3D6;">
+                  <td style="padding:6px 6px;"><b>${product.name}</b>${item.notes ? '<br><small style="color:var(--brand-dark); font-weight:600;">📝 ' + item.notes + '</small>' : ''}</td>
+                  <td style="padding:6px 6px;">${product.brand}</td>
+                  <td style="padding:6px 6px;">${orderDisp}</td>
+                  <td style="text-align:right; padding:6px 6px;">
+                    <input type="number" step="0.01"
+                      value="${hasW ? Number(w).toFixed(2) : ''}"
+                      placeholder="kg"
+                      style="width:90px; padding:5px; border:2px solid ${hasW ? 'var(--ok)' : 'var(--warn)'}; border-radius:4px; font-size:13px; text-align:right; font-weight:700; color:${hasW ? 'var(--ok)' : 'var(--text)'};"
+                      onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"
+                      onchange="updateProcPreviewKg('${order.id}', '${item.productId}', this.value)">
+                  </td>
+                  <td style="text-align:center; padding:6px 6px;">${statusHtml}</td>
+                </tr>`;
+              }).join('')}
+            </tbody>
+          </table>
+        </div>
+      `;
+    });
+    return inner;
+  }
+
+  let html = '';
+  html += renderGroupHTML('📅 오늘 (' + today + ') 배송 작업', '#C62828', groups.today);
+  html += renderGroupHTML('🌅 내일 (' + tomorrow + ') 배송 작업', '#1565C0', groups.tomorrow);
   div.innerHTML = html;
+}
+
+// 오늘의 작업육 전용: procPreviewKg 만 업데이트 (actualWeightKg 와 분리, 다른 화면에 영향 없음)
+function updateProcPreviewKg(orderId, productId, val) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return;
+  const it = o.items.find(x => x.productId === productId);
+  if (!it) return;
+  const num = val === '' ? null : parseFloat(val);
+  it.procPreviewKg = (num == null || isNaN(num)) ? null : num;
+  // 저장 (Firebase 부분 업데이트 — items 배열 전체 동기화)
+  try { saveEntityField('orders', orderId, 'items'); } catch(e) { console.warn('procPreviewKg 저장 실패:', e); }
+  saveDB();
+  renderProcessingToday();
 }
 
 function renderStats() {
@@ -6443,9 +6478,7 @@ function viewOrderDetail(params) {
     <div class="card">
       <div class="btn-row" style="margin-bottom:10px;">
         <span class="pill ${o.status}" style="padding:6px 14px; font-size:13px;">${statusLabel(o.status)}</span>
-        ${o.status==='new' || o.status==='weighing' ? `<button class="btn warn" onclick="location.hash='#weigh?id=${o.id}'">⚖️ 계근하기</button>` : ''}
-        ${o.status==='weighed' ? `<button class="btn success" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 발행</button>` : ''}
-        ${o.status==='invoiced' || o.status==='delivered' ? `<button class="btn" onclick="location.hash='#invoice?id=${o.id}'">📋 인보이스 보기</button>` : ''}
+        <span style="font-size:12px; color:var(--muted); margin-left:6px;">계근은 작업장(⚖️ Warehouse), 인보이스는 사무실(🏢 Office)에서 처리</span>
       </div>
       <table class="t">
         <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th class="num">실측 중량</th><th class="num">금액</th></tr></thead>
