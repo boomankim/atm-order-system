@@ -391,7 +391,11 @@ function loadLocalDB() {
 function saveLocalDB() {
   try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); } catch(e) {}
 }
-function getInvoiceItems(o) { return o.invoiceItems || o.items; }
+function getInvoiceItems(o) {
+  // 항상 배열 반환 — items/invoiceItems 가 누락된 손상 데이터에서도 .forEach 가 터지지 않도록 방어
+  const arr = (o && (o.invoiceItems || o.items)) || [];
+  return Array.isArray(arr) ? arr : [];
+}
 
 // =========================================================================
 //  자주 주문 (favoritePairs) — 품목 + 품목 요청사항 짝 헬퍼
