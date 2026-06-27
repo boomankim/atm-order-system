@@ -4613,6 +4613,7 @@ function viewOffice() {
   app.innerHTML = `
     <h2 class="page-title">📋 사무실 — 인보이스 발행
       <button class="btn sm" style="float:right; background:var(--info);" onclick="location.hash='#history'">📊 주문 이력 / CSV →</button>
+      <button class="btn sm" style="float:right; margin-right:6px; background:var(--brand);" onclick="location.hash='#inventory'">📦 재고현황 →</button>
     </h2>
     <div class="card">
       <h3>인보이스 발행 대기 (${ready.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); float:right;">거래처/주문번호 클릭 → 품목·단가 확인 → 발행</span></h3>
@@ -7361,6 +7362,640 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
 };
 
 // =========================================================================
+//  VIEW: INVENTORY (재고현황) — 1단계: 수동 차감 방식
+// =========================================================================
+//
+// 설계 (확정):
+// - 5개 카테고리(소고기·와규·돼지고기·오리·양고기) 2단 구조 (요약 + 부위별 펼침)
+// - 단위: 정수 박스 (소수 없음), 음수 재고 = 괄호 표기 예 (3)
+// - 전재고: 전일 현재고 자동 롤오버. 월 실사일엔 수동 입력 가능
+// - 입고: 수동 입력 (제품입고 폼)
+// - 출고: 배송완료 주문 리스트 표시 → 수동 차감 버튼 (자동 훅 없음 = 기존 배송완료 흐름 안 건드림)
+// - 박스 환산: 돼지 박스=16kg/임계 8kg, 소·와규 박스=25kg/임계 12kg, 오리·양 항상 박스
+// - 환산 공식: floor(누적÷박스중량) + (나머지 ≥ 임계 ? 1 : 0)
+// - 미달분 이월 없음 → 매일 자정 리셋
+// - PDF 저장: 매출일보와 완전 별도 폴더
+//
+// 데이터 구조 (DB.inventory):
+// {
+//   lastResetDate: 'YYYY-MM-DD',      // 마지막 일일 롤오버/리셋이 적용된 날짜
+//   byProduct: {
+//     [productId]: {
+//       stock: number,                 // 현재고 (박스)
+//       prev: number,                  // 전재고 (전일 현재고 또는 실사값)
+//       receivedToday: number,         // 오늘 입고 (박스)
+//       deductedToday: number          // 오늘 차감 누계 (박스, 박스 출고 + kg 환산)
+//     }
+//   },
+//   deductedOrders: { [orderId]: 'YYYY-MM-DDTHH:MM' }  // 중복 차감 방지
+// }
+
+const INVENTORY_CATEGORIES = ['소고기','와규','돼지고기','오리','양고기'];
+
+// 카테고리별 박스 환산 규칙
+const INVENTORY_BOX_RULES = {
+  '돼지고기': { boxKg: 16, threshold: 8 },
+  '소고기':   { boxKg: 25, threshold: 12 },
+  '와규':     { boxKg: 25, threshold: 12 }
+  // 오리·양고기는 박스 단위만 (kg 환산 규칙 없음)
+};
+
+// kg 누적값을 박스로 환산: floor(kg/boxKg) + (나머지 ≥ threshold ? 1 : 0)
+function inventoryBoxConvert(kgTotal, cut) {
+  const rule = INVENTORY_BOX_RULES[cut];
+  if (!rule || !kgTotal || kgTotal <= 0) return 0;
+  const full = Math.floor(kgTotal / rule.boxKg);
+  const rem = kgTotal - (full * rule.boxKg);
+  return full + (rem >= rule.threshold ? 1 : 0);
+}
+
+// 팩 누적값을 박스로 환산: 2팩 = 1박스 (floor). 1팩 단독은 0박스.
+// 카테고리 무관 (모든 5개 카테고리 공통 규칙).
+const INVENTORY_PACKS_PER_BOX = 2;
+function inventoryPackToBox(packTotal) {
+  if (!packTotal || packTotal <= 0) return 0;
+  return Math.floor(packTotal / INVENTORY_PACKS_PER_BOX);
+}
+
+// 일일 롤오버: 마지막 리셋 이후 날짜가 바뀌었으면 전재고=현재고로 밀고 오늘 입출고 0으로 초기화
+function inventoryRolloverIfNeeded() {
+  const today = todayLocalISO();
+  const inv = DB.inventory;
+  if (!inv.lastResetDate) {
+    // 첫 진입: 오늘 날짜로 초기화만
+    inv.lastResetDate = today;
+    return;
+  }
+  if (inv.lastResetDate === today) return; // 이미 오늘자
+
+  // 날짜 바뀜 → 전체 품목 롤오버. 미달분 이월 없음 = 누계 그냥 0으로
+  Object.keys(inv.byProduct).forEach(pid => {
+    const e = inv.byProduct[pid];
+    e.prev = e.stock;
+    e.receivedToday = 0;
+    e.deductedToday = 0;
+  });
+  // 어제 차감한 주문 기록은 유지 (다른 날 추적용)할 필요 없으니 정리
+  inv.deductedOrders = {};
+  inv.lastResetDate = today;
+  saveDB();
+}
+
+// 품목 항목 초기화 (없으면 생성)
+function inventoryEnsureProduct(pid) {
+  const inv = DB.inventory;
+  if (!inv.byProduct[pid]) {
+    inv.byProduct[pid] = { stock: 0, prev: 0, receivedToday: 0, deductedToday: 0 };
+  }
+  return inv.byProduct[pid];
+}
+
+// 음수 재고 표기: 음수면 (절댓값), 양수/0 이면 그대로 숫자
+function inventoryFmt(n) {
+  const v = Math.round(n || 0);
+  if (v < 0) return '(' + Math.abs(v) + ')';
+  return String(v);
+}
+
+// 오늘 배송완료된 주문에서 품목별 출고 집계 (제품 ID 기준)
+// 반환: { [productId]: { boxQty, packQty, kgQty, perOrder: [{orderId, custName, boxQty, packQty, kgQty}] } }
+function inventoryComputeTodaysOutgoing() {
+  const today = todayLocalISO();
+  const out = {};
+  DB.orders.forEach(o => {
+    if (o.status !== 'delivered') return;
+    const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
+    if (ref !== today) return;
+    const cust = DB.customers.find(c => c.id === o.customerId);
+    const custName = cust ? cust.name : '-';
+    (o.items || []).forEach(it => {
+      if (!it.productId) return;
+      const pid = it.productId;
+      if (!out[pid]) out[pid] = { boxQty: 0, packQty: 0, kgQty: 0, perOrder: [] };
+      let boxQty = 0, packQty = 0, kgQty = 0;
+      if (it.unit === '작업중량') {
+        kgQty = +(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0;
+      } else if (it.unit === '팩') {
+        packQty = +(it.quantity) || 0;
+      } else {
+        // 박스 (기본)
+        boxQty = +(it.quantity) || 0;
+      }
+      out[pid].boxQty += boxQty;
+      out[pid].packQty += packQty;
+      out[pid].kgQty += kgQty;
+      out[pid].perOrder.push({ orderId: o.id, custName, boxQty, packQty, kgQty, unit: it.unit, notes: it.notes||'' });
+    });
+  });
+  return out;
+}
+
+// 5개 카테고리 요약: 각 카테고리별 전재고/입고/출고/현재고 합계
+function inventoryComputeCategorySummary() {
+  const summary = {};
+  INVENTORY_CATEGORIES.forEach(cat => {
+    summary[cat] = { prev: 0, received: 0, deducted: 0, stock: 0, products: [] };
+  });
+  DB.products.forEach(p => {
+    if (!INVENTORY_CATEGORIES.includes(p.cut)) return;
+    const e = inventoryEnsureProduct(p.id);
+    const cat = summary[p.cut];
+    cat.prev += e.prev || 0;
+    cat.received += e.receivedToday || 0;
+    cat.deducted += e.deductedToday || 0;
+    cat.stock += e.stock || 0;
+    cat.products.push({ p, e });
+  });
+  return summary;
+}
+
+function viewInventory() {
+  if (!(OFFICE_UNLOCKED || ADMIN_UNLOCKED)) {
+    showOfficeLogin();
+    return;
+  }
+  inventoryRolloverIfNeeded();
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <h2 class="page-title">📦 재고현황 — <span style="color:var(--brand);">${formatDateDMY(todayLocalISO())}</span>
+      <button class="btn sm secondary" style="float:right;" onclick="location.hash='#office'">← 사무실로</button>
+      <button class="btn sm success" style="float:right; margin-right:6px;" onclick="saveInventoryPDF()">💾 PDF 저장</button>
+      <button class="btn sm secondary" style="float:right; margin-right:6px;" onclick="setInventoryFolder()">📁 폴더 변경</button>
+    </h2>
+    <div id="invFolderInfo" style="font-size:11px; color:var(--muted); margin: -6px 0 12px 0;"></div>
+
+    <div class="card">
+      <h3>📦 카테고리 요약 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">행 클릭 → 부위별 상세 펼침 · 단위: 박스 · 음수는 (괄호)</span></h3>
+      <div id="invSummaryWrap"></div>
+    </div>
+
+    <div class="card">
+      <h3>🚚 오늘 배송완료 출고 목록 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 수동 차감 (1단계)</span></h3>
+      <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn sm" onclick="inventoryApplyAllToday()">📥 전체 일괄 차감</button>
+        <button class="btn sm secondary" onclick="route()">🔄 새로고침</button>
+        <span style="font-size:11px; color:var(--muted); align-self:center;">차감 완료된 주문은 회색 + 중복 차감 방지됨</span>
+      </div>
+      <div id="invOutgoingWrap"></div>
+    </div>
+
+    <div class="card">
+      <h3>📥 제품 입고 등록</h3>
+      <div class="grid-3" style="margin-bottom:8px;">
+        <div class="field"><label>품목</label>
+          <select id="invReceiptProduct">
+            <option value="">— 선택하세요 —</option>
+            ${DB.products.filter(p => INVENTORY_CATEGORIES.includes(p.cut) && p.active !== false).sort((a,b)=>{
+              const ca = INVENTORY_CATEGORIES.indexOf(a.cut), cb = INVENTORY_CATEGORIES.indexOf(b.cut);
+              if (ca !== cb) return ca - cb;
+              return (a.name||'').localeCompare(b.name||'','ko');
+            }).map(p => `<option value="${p.id}">[${p.cut}] ${p.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>입고 박스 수</label>
+          <input type="number" id="invReceiptQty" min="1" step="1" placeholder="예: 5">
+        </div>
+        <div class="field" style="align-self:flex-end;">
+          <button class="btn success" onclick="inventoryAddReceipt()">📥 입고 등록</button>
+        </div>
+      </div>
+      <div style="font-size:11px; color:var(--muted);">※ 박스 단위 정수 입력. 등록 즉시 오늘 입고에 가산되어 현재고에 반영.</div>
+    </div>
+
+    <div class="card">
+      <h3>📋 월 실사 (전재고 수동 입력)</h3>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">실사일 입력값 = 오늘의 전재고로 적용. 그날 입고·출고는 그 위에 가산되어 현재고에 반영됩니다.</div>
+      <div class="grid-3">
+        <div class="field"><label>품목</label>
+          <select id="invStocktakeProduct">
+            <option value="">— 선택하세요 —</option>
+            ${DB.products.filter(p => INVENTORY_CATEGORIES.includes(p.cut) && p.active !== false).sort((a,b)=>{
+              const ca = INVENTORY_CATEGORIES.indexOf(a.cut), cb = INVENTORY_CATEGORIES.indexOf(b.cut);
+              if (ca !== cb) return ca - cb;
+              return (a.name||'').localeCompare(b.name||'','ko');
+            }).map(p => `<option value="${p.id}">[${p.cut}] ${p.name}</option>`).join('')}
+          </select>
+        </div>
+        <div class="field"><label>실사 전재고 (박스)</label>
+          <input type="number" id="invStocktakeQty" step="1" placeholder="예: 30 (음수 가능)">
+        </div>
+        <div class="field" style="align-self:flex-end;">
+          <button class="btn warn" onclick="inventorySetManualStock()">📋 실사 적용</button>
+        </div>
+      </div>
+    </div>
+  `;
+  inventoryRenderSummary();
+  inventoryRenderOutgoing();
+  inventoryRefreshFolderInfo();
+}
+
+function inventoryRenderSummary() {
+  const wrap = document.getElementById('invSummaryWrap');
+  if (!wrap) return;
+  const sum = inventoryComputeCategorySummary();
+  wrap.innerHTML = `
+    <table class="t">
+      <thead>
+        <tr>
+          <th style="width:24px;"></th>
+          <th>품목명</th>
+          <th class="num">전재고</th>
+          <th class="num">입고</th>
+          <th class="num">출고</th>
+          <th class="num">현재고</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${INVENTORY_CATEGORIES.map(cat => {
+          const s = sum[cat];
+          const rid = 'invCatRow_' + cat;
+          const detailId = 'invCatDetail_' + cat;
+          return `
+            <tr id="${rid}" style="cursor:pointer; background:#FAF0E8;" onclick="inventoryToggleDetail('${cat}')">
+              <td style="font-weight:700; color:var(--brand);">▶</td>
+              <td><b>${cat}</b> <span style="color:var(--muted); font-size:11px;">(${s.products.length}품목)</span></td>
+              <td class="num"><b>${inventoryFmt(s.prev)}</b></td>
+              <td class="num" style="color:var(--ok);">${inventoryFmt(s.received)}</td>
+              <td class="num" style="color:var(--warn);">${inventoryFmt(s.deducted)}</td>
+              <td class="num"><b style="color:var(--brand-dark); font-size:15px;">${inventoryFmt(s.stock)}</b></td>
+            </tr>
+            <tr id="${detailId}" style="display:none;">
+              <td colspan="6" style="padding:0; background:#FFFBF6;">
+                ${s.products.length === 0 ? `<div style="padding:10px 12px; color:var(--muted); font-size:12px;">이 카테고리에 등록된 품목이 없습니다.</div>` : `
+                <table class="t" style="margin:0; box-shadow:none;">
+                  <thead><tr style="background:#F0E5D8;">
+                    <th style="width:24px;"></th>
+                    <th>부위별 품목</th>
+                    <th class="num">전재고</th>
+                    <th class="num">입고</th>
+                    <th class="num">출고</th>
+                    <th class="num">현재고</th>
+                  </tr></thead>
+                  <tbody>
+                    ${s.products.map(({p, e}) => `
+                      <tr>
+                        <td></td>
+                        <td>${p.name}</td>
+                        <td class="num">${inventoryFmt(e.prev)}</td>
+                        <td class="num" style="color:var(--ok);">${inventoryFmt(e.receivedToday)}</td>
+                        <td class="num" style="color:var(--warn);">${inventoryFmt(e.deductedToday)}</td>
+                        <td class="num"><b>${inventoryFmt(e.stock)}</b></td>
+                      </tr>
+                    `).join('')}
+                  </tbody>
+                </table>`}
+              </td>
+            </tr>
+          `;
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+window.inventoryToggleDetail = function(cat) {
+  const row = document.getElementById('invCatRow_' + cat);
+  const detail = document.getElementById('invCatDetail_' + cat);
+  if (!detail) return;
+  const open = detail.style.display !== 'none';
+  detail.style.display = open ? 'none' : '';
+  if (row) row.firstElementChild.textContent = open ? '▶' : '▼';
+};
+
+function inventoryRenderOutgoing() {
+  const wrap = document.getElementById('invOutgoingWrap');
+  if (!wrap) return;
+  const out = inventoryComputeTodaysOutgoing();
+  const deducted = DB.inventory.deductedOrders || {};
+
+  // 카테고리별로 묶어서 표시
+  const byCat = {};
+  INVENTORY_CATEGORIES.forEach(c => byCat[c] = []);
+
+  Object.keys(out).forEach(pid => {
+    const p = DB.products.find(x => x.id === pid);
+    if (!p || !INVENTORY_CATEGORIES.includes(p.cut)) return;
+    const o = out[pid];
+    const kgBoxConvert = inventoryBoxConvert(o.kgQty, p.cut);
+    const packBoxConvert = inventoryPackToBox(o.packQty);
+    const totalDeduct = o.boxQty + packBoxConvert + kgBoxConvert;
+    byCat[p.cut].push({ p, ...o, kgBoxConvert, packBoxConvert, totalDeduct });
+  });
+
+  const hasAny = Object.values(byCat).some(arr => arr.length > 0);
+  if (!hasAny) {
+    wrap.innerHTML = `<div class="empty">오늘 배송완료된 출고 내역이 없습니다.</div>`;
+    return;
+  }
+
+  wrap.innerHTML = INVENTORY_CATEGORIES.map(cat => {
+    const arr = byCat[cat];
+    if (arr.length === 0) return '';
+    return `
+      <div style="margin-bottom:14px;">
+        <div style="font-weight:700; color:var(--brand-dark); padding:6px 8px; background:#FAF0E8; border-left:3px solid var(--brand);">▼ ${cat}</div>
+        <table class="t" style="margin-top:4px;">
+          <thead><tr>
+            <th>품목</th>
+            <th>거래처별 출고</th>
+            <th class="num">박스</th>
+            <th class="num">팩 (2팩=1박스)</th>
+            <th class="num">kg 누적</th>
+            <th class="num">환산 박스</th>
+            <th class="num">합계 차감</th>
+          </tr></thead>
+          <tbody>
+            ${arr.map(row => {
+              const perOrderTxt = row.perOrder.map(po => {
+                let tag;
+                if (po.unit === '작업중량') tag = `${po.kgQty}kg`;
+                else if (po.unit === '팩') tag = `${po.packQty}팩`;
+                else tag = `${po.boxQty}박스`;
+                const done = deducted[po.orderId] ? ' <span style="color:var(--ok);">✓차감</span>' : '';
+                return `${po.custName} ${tag}${done}`;
+              }).join(' · ');
+              const allDone = row.perOrder.every(po => deducted[po.orderId]);
+              const rowStyle = allDone ? 'color:#999; background:#F5F5F5;' : '';
+              const packTxt = row.packQty > 0 ? `${row.packQty}팩→${row.packBoxConvert}박스` : '—';
+              const kgTxt = row.kgQty > 0 ? row.kgQty.toFixed(1)+' kg' : '—';
+              const kgBoxTxt = row.kgQty > 0 ? row.kgBoxConvert+'박스' : '—';
+              return `<tr style="${rowStyle}">
+                <td><b>${row.p.name}</b></td>
+                <td style="font-size:12px;">${perOrderTxt}</td>
+                <td class="num">${row.boxQty || '—'}</td>
+                <td class="num" style="font-size:11px;">${packTxt}</td>
+                <td class="num">${kgTxt}</td>
+                <td class="num">${kgBoxTxt}</td>
+                <td class="num"><b style="color:var(--warn);">${row.totalDeduct}박스</b></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }).join('');
+}
+
+// 전체 일괄 차감: 오늘 배송완료 + 아직 미차감 주문 전부 적용
+window.inventoryApplyAllToday = function() {
+  inventoryRolloverIfNeeded();
+  const today = todayLocalISO();
+  const inv = DB.inventory;
+  const out = inventoryComputeTodaysOutgoing();
+  const deducted = inv.deductedOrders || {};
+
+  // 미차감 주문 ID 수집
+  const pendingOrderIds = new Set();
+  Object.keys(out).forEach(pid => {
+    out[pid].perOrder.forEach(po => {
+      if (!deducted[po.orderId]) pendingOrderIds.add(po.orderId);
+    });
+  });
+
+  if (pendingOrderIds.size === 0) {
+    alert('오늘 차감할 신규 출고가 없습니다.');
+    return;
+  }
+
+  if (!confirm(`오늘 배송완료된 ${pendingOrderIds.size}건의 주문을 일괄 차감합니다.\n\n진행할까요?`)) return;
+
+  // 품목별 박스 출고 + 팩 누적 + kg 누적 합산 → 환산 → 차감 적용
+  // 미차감 주문만 합산
+  const byProductBox  = {}; // pid -> box total
+  const byProductPack = {}; // pid -> pack total
+  const byProductKg   = {}; // pid -> kg total
+
+  DB.orders.forEach(o => {
+    if (o.status !== 'delivered') return;
+    if (!pendingOrderIds.has(o.id)) return;
+    const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
+    if (ref !== today) return;
+    (o.items || []).forEach(it => {
+      if (!it.productId) return;
+      const p = DB.products.find(x => x.id === it.productId);
+      if (!p || !INVENTORY_CATEGORIES.includes(p.cut)) return;
+      if (it.unit === '작업중량') {
+        byProductKg[it.productId] = (byProductKg[it.productId] || 0) + (+(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0);
+      } else if (it.unit === '팩') {
+        byProductPack[it.productId] = (byProductPack[it.productId] || 0) + (+(it.quantity) || 0);
+      } else {
+        byProductBox[it.productId] = (byProductBox[it.productId] || 0) + (+(it.quantity) || 0);
+      }
+    });
+  });
+
+  // 적용
+  const allPids = new Set([
+    ...Object.keys(byProductBox),
+    ...Object.keys(byProductPack),
+    ...Object.keys(byProductKg)
+  ]);
+  allPids.forEach(pid => {
+    const p = DB.products.find(x => x.id === pid);
+    if (!p) return;
+    const e = inventoryEnsureProduct(pid);
+    const boxOut = byProductBox[pid] || 0;
+    const packOut = byProductPack[pid] || 0;
+    const kgOut = byProductKg[pid] || 0;
+    const packBox = inventoryPackToBox(packOut);
+    const kgBox = inventoryBoxConvert(kgOut, p.cut);
+    const total = boxOut + packBox + kgBox;
+    e.deductedToday += total;
+    e.stock -= total;
+  });
+
+  // 차감 완료 마킹
+  const stamp = new Date().toISOString();
+  pendingOrderIds.forEach(oid => { deducted[oid] = stamp; });
+  inv.deductedOrders = deducted;
+
+  saveDB();
+  showToast(`✅ ${pendingOrderIds.size}건 출고 차감 완료`);
+  inventoryRenderSummary();
+  inventoryRenderOutgoing();
+};
+
+window.inventoryAddReceipt = function() {
+  inventoryRolloverIfNeeded();
+  const pid = document.getElementById('invReceiptProduct').value;
+  const qty = parseInt(document.getElementById('invReceiptQty').value, 10);
+  if (!pid) { alert('품목을 선택하세요.'); return; }
+  if (isNaN(qty) || qty <= 0) { alert('박스 수를 1 이상의 정수로 입력하세요.'); return; }
+  const e = inventoryEnsureProduct(pid);
+  e.receivedToday += qty;
+  e.stock += qty;
+  saveDB();
+  const p = DB.products.find(x => x.id === pid);
+  showToast(`📥 ${p ? p.name : '품목'} ${qty}박스 입고 완료`);
+  document.getElementById('invReceiptQty').value = '';
+  inventoryRenderSummary();
+};
+
+window.inventorySetManualStock = function() {
+  inventoryRolloverIfNeeded();
+  const pid = document.getElementById('invStocktakeProduct').value;
+  const qtyRaw = document.getElementById('invStocktakeQty').value;
+  if (!pid) { alert('품목을 선택하세요.'); return; }
+  if (qtyRaw === '' || qtyRaw == null) { alert('실사 전재고를 입력하세요.'); return; }
+  const qty = parseInt(qtyRaw, 10);
+  if (isNaN(qty)) { alert('정수로 입력하세요.'); return; }
+  const e = inventoryEnsureProduct(pid);
+  if (!confirm(`실사값 ${qty}박스를 오늘의 전재고로 적용합니다.\n오늘 입고 ${e.receivedToday} / 출고 ${e.deductedToday}는 그 위에 그대로 가산됩니다.\n\n진행할까요?`)) return;
+  e.prev = qty;
+  e.stock = qty + (e.receivedToday || 0) - (e.deductedToday || 0);
+  saveDB();
+  const p = DB.products.find(x => x.id === pid);
+  showToast(`📋 ${p ? p.name : '품목'} 실사 적용: 전재고 ${qty} → 현재고 ${e.stock}`);
+  document.getElementById('invStocktakeQty').value = '';
+  inventoryRenderSummary();
+};
+
+// ---------- PDF 저장 (별도 폴더) ----------
+async function getInventoryDirHandle() {
+  try { return await idbGet('inventoryDirHandle'); } catch(e) { return null; }
+}
+
+window.setInventoryFolder = async function() {
+  if (!window.showDirectoryPicker) {
+    alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome/Edge 최신 버전을 사용해 주세요.');
+    return;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await idbSet('inventoryDirHandle', handle);
+    alert('✅ 재고현황 PDF 저장 폴더 설정 완료!\n\n📁 ' + handle.name + '\n\n이후 💾 PDF 저장 클릭 시\n이 폴더 안에 "년-월" 하위폴더가 자동 생성되고\n그 안에 PDF가 저장됩니다.');
+    inventoryRefreshFolderInfo();
+  } catch(e) {
+    if (e.name !== 'AbortError') console.error('폴더 설정 실패:', e);
+  }
+};
+
+async function inventoryRefreshFolderInfo() {
+  const el = document.getElementById('invFolderInfo');
+  if (!el) return;
+  try {
+    const handle = await getInventoryDirHandle();
+    const ym = todayLocalISO().slice(0,7);
+    if (handle) {
+      el.innerHTML = `📁 재고현황 PDF 저장 폴더: <b style="color:var(--brand);">${handle.name}/${ym}/</b>ATM_재고현황_${todayLocalISO()}.pdf`;
+    } else {
+      el.innerHTML = `<span style="color:var(--warn);">⚠️ 재고현황 PDF 저장 폴더 미설정</span> — "📁 폴더 변경" 버튼으로 1회만 지정하면 이후 자동 저장됩니다 (매출일보 폴더와 별도)`;
+    }
+  } catch(e) {
+    el.innerHTML = `<span style="color:var(--muted);">📁 저장 폴더 정보 로딩 실패</span>`;
+  }
+}
+
+function buildInventoryPDFHTML() {
+  const dateISO = todayLocalISO();
+  const sum = inventoryComputeCategorySummary();
+  const company = (DB.company && DB.company.name) || 'ALL THAT MEAT WHOLESALE';
+  return `
+  <div style="font-family: 'Malgun Gothic','맑은 고딕',sans-serif; padding:20px; color:#222; width:740px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; border-bottom:3px solid #8B1A1A; padding-bottom:10px; margin-bottom:14px;">
+      <div>
+        <div style="font-size:22px; font-weight:800; color:#5C0F0F;">📦 일일 재고현황</div>
+        <div style="font-size:12px; color:#666; margin-top:2px;">${company}</div>
+      </div>
+      <div style="font-size:14px; color:#8B1A1A; font-weight:700;">${formatDateDMY(dateISO)}</div>
+    </div>
+    ${INVENTORY_CATEGORIES.map(cat => {
+      const s = sum[cat];
+      return `
+        <div style="margin-bottom:14px;">
+          <div style="font-weight:700; color:#5C0F0F; padding:6px 8px; background:#FAF0E8; border-left:4px solid #8B1A1A; margin-bottom:4px;">
+            ${cat} <span style="font-size:11px; color:#666; font-weight:400; margin-left:6px;">전재고 ${inventoryFmt(s.prev)} · 입고 ${inventoryFmt(s.received)} · 출고 ${inventoryFmt(s.deducted)} · <b style="color:#8B1A1A;">현재고 ${inventoryFmt(s.stock)}</b></span>
+          </div>
+          ${s.products.length === 0 ? `<div style="font-size:11px; color:#888; padding:4px 8px;">등록 품목 없음</div>` : `
+          <table style="width:100%; border-collapse:collapse; font-size:11px;">
+            <thead>
+              <tr style="background:#F0E5D8;">
+                <th style="text-align:left; padding:4px 8px; border:1px solid #D8C6B0;">품목</th>
+                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">전재고</th>
+                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">입고</th>
+                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">출고</th>
+                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">현재고</th>
+              </tr>
+            </thead>
+            <tbody>
+              ${s.products.map(({p, e}) => `
+                <tr>
+                  <td style="padding:3px 8px; border:1px solid #E5DCD3;">${p.name}</td>
+                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right;">${inventoryFmt(e.prev)}</td>
+                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right; color:#2F7D32;">${inventoryFmt(e.receivedToday)}</td>
+                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right; color:#B8860B;">${inventoryFmt(e.deductedToday)}</td>
+                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right; font-weight:700;">${inventoryFmt(e.stock)}</td>
+                </tr>
+              `).join('')}
+            </tbody>
+          </table>`}
+        </div>
+      `;
+    }).join('')}
+    <div style="margin-top:14px; font-size:9px; color:#888; text-align:right; padding-top:6px; border-top:1px solid #eee;">단위: 박스 · 음수=(괄호) · ATM Order Management System</div>
+  </div>
+  `;
+}
+
+window.saveInventoryPDF = async function() {
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+    return alert('PDF 라이브러리를 불러오는 중입니다.\n잠시 후 다시 시도해 주세요.');
+  }
+  if (typeof showToast === 'function') showToast('💾 PDF 생성 중...');
+  const dirHandle = await getInventoryDirHandle();
+  const dateISO = todayLocalISO();
+
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
+  container.innerHTML = buildInventoryPDFHTML();
+  document.body.appendChild(container);
+
+  try {
+    await new Promise(r => setTimeout(r, 120));
+    const canvas = await html2canvas(container.firstElementChild, {
+      scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+    });
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const { jsPDF } = window.jspdf;
+    const pageW = 210, pageH = 297;
+    const imgH = canvas.height * pageW / canvas.width;
+    const doc = new jsPDF({ unit: 'mm', format: 'a4', orientation: 'portrait' });
+    if (imgH <= pageH) {
+      doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+    } else {
+      let yOff = 0;
+      while (yOff < imgH) {
+        if (yOff > 0) doc.addPage();
+        doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+        yOff += pageH;
+      }
+    }
+    const yearMonth = dateISO.slice(0,7);
+    const filename = `ATM_재고현황_${dateISO}.pdf`;
+    if (dirHandle) {
+      try {
+        const buf = doc.output('arraybuffer');
+        await writeToFolderPath(dirHandle, [yearMonth], filename, buf);
+        if (typeof showToast === 'function') showToast(`✅ 재고현황 저장 완료 — 📁 ${dirHandle.name}/${yearMonth}/${filename}`);
+      } catch(e) {
+        console.warn('폴더 저장 실패, 다운로드 대체:', e);
+        doc.save(filename);
+        if (typeof showToast === 'function') showToast(`💾 재고현황 다운로드 완료 (폴더 쓰기 실패)`);
+      }
+    } else {
+      doc.save(filename);
+      setTimeout(() => alert('💾 재고현황 PDF 다운로드 완료!\n\n📁 매번 같은 폴더에 자동 저장하려면\n"📁 폴더 변경" 버튼을 한 번 눌러서\n저장 폴더를 지정해 주세요 (매출일보와 별도 폴더).'), 300);
+    }
+  } catch(e) {
+    console.error('재고현황 PDF 저장 실패:', e);
+    alert('PDF 저장 실패: ' + e.message);
+  } finally {
+    document.body.removeChild(container);
+  }
+};
+
+// =========================================================================
 //  ROUTER TABLE & INIT
 // =========================================================================
 const ROUTES = {
@@ -7377,7 +8012,8 @@ const ROUTES = {
   'invoice': viewInvoice,
   'history': viewHistory,
   'payment': viewPayment,
-  'statement': viewStatement
+  'statement': viewStatement,
+  'inventory': viewInventory
 };
 
 document.querySelectorAll('.nav .tab').forEach(t => {
@@ -7401,6 +8037,7 @@ function initApp(data) {
   if (!DB.payments)  DB.payments  = [];
   if (!DB.settings)  DB.settings  = seed().settings;
   if (!DB.company)   DB.company   = seed().company;
+  if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{} };
   migrateProducts();
   migrateFavoritePairs();
   route();
