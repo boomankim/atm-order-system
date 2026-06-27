@@ -7573,18 +7573,42 @@ function viewInventory() {
     <div class="card">
       <h3>📋 월 실사 (전재고 일괄 입력) <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 빈 칸은 변경 없음, 값 입력한 행만 적용</span></h3>
       <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">실사일 입력값 = 오늘의 전재고로 적용. 그날 입고·출고는 그 위에 가산되어 현재고에 반영됩니다.</div>
-      <div style="margin-bottom:10px; display:flex; gap:8px;">
-        <button class="btn warn" onclick="inventoryApplyStocktakeBulk()">📋 일괄 실사 적용</button>
-        <button class="btn sm secondary" onclick="inventoryClearStocktakeInputs()">🧹 입력값 초기화</button>
+      <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap;">
+        <button class="btn" id="invStocktakeToggleBtn" onclick="inventoryToggleStocktake()">📋 품목 리스트 펼치기</button>
+        <button class="btn warn" id="invStocktakeApplyBtn" onclick="inventoryApplyStocktakeBulk()" style="display:none;">✅ 일괄 실사 적용</button>
+        <button class="btn sm secondary" id="invStocktakeClearBtn" onclick="inventoryClearStocktakeInputs()" style="display:none;">🧹 입력값 초기화</button>
       </div>
-      <div id="invStocktakeWrap"></div>
+      <div id="invStocktakeWrap" style="display:none;"></div>
     </div>
   `;
   inventoryRenderSummary();
   inventoryRenderOutgoing();
-  inventoryRenderStocktake();
+  // 월 실사 품목 리스트는 토글 버튼 클릭 시에만 렌더링 (lazy)
   inventoryRefreshFolderInfo();
 }
+
+window.inventoryToggleStocktake = function() {
+  const wrap = document.getElementById('invStocktakeWrap');
+  const btn = document.getElementById('invStocktakeToggleBtn');
+  const applyBtn = document.getElementById('invStocktakeApplyBtn');
+  const clearBtn = document.getElementById('invStocktakeClearBtn');
+  if (!wrap || !btn) return;
+  const open = wrap.style.display !== 'none';
+  if (open) {
+    // 접기
+    wrap.style.display = 'none';
+    btn.textContent = '📋 품목 리스트 펼치기';
+    if (applyBtn) applyBtn.style.display = 'none';
+    if (clearBtn) clearBtn.style.display = 'none';
+  } else {
+    // 펼치기 — 이 시점에 렌더링 (lazy)
+    inventoryRenderStocktake();
+    wrap.style.display = '';
+    btn.textContent = '📋 품목 리스트 접기';
+    if (applyBtn) applyBtn.style.display = '';
+    if (clearBtn) clearBtn.style.display = '';
+  }
+};
 
 function inventoryRenderStocktake() {
   const wrap = document.getElementById('invStocktakeWrap');
