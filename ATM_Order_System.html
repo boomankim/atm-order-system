@@ -7520,6 +7520,7 @@ function viewInventory() {
     <h2 class="page-title">📦 재고현황 — <span style="color:var(--brand);">${formatDateDMY(todayLocalISO())}</span>
       <button class="btn sm secondary" style="float:right;" onclick="location.hash='#office'">← 사무실로</button>
       <button class="btn sm success" style="float:right; margin-right:6px;" onclick="saveInventoryPDF()">💾 PDF 저장</button>
+      <button class="btn sm" style="float:right; margin-right:6px; background:var(--info);" onclick="printInventoryReport()">🖨️ 인쇄</button>
       <button class="btn sm secondary" style="float:right; margin-right:6px;" onclick="setInventoryFolder()">📁 폴더 변경</button>
     </h2>
     <div id="invFolderInfo" style="font-size:11px; color:var(--muted); margin: -6px 0 12px 0;"></div>
@@ -7533,7 +7534,6 @@ function viewInventory() {
       <h3>🚚 오늘 배송완료 출고 목록 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 수동 차감 (1단계)</span></h3>
       <div style="margin-bottom:10px; display:flex; gap:8px; flex-wrap:wrap;">
         <button class="btn sm" onclick="inventoryApplyAllToday()">📥 전체 일괄 차감</button>
-        <button class="btn sm secondary" onclick="route()">🔄 새로고침</button>
         <span style="font-size:11px; color:var(--muted); align-self:center;">차감 완료된 주문은 회색 + 중복 차감 방지됨</span>
       </div>
       <div id="invOutgoingWrap"></div>
@@ -7563,32 +7563,92 @@ function viewInventory() {
     </div>
 
     <div class="card">
-      <h3>📋 월 실사 (전재고 수동 입력)</h3>
+      <h3>📋 월 실사 (전재고 일괄 입력) <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 빈 칸은 변경 없음, 값 입력한 행만 적용</span></h3>
       <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">실사일 입력값 = 오늘의 전재고로 적용. 그날 입고·출고는 그 위에 가산되어 현재고에 반영됩니다.</div>
-      <div class="grid-3">
-        <div class="field"><label>품목</label>
-          <select id="invStocktakeProduct">
-            <option value="">— 선택하세요 —</option>
-            ${DB.products.filter(p => INVENTORY_CATEGORIES.includes(p.cut) && p.active !== false).sort((a,b)=>{
-              const ca = INVENTORY_CATEGORIES.indexOf(a.cut), cb = INVENTORY_CATEGORIES.indexOf(b.cut);
-              if (ca !== cb) return ca - cb;
-              return (a.name||'').localeCompare(b.name||'','ko');
-            }).map(p => `<option value="${p.id}">[${p.cut}] ${p.name}</option>`).join('')}
-          </select>
-        </div>
-        <div class="field"><label>실사 전재고 (박스)</label>
-          <input type="number" id="invStocktakeQty" step="1" placeholder="예: 30 (음수 가능)">
-        </div>
-        <div class="field" style="align-self:flex-end;">
-          <button class="btn warn" onclick="inventorySetManualStock()">📋 실사 적용</button>
-        </div>
+      <div style="margin-bottom:10px; display:flex; gap:8px;">
+        <button class="btn warn" onclick="inventoryApplyStocktakeBulk()">📋 일괄 실사 적용</button>
+        <button class="btn sm secondary" onclick="inventoryClearStocktakeInputs()">🧹 입력값 초기화</button>
       </div>
+      <div id="invStocktakeWrap"></div>
     </div>
   `;
   inventoryRenderSummary();
   inventoryRenderOutgoing();
+  inventoryRenderStocktake();
   inventoryRefreshFolderInfo();
 }
+
+function inventoryRenderStocktake() {
+  const wrap = document.getElementById('invStocktakeWrap');
+  if (!wrap) return;
+  const sum = inventoryComputeCategorySummary();
+  wrap.innerHTML = `
+    <table class="t">
+      <thead>
+        <tr>
+          <th>카테고리</th>
+          <th>품목명</th>
+          <th class="num">현재 전재고</th>
+          <th class="num">실사값 입력 (박스, 음수 가능)</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${INVENTORY_CATEGORIES.map(cat => {
+          const s = sum[cat];
+          if (s.products.length === 0) {
+            return `<tr style="background:#FAF0E8;"><td><b>${cat}</b></td><td colspan="3" style="color:var(--muted); font-size:11px;">등록 품목 없음</td></tr>`;
+          }
+          return s.products.map(({p, e}, idx) => `
+            <tr>
+              ${idx === 0 ? `<td rowspan="${s.products.length}" style="background:#FAF0E8; vertical-align:top;"><b>${cat}</b><br><span style="font-size:10px; color:var(--muted);">${s.products.length}품목</span></td>` : ''}
+              <td>${p.name}</td>
+              <td class="num">${inventoryFmt(e.prev)}</td>
+              <td class="num"><input type="number" step="1" data-pid="${p.id}" class="invStockInput" placeholder="—" style="width:120px; text-align:right; padding:4px 8px; border:1px solid var(--line); border-radius:4px;"></td>
+            </tr>
+          `).join('');
+        }).join('')}
+      </tbody>
+    </table>
+  `;
+}
+
+window.inventoryClearStocktakeInputs = function() {
+  document.querySelectorAll('.invStockInput').forEach(el => { el.value = ''; });
+};
+
+window.inventoryApplyStocktakeBulk = function() {
+  inventoryRolloverIfNeeded();
+  const inputs = document.querySelectorAll('.invStockInput');
+  const changes = [];
+  inputs.forEach(el => {
+    const raw = el.value.trim();
+    if (raw === '') return; // 빈 칸 = 변경 없음
+    const v = parseInt(raw, 10);
+    if (isNaN(v)) return;
+    changes.push({ pid: el.dataset.pid, value: v });
+  });
+  if (changes.length === 0) {
+    alert('입력된 실사값이 없습니다.\n적용할 행에 박스 수를 입력하세요.');
+    return;
+  }
+  // 변경 미리보기
+  const preview = changes.slice(0, 8).map(ch => {
+    const p = DB.products.find(x => x.id === ch.pid);
+    return `  • ${p ? p.name : ch.pid}: ${ch.value}박스`;
+  }).join('\n');
+  const more = changes.length > 8 ? `\n  ... 외 ${changes.length - 8}건` : '';
+  if (!confirm(`다음 ${changes.length}개 품목의 전재고를 실사값으로 적용합니다.\n오늘 입고·출고는 그 위에 그대로 가산됩니다.\n\n${preview}${more}\n\n진행할까요?`)) return;
+
+  changes.forEach(ch => {
+    const e = inventoryEnsureProduct(ch.pid);
+    e.prev = ch.value;
+    e.stock = ch.value + (e.receivedToday || 0) - (e.deductedToday || 0);
+  });
+  saveDB();
+  showToast(`✅ ${changes.length}개 품목 실사 적용 완료`);
+  inventoryRenderSummary();
+  inventoryRenderStocktake();
+};
 
 function inventoryRenderSummary() {
   const wrap = document.getElementById('invSummaryWrap');
@@ -7832,25 +7892,6 @@ window.inventoryAddReceipt = function() {
   inventoryRenderSummary();
 };
 
-window.inventorySetManualStock = function() {
-  inventoryRolloverIfNeeded();
-  const pid = document.getElementById('invStocktakeProduct').value;
-  const qtyRaw = document.getElementById('invStocktakeQty').value;
-  if (!pid) { alert('품목을 선택하세요.'); return; }
-  if (qtyRaw === '' || qtyRaw == null) { alert('실사 전재고를 입력하세요.'); return; }
-  const qty = parseInt(qtyRaw, 10);
-  if (isNaN(qty)) { alert('정수로 입력하세요.'); return; }
-  const e = inventoryEnsureProduct(pid);
-  if (!confirm(`실사값 ${qty}박스를 오늘의 전재고로 적용합니다.\n오늘 입고 ${e.receivedToday} / 출고 ${e.deductedToday}는 그 위에 그대로 가산됩니다.\n\n진행할까요?`)) return;
-  e.prev = qty;
-  e.stock = qty + (e.receivedToday || 0) - (e.deductedToday || 0);
-  saveDB();
-  const p = DB.products.find(x => x.id === pid);
-  showToast(`📋 ${p ? p.name : '품목'} 실사 적용: 전재고 ${qty} → 현재고 ${e.stock}`);
-  document.getElementById('invStocktakeQty').value = '';
-  inventoryRenderSummary();
-};
-
 // ---------- PDF 저장 (별도 폴더) ----------
 async function getInventoryDirHandle() {
   try { return await idbGet('inventoryDirHandle'); } catch(e) { return null; }
@@ -7887,56 +7928,161 @@ async function inventoryRefreshFolderInfo() {
   }
 }
 
+// 5개 카테고리를 좌·우 2단으로 자동 균등 분배 (greedy bin-packing)
+// 각 카테고리 "무게" = 1(헤더) + 품목 수
+function inventoryAutoBalance(sum) {
+  const items = INVENTORY_CATEGORIES.map(cat => ({
+    cat,
+    s: sum[cat],
+    weight: 1 + sum[cat].products.length
+  }));
+  // 큰 카테고리부터 빈 컬럼에 배치
+  const sorted = [...items].sort((a,b) => b.weight - a.weight);
+  const left = [], right = [];
+  let leftSum = 0, rightSum = 0;
+  for (const it of sorted) {
+    if (leftSum <= rightSum) { left.push(it); leftSum += it.weight; }
+    else { right.push(it); rightSum += it.weight; }
+  }
+  // 원래 카테고리 순서 유지 (보기 좋게)
+  const ord = c => INVENTORY_CATEGORIES.indexOf(c.cat);
+  left.sort((a,b) => ord(a) - ord(b));
+  right.sort((a,b) => ord(a) - ord(b));
+  return { left, right };
+}
+
+function inventoryCategoryBlockHTML(item) {
+  const { cat, s } = item;
+  return `
+    <div style="margin-bottom:6px; break-inside: avoid;">
+      <div style="font-weight:700; color:#5C0F0F; padding:3px 6px; background:#FAF0E8; border-left:3px solid #8B1A1A; font-size:9.5px;">
+        ${cat}
+        <span style="font-size:8px; color:#666; font-weight:400; margin-left:4px;">
+          전 ${inventoryFmt(s.prev)} · 입 ${inventoryFmt(s.received)} · 출 ${inventoryFmt(s.deducted)} · <b style="color:#8B1A1A;">현 ${inventoryFmt(s.stock)}</b>
+        </span>
+      </div>
+      ${s.products.length === 0 ? `<div style="font-size:8px; color:#888; padding:2px 6px;">등록 품목 없음</div>` : `
+      <table style="width:100%; border-collapse:collapse; font-size:8px; table-layout:fixed;">
+        <thead>
+          <tr style="background:#F0E5D8;">
+            <th style="text-align:left; padding:2px 4px; border:1px solid #D8C6B0;">품목</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:34px;">전</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:34px;">입</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:34px;">출</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:38px;">현</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${s.products.map(({p, e}) => `
+            <tr>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; word-break:break-word;">${p.name}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right;">${inventoryFmt(e.prev)}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; color:#2F7D32;">${inventoryFmt(e.receivedToday)}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; color:#B8860B;">${inventoryFmt(e.deductedToday)}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; font-weight:700;">${inventoryFmt(e.stock)}</td>
+            </tr>
+          `).join('')}
+        </tbody>
+      </table>`}
+    </div>
+  `;
+}
+
+// 2단 자동 균등 분배 본문 (PDF·인쇄 공용)
+function buildInventoryBodyHTML() {
+  const sum = inventoryComputeCategorySummary();
+  const { left, right } = inventoryAutoBalance(sum);
+  // 카테고리 합계 (총합 요약용)
+  const total = INVENTORY_CATEGORIES.reduce((a,c) => {
+    const s = sum[c];
+    a.prev += s.prev; a.received += s.received; a.deducted += s.deducted; a.stock += s.stock;
+    return a;
+  }, { prev:0, received:0, deducted:0, stock:0 });
+  return `
+    <div style="display:grid; grid-template-columns: 1fr 1fr; gap:6mm;">
+      <div>${left.map(inventoryCategoryBlockHTML).join('')}</div>
+      <div>${right.map(inventoryCategoryBlockHTML).join('')}</div>
+    </div>
+    <div style="margin-top:6px; padding:4px 8px; background:#FBF8F4; border:1px solid #E5DCD3; border-radius:3px; font-size:9px; display:grid; grid-template-columns: repeat(4, 1fr); gap:6px;">
+      <div><span style="color:#666;">전재고 합계:</span> <b>${inventoryFmt(total.prev)}</b></div>
+      <div><span style="color:#666;">입고 합계:</span> <b style="color:#2F7D32;">${inventoryFmt(total.received)}</b></div>
+      <div><span style="color:#666;">출고 합계:</span> <b style="color:#B8860B;">${inventoryFmt(total.deducted)}</b></div>
+      <div><span style="color:#666;">현재고 합계:</span> <b style="color:#8B1A1A;">${inventoryFmt(total.stock)}</b></div>
+    </div>
+  `;
+}
+
+// PDF 캡처용 (html2canvas → jsPDF, 780px 너비 기준)
 function buildInventoryPDFHTML() {
   const dateISO = todayLocalISO();
-  const sum = inventoryComputeCategorySummary();
   const company = (DB.company && DB.company.name) || 'ALL THAT MEAT WHOLESALE';
   return `
-  <div style="font-family: 'Malgun Gothic','맑은 고딕',sans-serif; padding:20px; color:#222; width:740px;">
-    <div style="display:flex; justify-content:space-between; align-items:flex-end; border-bottom:3px solid #8B1A1A; padding-bottom:10px; margin-bottom:14px;">
+  <div style="font-family: 'Malgun Gothic','맑은 고딕',sans-serif; padding:14px; color:#222; width:780px;">
+    <div style="display:flex; justify-content:space-between; align-items:flex-end; border-bottom:2px solid #8B1A1A; padding-bottom:6px; margin-bottom:8px;">
       <div>
-        <div style="font-size:22px; font-weight:800; color:#5C0F0F;">📦 일일 재고현황</div>
-        <div style="font-size:12px; color:#666; margin-top:2px;">${company}</div>
+        <div style="font-size:16px; font-weight:800; color:#5C0F0F;">📦 일일 재고현황 / Daily Inventory</div>
+        <div style="font-size:9px; color:#666; margin-top:1px;">${company}</div>
       </div>
-      <div style="font-size:14px; color:#8B1A1A; font-weight:700;">${formatDateDMY(dateISO)}</div>
+      <div style="text-align:right;">
+        <div style="font-size:13px; color:#8B1A1A; font-weight:700;">${formatDateDMY(dateISO)}</div>
+        <div style="font-size:8px; color:#888;">출력: ${new Date().toLocaleString('ko-KR')}</div>
+      </div>
     </div>
-    ${INVENTORY_CATEGORIES.map(cat => {
-      const s = sum[cat];
-      return `
-        <div style="margin-bottom:14px;">
-          <div style="font-weight:700; color:#5C0F0F; padding:6px 8px; background:#FAF0E8; border-left:4px solid #8B1A1A; margin-bottom:4px;">
-            ${cat} <span style="font-size:11px; color:#666; font-weight:400; margin-left:6px;">전재고 ${inventoryFmt(s.prev)} · 입고 ${inventoryFmt(s.received)} · 출고 ${inventoryFmt(s.deducted)} · <b style="color:#8B1A1A;">현재고 ${inventoryFmt(s.stock)}</b></span>
-          </div>
-          ${s.products.length === 0 ? `<div style="font-size:11px; color:#888; padding:4px 8px;">등록 품목 없음</div>` : `
-          <table style="width:100%; border-collapse:collapse; font-size:11px;">
-            <thead>
-              <tr style="background:#F0E5D8;">
-                <th style="text-align:left; padding:4px 8px; border:1px solid #D8C6B0;">품목</th>
-                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">전재고</th>
-                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">입고</th>
-                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">출고</th>
-                <th style="text-align:right; padding:4px 8px; border:1px solid #D8C6B0;">현재고</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${s.products.map(({p, e}) => `
-                <tr>
-                  <td style="padding:3px 8px; border:1px solid #E5DCD3;">${p.name}</td>
-                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right;">${inventoryFmt(e.prev)}</td>
-                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right; color:#2F7D32;">${inventoryFmt(e.receivedToday)}</td>
-                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right; color:#B8860B;">${inventoryFmt(e.deductedToday)}</td>
-                  <td style="padding:3px 8px; border:1px solid #E5DCD3; text-align:right; font-weight:700;">${inventoryFmt(e.stock)}</td>
-                </tr>
-              `).join('')}
-            </tbody>
-          </table>`}
-        </div>
-      `;
-    }).join('')}
-    <div style="margin-top:14px; font-size:9px; color:#888; text-align:right; padding-top:6px; border-top:1px solid #eee;">단위: 박스 · 음수=(괄호) · ATM Order Management System</div>
+    ${buildInventoryBodyHTML()}
+    <div style="margin-top:6px; font-size:8px; color:#888; text-align:right; padding-top:4px; border-top:1px solid #eee;">단위: 박스 · 음수=(괄호) · ATM Order Management System</div>
   </div>
   `;
 }
+
+// 인쇄용 — 새 창에 A4 한 페이지 레이아웃으로 렌더링 후 window.print()
+window.printInventoryReport = function() {
+  const dateISO = todayLocalISO();
+  const dateDMY = formatDateDMY(dateISO);
+  const fileName = `ATM_재고현황_${dateISO}`;
+  const company = (DB.company && DB.company.name) || 'ALL THAT MEAT WHOLESALE PTY LTD';
+
+  const html = `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="utf-8">
+<title>${fileName}</title>
+<style>
+  @page { size: A4 portrait; margin: 8mm; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, 'Malgun Gothic', '맑은 고딕', sans-serif; font-size: 9px; color: #222; margin: 0; padding: 0; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #5C0F0F; padding-bottom: 4px; margin-bottom: 6px; }
+  h1 { font-size: 15px; margin: 0; color: #5C0F0F; }
+  .hdr .sub { font-size: 8.5px; color: #666; margin-top: 1px; }
+  .hdr .right { text-align: right; }
+  .hdr .date { font-size: 14px; font-weight: 700; }
+  .hdr .stamp { font-size: 7.5px; color: #888; }
+  .footer { margin-top: 6px; font-size: 7.5px; color: #888; text-align: right; padding-top: 4px; border-top: 1px solid #eee; }
+  @media print {
+    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+  }
+</style>
+</head>
+<body>
+  <div class="hdr">
+    <div>
+      <h1>📦 ATM 일일 재고현황 / Daily Inventory</h1>
+      <div class="sub">${company}</div>
+    </div>
+    <div class="right">
+      <div class="date">${dateDMY}</div>
+      <div class="stamp">출력: ${new Date().toLocaleString('ko-KR')}</div>
+    </div>
+  </div>
+  ${buildInventoryBodyHTML()}
+  <div class="footer">단위: 박스 · 음수=(괄호) · ATM Order Management System</div>
+</body></html>`;
+
+  const w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('팝업이 차단되었습니다. 브라우저의 팝업 차단을 해제해주세요.'); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => { try { w.print(); } catch(e) { console.warn(e); } }, 400);
+};
 
 window.saveInventoryPDF = async function() {
   if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
