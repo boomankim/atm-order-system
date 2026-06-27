@@ -7390,14 +7390,20 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
 //   deductedOrders: { [orderId]: 'YYYY-MM-DDTHH:MM' }  // 중복 차감 방지
 // }
 
-const INVENTORY_CATEGORIES = ['소고기','와규','돼지고기','오리','양고기'];
+const INVENTORY_CATEGORIES = ['소고기','와규','돼지고기','오리','양고기','가공육'];
 
-// 카테고리별 박스 환산 규칙
+// 카테고리별 단위 라벨 — 기본 '박스', 가공육만 '팩'
+const INVENTORY_UNIT_OVERRIDE = { '가공육': '팩' };
+function inventoryUnitLabel(cut) {
+  return INVENTORY_UNIT_OVERRIDE[cut] || '박스';
+}
+
+// 카테고리별 박스 환산 규칙 (kg → 박스)
 const INVENTORY_BOX_RULES = {
   '돼지고기': { boxKg: 16, threshold: 8 },
   '소고기':   { boxKg: 25, threshold: 12 },
   '와규':     { boxKg: 25, threshold: 12 }
-  // 오리·양고기는 박스 단위만 (kg 환산 규칙 없음)
+  // 오리·양고기·가공육은 kg 환산 규칙 없음 (박스/팩 단위만)
 };
 
 // kg 누적값을 박스로 환산: floor(kg/boxKg) + (나머지 ≥ threshold ? 1 : 0)
@@ -7409,11 +7415,13 @@ function inventoryBoxConvert(kgTotal, cut) {
   return full + (rem >= rule.threshold ? 1 : 0);
 }
 
-// 팩 누적값을 박스로 환산: 2팩 = 1박스 (floor). 1팩 단독은 0박스.
-// 카테고리 무관 (모든 5개 카테고리 공통 규칙).
+// 팩 누적값을 단위(박스 또는 팩)로 환산.
+// - 가공육: 단위 자체가 팩 → 1팩 = 1팩 (그대로)
+// - 그 외(소·와규·돼지·오리·양): 2팩 = 1박스 (floor)
 const INVENTORY_PACKS_PER_BOX = 2;
-function inventoryPackToBox(packTotal) {
+function inventoryPackToBox(packTotal, cut) {
   if (!packTotal || packTotal <= 0) return 0;
+  if (inventoryUnitLabel(cut) === '팩') return packTotal; // 가공육: 1:1
   return Math.floor(packTotal / INVENTORY_PACKS_PER_BOX);
 }
 
@@ -7526,7 +7534,7 @@ function viewInventory() {
     <div id="invFolderInfo" style="font-size:11px; color:var(--muted); margin: -6px 0 12px 0;"></div>
 
     <div class="card">
-      <h3>📦 카테고리 요약 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">행 클릭 → 부위별 상세 펼침 · 단위: 박스 · 음수는 (괄호)</span></h3>
+      <h3>📦 카테고리 요약 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">행 클릭 → 부위별 상세 펼침 · 단위: 박스 (가공육만 팩) · 음수는 (괄호)</span></h3>
       <div id="invSummaryWrap"></div>
     </div>
 
@@ -7543,23 +7551,23 @@ function viewInventory() {
       <h3>📥 제품 입고 등록</h3>
       <div class="grid-3" style="margin-bottom:8px;">
         <div class="field"><label>품목</label>
-          <select id="invReceiptProduct">
+          <select id="invReceiptProduct" onchange="inventoryUpdateReceiptUnitHint()">
             <option value="">— 선택하세요 —</option>
             ${DB.products.filter(p => INVENTORY_CATEGORIES.includes(p.cut) && p.active !== false).sort((a,b)=>{
               const ca = INVENTORY_CATEGORIES.indexOf(a.cut), cb = INVENTORY_CATEGORIES.indexOf(b.cut);
               if (ca !== cb) return ca - cb;
               return (a.name||'').localeCompare(b.name||'','ko');
-            }).map(p => `<option value="${p.id}">[${p.cut}] ${p.name}</option>`).join('')}
+            }).map(p => `<option value="${p.id}" data-cut="${p.cut}">[${p.cut}] ${p.name}</option>`).join('')}
           </select>
         </div>
-        <div class="field"><label>입고 박스 수</label>
+        <div class="field"><label>입고 수량 <span id="invReceiptUnitHint" style="color:var(--muted); font-size:11px;">(박스/팩)</span></label>
           <input type="number" id="invReceiptQty" min="1" step="1" placeholder="예: 5">
         </div>
         <div class="field" style="align-self:flex-end;">
           <button class="btn success" onclick="inventoryAddReceipt()">📥 입고 등록</button>
         </div>
       </div>
-      <div style="font-size:11px; color:var(--muted);">※ 박스 단위 정수 입력. 등록 즉시 오늘 입고에 가산되어 현재고에 반영.</div>
+      <div style="font-size:11px; color:var(--muted);">※ 정수 입력. 단위는 품목 카테고리에 따름 (가공육=팩, 그 외=박스). 등록 즉시 오늘 입고에 가산되어 현재고에 반영.</div>
     </div>
 
     <div class="card">
@@ -7588,22 +7596,25 @@ function inventoryRenderStocktake() {
         <tr>
           <th>카테고리</th>
           <th>품목명</th>
+          <th class="num">단위</th>
           <th class="num">현재 전재고</th>
-          <th class="num">실사값 입력 (박스, 음수 가능)</th>
+          <th class="num">실사값 입력 (음수 가능)</th>
         </tr>
       </thead>
       <tbody>
         ${INVENTORY_CATEGORIES.map(cat => {
           const s = sum[cat];
+          const unit = inventoryUnitLabel(cat);
           if (s.products.length === 0) {
-            return `<tr style="background:#FAF0E8;"><td><b>${cat}</b></td><td colspan="3" style="color:var(--muted); font-size:11px;">등록 품목 없음</td></tr>`;
+            return `<tr style="background:#FAF0E8;"><td><b>${cat}</b></td><td colspan="4" style="color:var(--muted); font-size:11px;">등록 품목 없음</td></tr>`;
           }
           return s.products.map(({p, e}, idx) => `
             <tr>
-              ${idx === 0 ? `<td rowspan="${s.products.length}" style="background:#FAF0E8; vertical-align:top;"><b>${cat}</b><br><span style="font-size:10px; color:var(--muted);">${s.products.length}품목</span></td>` : ''}
+              ${idx === 0 ? `<td rowspan="${s.products.length}" style="background:#FAF0E8; vertical-align:top;"><b>${cat}</b><br><span style="font-size:10px; color:var(--muted);">${s.products.length}품목 · ${unit}</span></td>` : ''}
               <td>${p.name}</td>
+              <td class="num" style="color:var(--muted); font-size:11px;">${unit}</td>
               <td class="num">${inventoryFmt(e.prev)}</td>
-              <td class="num"><input type="number" step="1" data-pid="${p.id}" class="invStockInput" placeholder="—" style="width:120px; text-align:right; padding:4px 8px; border:1px solid var(--line); border-radius:4px;"></td>
+              <td class="num"><input type="number" step="1" data-pid="${p.id}" data-unit="${unit}" class="invStockInput" placeholder="—" style="width:120px; text-align:right; padding:4px 8px; border:1px solid var(--line); border-radius:4px;"></td>
             </tr>
           `).join('');
         }).join('')}
@@ -7634,7 +7645,8 @@ window.inventoryApplyStocktakeBulk = function() {
   // 변경 미리보기
   const preview = changes.slice(0, 8).map(ch => {
     const p = DB.products.find(x => x.id === ch.pid);
-    return `  • ${p ? p.name : ch.pid}: ${ch.value}박스`;
+    const unit = p ? inventoryUnitLabel(p.cut) : '단위';
+    return `  • ${p ? p.name : ch.pid}: ${ch.value}${unit}`;
   }).join('\n');
   const more = changes.length > 8 ? `\n  ... 외 ${changes.length - 8}건` : '';
   if (!confirm(`다음 ${changes.length}개 품목의 전재고를 실사값으로 적용합니다.\n오늘 입고·출고는 그 위에 그대로 가산됩니다.\n\n${preview}${more}\n\n진행할까요?`)) return;
@@ -7674,7 +7686,7 @@ function inventoryRenderSummary() {
           return `
             <tr id="${rid}" style="cursor:pointer; background:#FAF0E8;" onclick="inventoryToggleDetail('${cat}')">
               <td style="font-weight:700; color:var(--brand);">▶</td>
-              <td><b>${cat}</b> <span style="color:var(--muted); font-size:11px;">(${s.products.length}품목)</span></td>
+              <td><b>${cat}</b> <span style="color:var(--muted); font-size:11px;">(${s.products.length}품목 · ${inventoryUnitLabel(cat)})</span></td>
               <td class="num"><b>${inventoryFmt(s.prev)}</b></td>
               <td class="num" style="color:var(--ok);">${inventoryFmt(s.received)}</td>
               <td class="num" style="color:var(--warn);">${inventoryFmt(s.deducted)}</td>
@@ -7738,7 +7750,7 @@ function inventoryRenderOutgoing() {
     if (!p || !INVENTORY_CATEGORIES.includes(p.cut)) return;
     const o = out[pid];
     const kgBoxConvert = inventoryBoxConvert(o.kgQty, p.cut);
-    const packBoxConvert = inventoryPackToBox(o.packQty);
+    const packBoxConvert = inventoryPackToBox(o.packQty, p.cut);
     const totalDeduct = o.boxQty + packBoxConvert + kgBoxConvert;
     byCat[p.cut].push({ p, ...o, kgBoxConvert, packBoxConvert, totalDeduct });
   });
@@ -7777,7 +7789,8 @@ function inventoryRenderOutgoing() {
               }).join(' · ');
               const allDone = row.perOrder.every(po => deducted[po.orderId]);
               const rowStyle = allDone ? 'color:#999; background:#F5F5F5;' : '';
-              const packTxt = row.packQty > 0 ? `${row.packQty}팩→${row.packBoxConvert}박스` : '—';
+              const unitLbl = inventoryUnitLabel(row.p.cut);
+              const packTxt = row.packQty > 0 ? `${row.packQty}팩→${row.packBoxConvert}${unitLbl}` : '—';
               const kgTxt = row.kgQty > 0 ? row.kgQty.toFixed(1)+' kg' : '—';
               const kgBoxTxt = row.kgQty > 0 ? row.kgBoxConvert+'박스' : '—';
               return `<tr style="${rowStyle}">
@@ -7787,7 +7800,7 @@ function inventoryRenderOutgoing() {
                 <td class="num" style="font-size:11px;">${packTxt}</td>
                 <td class="num">${kgTxt}</td>
                 <td class="num">${kgBoxTxt}</td>
-                <td class="num"><b style="color:var(--warn);">${row.totalDeduct}박스</b></td>
+                <td class="num"><b style="color:var(--warn);">${row.totalDeduct}${unitLbl}</b></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -7858,7 +7871,7 @@ window.inventoryApplyAllToday = function() {
     const boxOut = byProductBox[pid] || 0;
     const packOut = byProductPack[pid] || 0;
     const kgOut = byProductKg[pid] || 0;
-    const packBox = inventoryPackToBox(packOut);
+    const packBox = inventoryPackToBox(packOut, p.cut);
     const kgBox = inventoryBoxConvert(kgOut, p.cut);
     const total = boxOut + packBox + kgBox;
     e.deductedToday += total;
@@ -7876,18 +7889,29 @@ window.inventoryApplyAllToday = function() {
   inventoryRenderOutgoing();
 };
 
+window.inventoryUpdateReceiptUnitHint = function() {
+  const sel = document.getElementById('invReceiptProduct');
+  const hint = document.getElementById('invReceiptUnitHint');
+  if (!sel || !hint) return;
+  const opt = sel.options[sel.selectedIndex];
+  const cut = opt ? opt.getAttribute('data-cut') : null;
+  if (!cut) { hint.textContent = '(박스/팩)'; return; }
+  hint.textContent = '(' + inventoryUnitLabel(cut) + ')';
+};
+
 window.inventoryAddReceipt = function() {
   inventoryRolloverIfNeeded();
   const pid = document.getElementById('invReceiptProduct').value;
   const qty = parseInt(document.getElementById('invReceiptQty').value, 10);
   if (!pid) { alert('품목을 선택하세요.'); return; }
-  if (isNaN(qty) || qty <= 0) { alert('박스 수를 1 이상의 정수로 입력하세요.'); return; }
+  if (isNaN(qty) || qty <= 0) { alert('수량을 1 이상의 정수로 입력하세요.'); return; }
   const e = inventoryEnsureProduct(pid);
   e.receivedToday += qty;
   e.stock += qty;
   saveDB();
   const p = DB.products.find(x => x.id === pid);
-  showToast(`📥 ${p ? p.name : '품목'} ${qty}박스 입고 완료`);
+  const unit = p ? inventoryUnitLabel(p.cut) : '단위';
+  showToast(`📥 ${p ? p.name : '품목'} ${qty}${unit} 입고 완료`);
   document.getElementById('invReceiptQty').value = '';
   inventoryRenderSummary();
 };
@@ -7953,10 +7977,11 @@ function inventoryAutoBalance(sum) {
 
 function inventoryCategoryBlockHTML(item) {
   const { cat, s } = item;
+  const unit = inventoryUnitLabel(cat);
   return `
     <div style="margin-bottom:6px; break-inside: avoid;">
       <div style="font-weight:700; color:#5C0F0F; padding:3px 6px; background:#FAF0E8; border-left:3px solid #8B1A1A; font-size:9.5px;">
-        ${cat}
+        ${cat} <span style="font-size:7.5px; color:#888;">(${unit})</span>
         <span style="font-size:8px; color:#666; font-weight:400; margin-left:4px;">
           전 ${inventoryFmt(s.prev)} · 입 ${inventoryFmt(s.received)} · 출 ${inventoryFmt(s.deducted)} · <b style="color:#8B1A1A;">현 ${inventoryFmt(s.stock)}</b>
         </span>
