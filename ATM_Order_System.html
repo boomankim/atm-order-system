@@ -4036,6 +4036,15 @@ function viewOrder(params) {
     <h2 class="page-title">🛒 ${cust.name}
       <span style="font-size:12px; font-weight:400; color:var(--muted); margin-left:10px;">${todayDisplay}</span></h2>
 
+    ${(() => {
+      const ann = ((DB.company && DB.company.invoiceAnnouncement) || '').trim();
+      if (!ann) return '';
+      return `<div style="background:#FFF5D6; border:1.5px solid #E8A317; border-radius:8px; padding:12px 14px; margin-bottom:10px; max-width:680px;">
+        <div style="font-weight:700; color:#7A4A00; font-size:13px; margin-bottom:4px;">📢 공지 / Notice</div>
+        <div style="color:#7A4A00; font-size:13px; line-height:1.5;">${multilineToDivs(ann)}</div>
+      </div>`;
+    })()}
+
     <input type="hidden" id="orderDate" value="${todayStr}">
     <input type="hidden" id="deliveryDate" value="">
 
@@ -4261,8 +4270,12 @@ window.confirmAndSubmitOrder = function(custId) {
   const todayISO = todayLocalISO();
   const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
   const tomorrowISO = toLocalISODate(tmr);
-  const todayDMY = formatDateDMY(todayISO);
   const tomorrowDMY = formatDateDMY(tomorrowISO);
+  const tmrDow = tmr.getDay(); // 0=일, 6=토
+  const isWeekend = (tmrDow === 0 || tmrDow === 6);
+  const tomorrowLabel = isWeekend
+    ? `🚚 <b>내일 배송 / Tomorrow</b><div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${tomorrowDMY} <span style="color:#E8A317; font-weight:700;">(주말 — 월요일 배송)</span></div>`
+    : `🚚 <b>내일 배송 / Tomorrow</b><div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${tomorrowDMY}</div>`;
   // 지정일 기본값: 모레
   const day3 = new Date(); day3.setDate(day3.getDate() + 2);
   const day3ISO = toLocalISODate(day3);
@@ -4274,13 +4287,13 @@ window.confirmAndSubmitOrder = function(custId) {
       <span style="font-size:12px;">When would you like to receive this order?</span>
     </p>
     <div style="display:grid; grid-template-columns: 1fr; gap:10px;">
+      ${!CUSTOMER_MODE ? `
       <button class="btn success" style="padding:14px; font-size:15px; text-align:left;" onclick="setDeliveryAndSubmit('${custId}', '${todayISO}')">
-        📦 <b>오늘 배송 / Today</b>
-        <div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${todayDMY}</div>
-      </button>
-      <button class="btn" style="padding:14px; font-size:15px; text-align:left;" onclick="setDeliveryAndSubmit('${custId}', '${tomorrowISO}')">
-        🚚 <b>내일 배송 / Tomorrow</b>
-        <div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${tomorrowDMY}</div>
+        📦 <b>오늘 배송 / Today</b> <span style="font-size:11px; opacity:0.85;">(직원 전용)</span>
+        <div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${formatDateDMY(todayISO)}</div>
+      </button>` : ''}
+      <button class="btn" style="padding:14px; font-size:15px; text-align:left;" onclick="handleTomorrowDelivery('${custId}')">
+        ${tomorrowLabel}
       </button>
       <button class="btn secondary" id="btnCustomDate" style="padding:14px; font-size:15px; text-align:left;" onclick="showCustomDateInput()">
         📅 <b>지정일 배송 / Choose Date</b>
@@ -4326,6 +4339,29 @@ window.setDeliveryAndSubmit = function(custId, dateISO) {
   if (el) el.value = dateISO;
   closeModal();
   submitOrder(custId);
+};
+
+// 내일 배송 클릭 처리 — 내일이 토/일이면 월요일 배송 확인 팝업
+window.handleTomorrowDelivery = function(custId) {
+  const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
+  const dow = tmr.getDay(); // 0=일, 6=토
+  if (dow === 0 || dow === 6) {
+    const dayName = (dow === 0) ? '일요일' : '토요일';
+    // 토요일이면 +2일, 일요일이면 +1일 후가 월요일
+    const addDays = (dow === 6) ? 2 : 1;
+    const mon = new Date(); mon.setDate(mon.getDate() + 1 + addDays);
+    const monISO = toLocalISODate(mon);
+    const monDMY = formatDateDMY(monISO);
+    const ok = confirm(
+      '내일은 ' + dayName + '입니다.\n' +
+      '월요일(' + monDMY + ') 배송으로 진행됩니다.\n\n' +
+      '확인하시겠습니까?'
+    );
+    if (ok) setDeliveryAndSubmit(custId, monISO);
+    // 취소 시 모달 유지 — 사용자가 지정일 배송 선택 가능
+    return;
+  }
+  setDeliveryAndSubmit(custId, toLocalISODate(tmr));
 };
 
 async function submitOrder(custId) {
