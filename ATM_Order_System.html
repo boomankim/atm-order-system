@@ -4165,7 +4165,7 @@ function addToCart(prodId, notes) {
   const p = DB.products.find(x => x.id === prodId);
   if (!p) return;
   CART.push({
-    productId: prodId, unit: '박스', quantity: 1, actualWeightKg: null,
+    productId: prodId, unit: '박스', quantity: null, actualWeightKg: null,
     notes: (notes == null ? '' : String(notes))
   });
   renderCart();
@@ -4204,9 +4204,13 @@ function renderCart() {
     div.innerHTML = CART.map((item, idx) => {
       const p = DB.products.find(x => x.id === item.productId);
       const qtyLabel = item.unit === '작업중량'
-        ? '요청 중량 (kg) — 작업해서 배달'
-        : '수량 (' + item.unit + ')';
+        ? '중량(kg)'
+        : '수량';
       const qtyStep = item.unit === '작업중량' ? 0.1 : 1;
+      // 작업육 분류 → [박스, 작업중량], 그 외 → [박스, 팩]
+      const isProcMeat = (p.cut === '작업육') || (p.name && p.name.includes('작업'));
+      const allowedUnits = isProcMeat ? ['박스','작업중량'] : ['박스','팩'];
+      const qtyDisp = (item.quantity == null || item.quantity === '' || isNaN(item.quantity)) ? '' : item.quantity;
       return `
         <div class="cart-item">
           <div class="top">
@@ -4214,22 +4218,25 @@ function renderCart() {
             <button class="del" onclick="CART.splice(${idx},1); renderCart();">×</button>
           </div>
           <div class="unit-row">
-            ${['박스','팩','작업중량'].map(u => {
+            ${allowedUnits.map(u => {
               const lbl = u==='박스' ? '박스/box' : u==='팩' ? '팩/pack' : '작업중량(kg)';
               return `<button class="${item.unit===u?'active':''}" onclick="CART[${idx}].unit='${u}'; renderCart();">${lbl}</button>`;
             }).join('')}
           </div>
-          <div class="body" style="grid-template-columns:1fr;">
-            <div>
-              <label>${qtyLabel}</label>
-              <input type="number" min="0" step="${qtyStep}" value="${item.quantity}"
-                onchange="CART[${idx}].quantity=parseFloat(this.value)||0; renderCart();"
+          <div style="display:flex; gap:8px; align-items:flex-end; margin-top:8px;">
+            <div style="flex:0 0 90px;">
+              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">${qtyLabel}</label>
+              <input type="number" min="0" step="${qtyStep}" value="${qtyDisp}" placeholder=""
+                style="width:100%; padding:6px 8px; font-size:14px; text-align:right;"
+                onchange="CART[${idx}].quantity=(this.value===''?null:parseFloat(this.value)); renderCart();"
                 onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)">
             </div>
-          </div>
-          <div class="notes-row">
-            <input placeholder="품목 요청사항 (예: 3mm 슬라이스, 진공포장, 비계 제거 등) — 다음 주문에 기억됩니다" value="${item.notes||''}"
-              onchange="CART[${idx}].notes=this.value;">
+            <div style="flex:1;">
+              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">품목 요청사항 (예: 3mm 슬라이스, 진공포장)</label>
+              <input placeholder="다음 주문에 기억됩니다" value="${(item.notes||'').replace(/"/g,'&quot;')}"
+                style="width:100%; padding:6px 8px; font-size:13px;"
+                onchange="CART[${idx}].notes=this.value;">
+            </div>
           </div>
         </div>
       `;
@@ -4265,6 +4272,15 @@ function renderDeliveryBadge(dateISO) {
 window.confirmAndSubmitOrder = function(custId) {
   if (!Array.isArray(CART) || CART.length === 0) {
     return alert('주문 내역이 비어 있습니다.\nCart is empty.');
+  }
+  // 수량 미입력 / 0 품목 검증 — 빈칸 기본값으로 인한 사고 방지
+  const emptyQty = CART.filter(it => it.quantity == null || it.quantity === '' || isNaN(it.quantity) || Number(it.quantity) <= 0);
+  if (emptyQty.length > 0) {
+    const names = emptyQty.map(it => {
+      const p = DB.products.find(x => x.id === it.productId);
+      return p ? p.name : '(품목)';
+    }).join(', ');
+    return alert('❌ 수량 미입력 품목이 있습니다:\n' + names + '\n\n수량을 입력해 주세요.');
   }
   const todayISO = todayLocalISO();
   const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
