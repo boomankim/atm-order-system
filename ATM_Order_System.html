@@ -1127,11 +1127,19 @@ function viewHome() {
 
   // ── 직원 미로그인 → 거래처용 랜딩 페이지 ─────────────────
   if (!STAFF_UNLOCKED) {
+    const ann = ((DB.company && DB.company.invoiceAnnouncement) || '').trim();
+    const annBlock = ann ? `
+        <div style="background:#FFF5D6; border:1.5px solid #E8A317; border-radius:8px; padding:14px 16px; margin:0 auto 24px; max-width:520px; text-align:left;">
+          <div style="font-weight:700; color:#7A4A00; font-size:13px; margin-bottom:6px;">📢 공지 / Notice</div>
+          <div style="color:#7A4A00; font-size:13px; line-height:1.5;">${multilineToDivs(ann)}</div>
+        </div>` : '';
     app.innerHTML = `
       <div style="min-height:80vh; display:flex; flex-direction:column; align-items:center; justify-content:center; padding:40px 20px; text-align:center;">
         <div style="font-size:56px; margin-bottom:12px;">🥩</div>
         <div style="font-size:24px; font-weight:800; color:var(--brand-dark); letter-spacing:1px; margin-bottom:6px;">ALL THAT MEAT</div>
-        <div style="font-size:13px; color:var(--muted); margin-bottom:40px;">WHOLESALE PTY LTD</div>
+        <div style="font-size:13px; color:var(--muted); margin-bottom:30px;">WHOLESALE PTY LTD</div>
+
+        ${annBlock}
 
         <button class="btn success" style="font-size:18px; padding:16px 48px; border-radius:12px; margin-bottom:16px;"
           onclick="location.hash='#enter'">
@@ -4036,15 +4044,6 @@ function viewOrder(params) {
     <h2 class="page-title">🛒 ${cust.name}
       <span style="font-size:12px; font-weight:400; color:var(--muted); margin-left:10px;">${todayDisplay}</span></h2>
 
-    ${(() => {
-      const ann = ((DB.company && DB.company.invoiceAnnouncement) || '').trim();
-      if (!ann) return '';
-      return `<div style="background:#FFF5D6; border:1.5px solid #E8A317; border-radius:8px; padding:12px 14px; margin-bottom:10px; max-width:680px;">
-        <div style="font-weight:700; color:#7A4A00; font-size:13px; margin-bottom:4px;">📢 공지 / Notice</div>
-        <div style="color:#7A4A00; font-size:13px; line-height:1.5;">${multilineToDivs(ann)}</div>
-      </div>`;
-    })()}
-
     <input type="hidden" id="orderDate" value="${todayStr}">
     <input type="hidden" id="deliveryDate" value="">
 
@@ -4405,7 +4404,7 @@ async function submitOrder(custId) {
     orderDate: new Date().toISOString(),
     deliveryDate: val('deliveryDate'),
     deliveryNotes: val('deliveryNotes'),
-    items: CART.map(i => ({...i, actualWeightKg: i.unit === '작업중량' ? i.quantity : null})),
+    items: CART.map(i => ({...i, actualWeightKg: null})), // 박스육·작업육 모두 계근 후 직원이 입력
     status: 'new',
     createdAt: new Date().toISOString()
   };
