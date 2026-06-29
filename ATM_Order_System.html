@@ -7502,7 +7502,10 @@ function inventoryRolloverIfNeeded() {
 
 // 품목 항목 초기화 (없으면 생성)
 function inventoryEnsureProduct(pid) {
+  if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{} };
   const inv = DB.inventory;
+  if (!inv.byProduct) inv.byProduct = {};         // 구버전 DB 보호
+  if (!inv.deductedOrders) inv.deductedOrders = {};
   if (!inv.byProduct[pid]) {
     inv.byProduct[pid] = { stock: 0, prev: 0, receivedToday: 0, deductedToday: 0 };
   }
@@ -7643,7 +7646,10 @@ window.inventoryToggleStocktake = function() {
   const btn = document.getElementById('invStocktakeToggleBtn');
   const applyBtn = document.getElementById('invStocktakeApplyBtn');
   const clearBtn = document.getElementById('invStocktakeClearBtn');
-  if (!wrap || !btn) return;
+  if (!wrap || !btn) {
+    console.warn('inventoryToggleStocktake: wrap/btn not found');
+    return;
+  }
   const open = wrap.style.display !== 'none';
   if (open) {
     // 접기
@@ -7653,7 +7659,12 @@ window.inventoryToggleStocktake = function() {
     if (clearBtn) clearBtn.style.display = 'none';
   } else {
     // 펼치기 — 이 시점에 렌더링 (lazy)
-    inventoryRenderStocktake();
+    try {
+      inventoryRenderStocktake();
+    } catch(err) {
+      console.error('inventoryRenderStocktake 실패:', err);
+      wrap.innerHTML = '<div style="padding:14px; color:var(--warn); font-size:13px;">❌ 품목 리스트 로드 실패: ' + (err && err.message ? err.message : err) + '<br><small>관리자에게 위 내용을 알려주세요.</small></div>';
+    }
     wrap.style.display = '';
     btn.textContent = '📋 품목 리스트 접기';
     if (applyBtn) applyBtn.style.display = '';
@@ -7664,7 +7675,7 @@ window.inventoryToggleStocktake = function() {
 function inventoryRenderStocktake() {
   const wrap = document.getElementById('invStocktakeWrap');
   if (!wrap) return;
-  const sum = inventoryComputeCategorySummary();
+  const sum = inventoryComputeCategorySummary() || {};
   wrap.innerHTML = `
     <table class="t">
       <thead>
@@ -7678,17 +7689,18 @@ function inventoryRenderStocktake() {
       </thead>
       <tbody>
         ${INVENTORY_CATEGORIES.map(cat => {
-          const s = sum[cat];
+          const s = sum[cat] || { products: [] };
           const unit = inventoryUnitLabel(cat);
-          if (s.products.length === 0) {
+          const products = Array.isArray(s.products) ? s.products.filter(x => x && x.p) : [];
+          if (products.length === 0) {
             return `<tr style="background:#FAF0E8;"><td><b>${cat}</b></td><td colspan="4" style="color:var(--muted); font-size:11px;">등록 품목 없음</td></tr>`;
           }
-          return s.products.map(({p, e}, idx) => `
+          return products.map(({p, e}, idx) => `
             <tr>
-              ${idx === 0 ? `<td rowspan="${s.products.length}" style="background:#FAF0E8; vertical-align:top;"><b>${cat}</b><br><span style="font-size:10px; color:var(--muted);">${s.products.length}품목 · ${unit}</span></td>` : ''}
-              <td>${p.name}</td>
+              ${idx === 0 ? `<td rowspan="${products.length}" style="background:#FAF0E8; vertical-align:top;"><b>${cat}</b><br><span style="font-size:10px; color:var(--muted);">${products.length}품목 · ${unit}</span></td>` : ''}
+              <td>${p.name || '(이름 없음)'}</td>
               <td class="num" style="color:var(--muted); font-size:11px;">${unit}</td>
-              <td class="num">${inventoryFmt(e.prev)}</td>
+              <td class="num">${inventoryFmt((e && e.prev) || 0)}</td>
               <td class="num"><input type="number" step="1" data-pid="${p.id}" data-unit="${unit}" class="invStockInput" placeholder="—" style="width:120px; text-align:right; padding:4px 8px; border:1px solid var(--line); border-radius:4px;"></td>
             </tr>
           `).join('');
