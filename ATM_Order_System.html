@@ -4976,7 +4976,13 @@ window.printDailyReport = function() {
 
   function colTableHTML(colRows) {
     if (colRows.length === 0) return '<div style="font-size:8px;color:#aaa;text-align:center;padding:20px;">—</div>';
+    // 거래처명 한 줄 표시 — 컬럼 폭 명시: 거래처 32%, 조건 8%, 금액 5칸 12%씩
     return `<table class="pt">
+      <colgroup>
+        <col style="width:32%;"><col style="width:8%;">
+        <col style="width:12%;"><col style="width:12%;"><col style="width:12%;">
+        <col style="width:12%;"><col style="width:12%;">
+      </colgroup>
       <thead>
         <tr>
           <th>거래처</th><th>조건</th>
@@ -4989,8 +4995,8 @@ window.printDailyReport = function() {
       </thead>
       <tbody>
         ${colRows.map(r => `<tr>
-          <td><b>${r.c.name}</b></td>
-          <td>${termsLabel(r.c.terms)}</td>
+          <td class="cust"><b>${r.c.name}</b></td>
+          <td style="font-size:7px;">${termsLabel(r.c.terms)}</td>
           <td class="num">${fmtMoney(r.priorBalance)}</td>
           <td class="num"${r.todaySales > 0.001 ? ' style="color:#5C0F0F;"' : ' style="color:#bbb;"'}>${r.todaySales > 0.001 ? fmtMoney(r.todaySales) : '–'}</td>
           <td class="num"${r.todayPaid > 0.001 ? ' style="color:#2E7D32;"' : ' style="color:#bbb;"'}>${r.todayPaid > 0.001 ? fmtMoney(r.todayPaid) : '–'}</td>
@@ -5021,6 +5027,7 @@ window.printDailyReport = function() {
   table.pt { width: 100%; border-collapse: collapse; font-size: 8px; table-layout: fixed; }
   table.pt th { background: #5C0F0F; color: #fff; padding: 3px 3px; text-align: left; font-weight: 600; font-size: 8px; }
   table.pt td { padding: 2.5px 3px; border-bottom: 1px solid #e2e2e2; vertical-align: top; word-break: break-word; }
+  table.pt td.cust { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: keep-all; font-size: 7.5px; }
   table.pt .num { text-align: right; font-variant-numeric: tabular-nums; }
   table.pt th.num { text-align: right; }
   .footer { margin-top: 6px; font-size: 7.5px; color: #888; text-align: right; padding-top: 4px; border-top: 1px solid #eee; }
@@ -5121,7 +5128,13 @@ function buildDailyReportPDFHTML(rows, totals, dateISO) {
 
   function colTable(colRows) {
     if (colRows.length === 0) return '<div style="font-size:9px;color:#aaa;text-align:center;padding:20px;">—</div>';
+    // 거래처명 한 줄 — 컬럼 폭 32/8/12/12/12/12/12
     return `<table style="width:100%;border-collapse:collapse;font-size:9px;table-layout:fixed;">
+      <colgroup>
+        <col style="width:32%;"><col style="width:8%;">
+        <col style="width:12%;"><col style="width:12%;"><col style="width:12%;">
+        <col style="width:12%;"><col style="width:12%;">
+      </colgroup>
       <thead>
         <tr style="background:#5C0F0F;color:#fff;">
           <th style="padding:4px;text-align:left;font-weight:700;">거래처</th>
@@ -5135,8 +5148,8 @@ function buildDailyReportPDFHTML(rows, totals, dateISO) {
       </thead>
       <tbody>
         ${colRows.map(r => `<tr>
-          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;"><b>${r.c.name}</b></td>
-          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;">${termsLabel(r.c.terms)}</td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:keep-all;font-size:8px;"><b>${r.c.name}</b></td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;font-size:8px;">${termsLabel(r.c.terms)}</td>
           <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;">${fmtMoney(r.priorBalance)}</td>
           <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;${r.todaySales > 0.001 ? 'color:#5C0F0F;' : 'color:#bbb;'}">${r.todaySales > 0.001 ? fmtMoney(r.todaySales) : '–'}</td>
           <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;${r.todayPaid > 0.001 ? 'color:#2E7D32;' : 'color:#bbb;'}">${r.todayPaid > 0.001 ? fmtMoney(r.todayPaid) : '–'}</td>
@@ -5942,12 +5955,14 @@ function renderPrepTbody(o) {
       ? '<span style="color:#999;">0.00</span>'
       : '<input type="number" step="0.01" value="' + wDisplay + '"'
       +   ' style="width:90px;padding:6px;border:1px solid var(--line);border-radius:4px;text-align:right;"'
+      +   ' oninput="livePrepWeightUpdate(' + i + ',this.value)"'
       +   ' onblur="if(this.value)this.value=parseFloat(this.value).toFixed(2)"'
       +   ' onchange="updatePrepWeight(window._prepOid,' + i + ',this.value)">';
     var pCell = isCancelled
       ? '<span style="color:#999;">0.00</span>'
       : '<input type="number" step="0.01" value="' + lineP.toFixed(2) + '"'
       +   ' style="width:90px;padding:6px;border:2px solid var(--warn);border-radius:4px;text-align:right;font-weight:600;"'
+      +   ' oninput="livePrepPriceUpdate(' + i + ',this.value)"'
       +   ' onblur="this.value=parseFloat(this.value||0).toFixed(2)"'
       +   ' onchange="updatePrepPrice(window._prepOid,' + i + ',this.value)">' + priceDiff;
     var amtCell = isCancelled ? '<span style="color:#999;">$0.00</span>' : '$' + amt;
@@ -6128,6 +6143,29 @@ function updatePrepItemNotes(orderId, idx, newVal) {
   }
   if (typeof showToast === 'function') showToast('✏️ 품목 요청사항 저장 — 다음 주문에 기억됩니다');
 }
+
+// 라이브 합산 (oninput) — DB 저장 없이 화면만 즉시 갱신.
+// onchange 핸들러(updatePrepPrice/updatePrepWeight)가 blur 시 DB·맞춤단가까지 커밋함.
+window.livePrepPriceUpdate = function(idx, val) {
+  var o = DB.orders.find(function(x){ return x.id === window._prepOid; });
+  if (!o) return;
+  var it = getInvoiceItems(o)[idx];
+  if (!it || it._status === 'cancelled') return;
+  it.lineUnitPrice = parseFloat(val) || 0;
+  var amtEl = document.getElementById('prep_amt_' + idx);
+  if (amtEl) amtEl.textContent = '$' + fmtMoney((it.actualWeightKg||0) * (it.lineUnitPrice||0));
+  renderPrepTotals(o);
+};
+window.livePrepWeightUpdate = function(idx, val) {
+  var o = DB.orders.find(function(x){ return x.id === window._prepOid; });
+  if (!o) return;
+  var it = getInvoiceItems(o)[idx];
+  if (!it || it._status === 'cancelled') return;
+  it.actualWeightKg = parseFloat(val) || 0;
+  var amtEl = document.getElementById('prep_amt_' + idx);
+  if (amtEl) amtEl.textContent = '$' + fmtMoney((it.actualWeightKg||0) * (it.lineUnitPrice||0));
+  renderPrepTotals(o);
+};
 
 function renderPrepTotals(o) {
   var t = computeTotals(o);
@@ -7971,9 +8009,28 @@ window.inventoryApplyAllToday = function() {
   inv.deductedOrders = deducted;
 
   saveDB();
-  showToast(`✅ ${pendingOrderIds.size}건 출고 차감 완료`);
+  // 화면 즉시 갱신 (카테고리 현황 + 출고 목록)
   inventoryRenderSummary();
   inventoryRenderOutgoing();
+  // 영향 받은 카테고리 자동 펼침 — 변경 확인 쉽게
+  const affectedCats = new Set();
+  allPids.forEach(pid => {
+    const p = DB.products.find(x => x.id === pid);
+    if (p && p.cut) affectedCats.add(p.cut);
+  });
+  affectedCats.forEach(cat => {
+    const detail = document.getElementById('invCatDetail_' + cat);
+    const row = document.getElementById('invCatRow_' + cat);
+    if (detail && detail.style.display === 'none') {
+      detail.style.display = '';
+      if (row && row.firstElementChild) row.firstElementChild.textContent = '▼';
+    }
+  });
+  // 카테고리 요약 영역으로 스크롤
+  const sumWrap = document.getElementById('invSummaryWrap');
+  if (sumWrap && sumWrap.scrollIntoView) sumWrap.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  showToast(`✅ ${pendingOrderIds.size}건 출고 차감 완료`);
+  alert(`✅ ${pendingOrderIds.size}건 일괄 차감 완료.\n\n📦 카테고리 현황에 즉시 반영되었습니다.`);
 };
 
 window.inventoryUpdateReceiptUnitHint = function() {
@@ -7998,9 +8055,22 @@ window.inventoryAddReceipt = function() {
   saveDB();
   const p = DB.products.find(x => x.id === pid);
   const unit = p ? inventoryUnitLabel(p.cut) : '단위';
-  showToast(`📥 ${p ? p.name : '품목'} ${qty}${unit} 입고 완료`);
-  document.getElementById('invReceiptQty').value = '';
+  // 카테고리 현황 + 출고 목록 즉시 재렌더 → 화면에 바로 반영
   inventoryRenderSummary();
+  inventoryRenderOutgoing();
+  // 입고된 품목 카테고리는 펼쳐서 바로 확인 가능하게
+  if (p && p.cut) {
+    const detail = document.getElementById('invCatDetail_' + p.cut);
+    const row = document.getElementById('invCatRow_' + p.cut);
+    if (detail && detail.style.display === 'none') {
+      detail.style.display = '';
+      if (row && row.firstElementChild) row.firstElementChild.textContent = '▼';
+    }
+  }
+  document.getElementById('invReceiptQty').value = '';
+  // 등록 완료 — 확실한 피드백 (toast 무시 방지)
+  showToast(`📥 ${p ? p.name : '품목'} ${qty}${unit} 입고 완료`);
+  alert(`✅ 입고 등록되었습니다.\n\n품목: ${p ? p.name : '품목'}\n수량: ${qty}${unit}\n\n📦 카테고리 현황에 즉시 반영되었습니다.`);
 };
 
 // ---------- PDF 저장 (별도 폴더) ----------
@@ -8157,18 +8227,23 @@ window.printInventoryReport = function() {
 <html lang="ko"><head><meta charset="utf-8">
 <title>${fileName}</title>
 <style>
-  @page { size: A4 portrait; margin: 8mm; }
+  @page { size: A4 portrait; margin: 6mm; }
+  html, body { margin: 0; padding: 0; }
   * { box-sizing: border-box; }
-  body { font-family: -apple-system, 'Malgun Gothic', '맑은 고딕', sans-serif; font-size: 9px; color: #222; margin: 0; padding: 0; }
-  .hdr { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #5C0F0F; padding-bottom: 4px; margin-bottom: 6px; }
-  h1 { font-size: 15px; margin: 0; color: #5C0F0F; }
-  .hdr .sub { font-size: 8.5px; color: #666; margin-top: 1px; }
+  body { font-family: -apple-system, 'Malgun Gothic', '맑은 고딕', sans-serif; font-size: 8.5px; color: #222; }
+  .hdr { display: flex; justify-content: space-between; align-items: flex-end; border-bottom: 2px solid #5C0F0F; padding-bottom: 3px; margin-bottom: 4px; break-after: avoid; page-break-after: avoid; }
+  h1 { font-size: 13px; margin: 0; color: #5C0F0F; }
+  .hdr .sub { font-size: 8px; color: #666; margin-top: 1px; }
   .hdr .right { text-align: right; }
-  .hdr .date { font-size: 14px; font-weight: 700; }
-  .hdr .stamp { font-size: 7.5px; color: #888; }
-  .footer { margin-top: 6px; font-size: 7.5px; color: #888; text-align: right; padding-top: 4px; border-top: 1px solid #eee; }
+  .hdr .date { font-size: 12px; font-weight: 700; }
+  .hdr .stamp { font-size: 7px; color: #888; }
+  .footer { margin-top: 4px; font-size: 7px; color: #888; text-align: right; padding-top: 3px; border-top: 1px solid #eee; }
+  /* 본문은 첫 페이지에 헤더와 같이 시작 — 타이틀 전용 페이지 방지 */
+  .bodyWrap { break-before: avoid; page-break-before: avoid; }
   @media print {
     body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
+    .hdr { break-after: avoid !important; page-break-after: avoid !important; }
+    .bodyWrap { break-before: avoid !important; page-break-before: avoid !important; }
   }
 </style>
 </head>
@@ -8183,7 +8258,7 @@ window.printInventoryReport = function() {
       <div class="stamp">출력: ${new Date().toLocaleString('ko-KR')}</div>
     </div>
   </div>
-  ${buildInventoryBodyHTML()}
+  <div class="bodyWrap">${buildInventoryBodyHTML()}</div>
   <div class="footer">단위: 박스 · 음수=(괄호) · ATM Order Management System</div>
 </body></html>`;
 
