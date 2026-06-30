@@ -7245,7 +7245,14 @@ function hideBackupProgress() {
   if (ov) ov.remove();
 }
 
+let _backupInProgress = false;
 async function exportAllFull() {
+  if (_backupInProgress) {
+    showToast('⏳ 전체 백업이 이미 진행 중입니다. 잠시만 기다려 주세요.');
+    return;
+  }
+  _backupInProgress = true;
+  try {
   showBackupProgress();
   await updateBackupProgress('JSON 백업 저장 중', 0, 0, '');
   const jsonResult = await exportAll(true);
@@ -7277,6 +7284,10 @@ async function exportAllFull() {
     msg += `📄 주문서: ${orderResult.saved}건 → 거래처 백업/ATM 주문서/거래처`;
   }
   alert(msg);
+  } finally {
+    hideBackupProgress();
+    _backupInProgress = false;
+  }
 }
 
 function importAll() {
