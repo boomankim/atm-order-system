@@ -6988,7 +6988,7 @@ function buildOrderSheetHTML(o, cust) {
     </div>`;
 }
 
-async function exportOrderPDFs(silent = false) {
+async function exportOrderPDFs(silent = false, onProgress = null) {
   const orders = DB.orders.filter(o => o.status !== 'cancelled');
   if (orders.length === 0) {
     if (!silent) alert('백업할 주문서가 없습니다.');
@@ -7004,9 +7004,12 @@ async function exportOrderPDFs(silent = false) {
   document.body.appendChild(container);
   const dirHandle = await getBackupDirHandle();
   let saved = 0, failed = 0;
+  let _idx = 0;
   for (const o of orders) {
+    _idx++;
     try {
       const cust = DB.customers.find(c => c.id === o.customerId) || { name:'미확인', contact:'', phone:'', address:'', terms:'' };
+      if (onProgress) await onProgress(_idx, orders.length, `${o.orderNo || ''} ${cust.name || ''}`.trim());
       container.innerHTML = buildOrderSheetHTML(o, cust);
       await new Promise(r => setTimeout(r, 80));
       const canvas = await html2canvas(container.firstElementChild, {
@@ -7059,7 +7062,7 @@ async function exportOrderPDFs(silent = false) {
   return { saved, failed };
 }
 
-async function exportInvoicePDFs(silent = false) {
+async function exportInvoicePDFs(silent = false, onProgress = null) {
   const invoicedOrders = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status));
   if (invoicedOrders.length === 0) {
     if (!silent) alert('저장할 인보이스가 없습니다.');
@@ -7076,10 +7079,13 @@ async function exportInvoicePDFs(silent = false) {
   const pad = n => String(n).padStart(2,'0');
   const dirHandle = await getBackupDirHandle();
   let saved = 0, failed = 0;
+  let _idx = 0;
   for (const o of invoicedOrders) {
+    _idx++;
     try {
       const cust = DB.customers.find(c => c.id === o.customerId) || { name:'미확인', contact:'', phone:'', address:'', terms:'' };
       const totals = computeTotals(o);
+      if (onProgress) await onProgress(_idx, invoicedOrders.length, `${o.invoiceNo || o.orderNo || ''} ${cust.name || ''}`.trim());
       container.innerHTML = buildInvoiceHTML(o, cust, totals);
       await new Promise(r => setTimeout(r, 80));
       const canvas = await html2canvas(container.firstElementChild, {
@@ -7199,10 +7205,57 @@ async function exportAll(silent = false) {
   return { success: true, filename, folder: null };
 }
 
+// ─────────────────────────────────────────────────────────────────────────
+//  전체 백업용 진행 표시 오버레이 — "PDF X장 중 Y장 만드는 중" 형태로 화면에 띄움.
+//  내부 백업/PDF 로직은 손대지 않고, 진행률만 보여주고 화면 갱신용 쉼표(yield)를 준다.
+// ─────────────────────────────────────────────────────────────────────────
+function showBackupProgress() {
+  if (document.getElementById('backupProgressOverlay')) return;
+  const ov = document.createElement('div');
+  ov.id = 'backupProgressOverlay';
+  ov.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,0.55);z-index:99999;display:flex;align-items:center;justify-content:center;';
+  ov.innerHTML = `
+    <div style="background:#fff;border-radius:12px;padding:24px 32px;min-width:340px;max-width:90vw;box-shadow:0 8px 32px rgba(0,0,0,0.3);text-align:center;font-family:inherit;">
+      <div style="font-size:17px;font-weight:800;color:#1B5E20;margin-bottom:14px;">💾 전체 백업 진행 중</div>
+      <div id="backupProgressLabel" style="font-size:15px;color:#222;margin-bottom:12px;font-weight:600;">시작 중…</div>
+      <div style="background:#eee;border-radius:8px;height:16px;overflow:hidden;">
+        <div id="backupProgressBar" style="background:#4CAF50;height:100%;width:0%;transition:width 0.2s;"></div>
+      </div>
+      <div id="backupProgressDetail" style="font-size:12px;color:#777;margin-top:10px;min-height:16px;"></div>
+    </div>
+  `;
+  document.body.appendChild(ov);
+}
+
+async function updateBackupProgress(label, current, total, detail) {
+  const labelEl = document.getElementById('backupProgressLabel');
+  const barEl   = document.getElementById('backupProgressBar');
+  const detEl   = document.getElementById('backupProgressDetail');
+  if (labelEl) labelEl.textContent = total > 0
+    ? `${label} — PDF ${total}장 중 ${current}장 만드는 중`
+    : label;
+  if (barEl)   barEl.style.width = (total > 0 ? Math.round((current / total) * 100) : 0) + '%';
+  if (detEl && detail !== undefined) detEl.textContent = detail || '';
+  // 화면 갱신용 쉼표 — 브라우저가 다시 그릴 틈을 준다
+  await new Promise(r => requestAnimationFrame(() => setTimeout(r, 0)));
+}
+
+function hideBackupProgress() {
+  const ov = document.getElementById('backupProgressOverlay');
+  if (ov) ov.remove();
+}
+
 async function exportAllFull() {
+  showBackupProgress();
+  await updateBackupProgress('JSON 백업 저장 중', 0, 0, '');
   const jsonResult = await exportAll(true);
-  const pdfResult = await exportInvoicePDFs(true);
-  const orderResult = await exportOrderPDFs(true);
+  const pdfResult = await exportInvoicePDFs(true, async (cur, tot, name) => {
+    await updateBackupProgress('인보이스 PDF', cur, tot, name ? `· ${name}` : '');
+  });
+  const orderResult = await exportOrderPDFs(true, async (cur, tot, name) => {
+    await updateBackupProgress('주문서 PDF', cur, tot, name ? `· ${name}` : '');
+  });
+  hideBackupProgress();
   let msg = '✅ 전체 백업 완료!\n\n';
   if (jsonResult.folder) {
     msg += `💾 JSON: 📁 ${jsonResult.folder} / ${jsonResult.filename}\n`;
