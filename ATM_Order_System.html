@@ -267,16 +267,21 @@
     background: #fff; padding: 36px; max-width: 800px; margin: 0 auto;
     box-shadow: 0 4px 24px rgba(0,0,0,0.08);
   }
-  .invoice-header { display: flex; justify-content: space-between; border-bottom: 3px solid var(--brand); padding-bottom: 16px; margin-bottom: 20px; }
+  .invoice-header { display: flex; justify-content: space-between; border-bottom: 2px solid var(--brand); padding-bottom: 10px; margin-bottom: 12px; }
   .invoice-header h1 { margin: 0; color: var(--brand-dark); letter-spacing: 2px; }
-  .invoice table { width: 100%; border-collapse: collapse; margin-top: 14px; }
-  .invoice table th { background: var(--brand); color: #fff; padding: 8px; text-align: left; font-size: 12px; }
-  .invoice table td { padding: 8px; border-bottom: 1px solid var(--line); font-size: 13px; }
+  /* 흑백 인쇄 친화: 헤더 배경 제거, 위아래 굵은 테두리 + 진한 글씨로 강조. 행 패딩 축소로 1장에 많은 품목. */
+  .invoice table { width: 100%; border-collapse: collapse; margin-top: 8px; font-size: 11px; table-layout: fixed; }
+  .invoice table thead tr { background: #ffffff; }
+  .invoice table th { background: #ffffff !important; color: var(--brand-dark); padding: 5px 6px; text-align: left; font-size: 11px; font-weight: 800; border-top: 2px solid var(--brand-dark); border-bottom: 2px solid var(--brand-dark); }
+  .invoice table td { padding: 3px 6px; border-bottom: 1px solid var(--line); font-size: 11px; vertical-align: middle; }
+  .invoice table tbody tr { background: #ffffff !important; }
   .invoice table td.num { text-align: right; }
-  .invoice .tot-block { display: flex; justify-content: flex-end; margin-top: 16px; }
-  .invoice .tot-box { min-width: 260px; padding: 14px 16px; background: var(--cream); border-radius: 8px; }
-  .invoice .tot-row { display: flex; justify-content: space-between; padding: 4px 0; }
-  .invoice .tot-row.grand { border-top: 2px solid var(--brand); font-weight: 700; font-size: 17px; padding-top: 10px; margin-top: 6px; color: var(--brand-dark); }
+  .invoice table th.num { text-align: right; }
+  .invoice table td.item-cell { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .invoice .tot-block { display: flex; justify-content: flex-end; margin-top: 8px; }
+  .invoice .tot-box { min-width: 260px; padding: 8px 14px; background: #ffffff; border: 1px solid var(--brand-dark); border-radius: 4px; }
+  .invoice .tot-row { display: flex; justify-content: space-between; padding: 1px 0; font-size: 12px; }
+  .invoice .tot-row.grand { border-top: 1.5px solid var(--brand-dark); font-weight: 800; font-size: 14px; padding-top: 5px; margin-top: 3px; color: var(--brand-dark); }
 
   /* Notice */
   .notice {
@@ -290,6 +295,11 @@
     body { background: #fff; }
     main { max-width: 100%; padding: 0; }
     .card { box-shadow: none; }
+    /* 흑백 인쇄 토너 절약: 어두운 배경 모두 제거. 색상 인쇄도 강제 OFF. */
+    .invoice table th, .invoice table thead tr { background: #ffffff !important; -webkit-print-color-adjust: economy; print-color-adjust: economy; }
+    .invoice .tot-box { background: #ffffff !important; }
+    .invoice { padding: 0 !important; }
+    body { -webkit-print-color-adjust: economy; print-color-adjust: economy; }
   }
   @media (max-width: 640px) {
     .grid-2, .grid-3 { grid-template-columns: 1fr; }
@@ -5815,20 +5825,31 @@ function viewInvoicePrep(params) {
   }
   const cust = DB.customers.find(c => c.id === o.customerId);
 
-  // invoiceItems 초기화 — 원본 o.items 절대 수정 안 함
+  // invoiceItems 초기화 — 원본 o.items 절대 수정 안 함.
+  // 최초 생성 시 거래처 맞춤 단가(customP)를 항상 우선 적용 → 다음 인보이스 단가 자동 인식.
   if (!o.invoiceItems) {
     o.invoiceItems = o.items.map(function(it) {
-      return Object.assign({}, it, {_source: 'original'});
-    });
-  }
-  // 단가 초기값 채우기 — 우선순위: 거래처 맞춤 단가(품목+요청사항 짝) > 품목 마스터
-  o.invoiceItems.forEach(function(it) {
-    if (it.lineUnitPrice == null || it.lineUnitPrice === 0) {
+      var newIt = Object.assign({}, it, {_source: 'original'});
       var p = DB.products.find(function(x) { return x.id === it.productId; });
       var customP = customerCustomPrice(cust, it.productId, it.notes);
-      it.lineUnitPrice = (customP != null) ? customP : (p ? p.priceKg : 0);
-    }
-  });
+      // 우선순위: ① 라인에 이미 단가가 있으면 유지 ② 거래처 맞춤 단가 ③ 품목 마스터
+      if (newIt.lineUnitPrice == null || newIt.lineUnitPrice === 0) {
+        newIt.lineUnitPrice = (customP != null) ? customP : (p ? p.priceKg : 0);
+      }
+      return newIt;
+    });
+    // 부분 저장 — 다음 진입 때 동일 값 유지
+    saveEntityField('orders', o.id, 'invoiceItems');
+  } else {
+    // 재진입 — 비어있는 라인만 채움 (사용자가 설정한 값은 보존)
+    o.invoiceItems.forEach(function(it) {
+      if (it.lineUnitPrice == null || it.lineUnitPrice === 0) {
+        var p = DB.products.find(function(x) { return x.id === it.productId; });
+        var customP = customerCustomPrice(cust, it.productId, it.notes);
+        it.lineUnitPrice = (customP != null) ? customP : (p ? p.priceKg : 0);
+      }
+    });
+  }
 
   const app = document.getElementById('app');
   app.innerHTML = `
@@ -6274,8 +6295,13 @@ async function issueInvoice(orderId) {
     invoiceNo: o.invoiceNo
   });
   saveLocalDB();
-  location.hash = '#invoice?id=' + orderId;
+  // 발행 확정 후 자동 백업 + 알림 + 이전 페이지(사무실)로 이동
   autoSaveInvoice(orderId).catch(e => console.warn('autoSaveInvoice error:', e));
+  if (typeof showToast === 'function') {
+    showToast(`✅ 인보이스 ${invoiceNo} 발행 완료`);
+  }
+  // 사용자 요청: 발행 확정 시 자동으로 전 페이지(사무실)로 이동
+  location.hash = '#office';
 }
 
 // =========================================================================
@@ -6338,15 +6364,17 @@ function viewInvoice(params) {
       </div>` : ''}
 
       <table>
+        <colgroup>
+          <col style="width:46%;"><col style="width:14%;"><col style="width:13%;"><col style="width:13%;"><col style="width:14%;">
+        </colgroup>
         <thead><tr>
-          <th>Item / 품목</th><th>Brand / 브랜드</th><th>Order / 주문</th>
+          <th>Item / 품목</th><th>Order / 주문</th>
           <th class="num">Weight / 중량 (kg)</th><th class="num">Unit Price / 단가</th><th class="num">Amount / 금액</th>
         </tr></thead>
         <tbody>
           ${invoiceItems.map(it => {
             const p = DB.products.find(x => x.id === it.productId);
             const pName  = p ? p.name  : '(품목없음)';
-            const pBrand = p ? (p.brand||'') : '';
             const isCancelled = it._status === 'cancelled';
             const isAdded     = it._source === 'added' && !isCancelled;
             const badge = isCancelled
@@ -6355,36 +6383,37 @@ function viewInvoice(params) {
               ? `<span style="font-size:9px;background:#27AE60;color:#fff;border-radius:3px;padding:1px 4px;margin-right:4px;">추가요청</span>`
               : '';
             const nameStyle = isCancelled ? 'text-decoration:line-through;color:#999;' : '';
-            const rowStyle  = isCancelled ? 'background:#FFF8F8;' : isAdded ? 'background:#F8FFF8;' : '';
             const cancelNote = isCancelled && it._cancelNote
-              ? `<br><small style="color:#E74C3C;font-size:9px;">사유: ${it._cancelNote}</small>` : '';
+              ? ` <small style="color:#E74C3C;font-size:9px;">사유: ${it._cancelNote}</small>` : '';
             const w = isCancelled ? 0 : it.actualWeightKg;
             const price = isCancelled ? 0 : lineUnitPrice(it, p, cust);
             const orderDisplay = it.unit === '작업중량'
-              ? `${it.quantity} kg <small>작업</small>`
+              ? `${it.quantity}kg 작업`
               : `${it.quantity}${unitEn(it.unit)}`;
+            const noteInline = it.notes ? ` <span style="color:#777;font-size:9px;">※ ${it.notes}</span>` : '';
             if (isCancelled) {
-              return `<tr style="${rowStyle}">
-                <td>${badge}<b style="${nameStyle}">${pName}</b>${cancelNote}</td>
-                <td>${pBrand}</td><td>${orderDisplay}</td>
+              return `<tr>
+                <td class="item-cell">${badge}<b style="${nameStyle}">${pName}</b>${cancelNote}</td>
+                <td>${orderDisplay}</td>
                 <td class="num" style="color:#999;">0.00</td>
                 <td class="num" style="color:#999;">$0.00</td>
                 <td class="num" style="color:#999;">$0.00</td>
               </tr>`;
             }
             if (w == null) {
-              return `<tr style="${rowStyle}">
-                <td>${badge}<b>${pName}</b></td><td>${pBrand}</td><td>${orderDisplay}</td>
-                <td class="num" colspan="3" style="color:var(--warn);">계근 대기</td>
+              return `<tr>
+                <td class="item-cell">${badge}<b>${pName}</b>${noteInline}</td>
+                <td>${orderDisplay}</td>
+                <td class="num" colspan="3" style="color:var(--warn);font-style:italic;">계근 대기</td>
               </tr>`;
             }
             const amt = w * price;
-            return `<tr style="${rowStyle}">
-              <td>${badge}<b style="${nameStyle}">${pName}</b>${it.notes?`<br><small style="color:var(--muted);">※ ${it.notes}</small>`:''}</td>
-              <td>${pBrand}</td><td>${orderDisplay}</td>
+            return `<tr>
+              <td class="item-cell">${badge}<b style="${nameStyle}">${pName}</b>${noteInline}</td>
+              <td>${orderDisplay}</td>
               <td class="num">${w.toFixed(2)}</td>
               <td class="num">$${fmtMoney(price)}</td>
-              <td class="num">$${fmtMoney(amt)}</td>
+              <td class="num" style="font-weight:600;">$${fmtMoney(amt)}</td>
             </tr>`;
           }).join('')}
         </tbody>
