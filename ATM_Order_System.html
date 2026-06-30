@@ -5825,23 +5825,32 @@ function viewInvoicePrep(params) {
   }
   const cust = DB.customers.find(c => c.id === o.customerId);
 
-  // invoiceItems 초기화 — 원본 o.items 절대 수정 안 함.
-  // 최초 생성 시 거래처 맞춤 단가(customP)를 항상 우선 적용 → 다음 인보이스 단가 자동 인식.
+  // ⭐ invoiceItems 초기화 — 원본 o.items 절대 수정 안 함.
+  // 최초 생성 시 거래처 맞춤단가(customP) 무조건 우선 적용 → 다음 인보이스 단가 자동 인식.
+  let _prepAutoCount = 0;
   if (!o.invoiceItems) {
     o.invoiceItems = o.items.map(function(it) {
       var newIt = Object.assign({}, it, {_source: 'original'});
       var p = DB.products.find(function(x) { return x.id === it.productId; });
       var customP = customerCustomPrice(cust, it.productId, it.notes);
-      // 우선순위: ① 라인에 이미 단가가 있으면 유지 ② 거래처 맞춤 단가 ③ 품목 마스터
-      if (newIt.lineUnitPrice == null || newIt.lineUnitPrice === 0) {
-        newIt.lineUnitPrice = (customP != null) ? customP : (p ? p.priceKg : 0);
+      // ⭐ 신규 주문: 항상 거래처 맞춤단가 우선 (라인의 기존 lineUnitPrice 무시).
+      //    customP 가 없으면 마스터 단가로 폴백.
+      if (customP != null) {
+        newIt.lineUnitPrice = customP;
+        _prepAutoCount++;
+      } else {
+        newIt.lineUnitPrice = (p ? p.priceKg : 0);
       }
+      console.log('[viewInvoicePrep:init]', p ? p.name : '?', 'notes=', JSON.stringify(it.notes || ''),
+        'customP=', customP, 'master=', p ? p.priceKg : 0, '→ applied=', newIt.lineUnitPrice);
       return newIt;
     });
-    // 부분 저장 — 다음 진입 때 동일 값 유지
     saveEntityField('orders', o.id, 'invoiceItems');
+    if (_prepAutoCount > 0 && typeof showToast === 'function') {
+      setTimeout(() => showToast(`💡 거래처 최근 단가 ${_prepAutoCount}건 자동 적용됨`), 350);
+    }
   } else {
-    // 재진입 — 비어있는 라인만 채움 (사용자가 설정한 값은 보존)
+    // 재진입 — 비어있는 라인만 customP/마스터로 채움 (사용자 설정값 보존)
     o.invoiceItems.forEach(function(it) {
       if (it.lineUnitPrice == null || it.lineUnitPrice === 0) {
         var p = DB.products.find(function(x) { return x.id === it.productId; });
@@ -5892,7 +5901,8 @@ function viewInvoicePrep(params) {
 
       <div class="btn-row" style="margin-top:18px;">
         <button class="btn success" onclick="issueInvoice('${o.id}')">✅ 인보이스 발행 확정</button>
-        <button class="btn secondary" onclick="resetPrepPricesToMaster('${o.id}')">🔄 단가를 마스터값으로 초기화</button>
+        <button class="btn" style="background:var(--info);color:#fff;" onclick="applyCustomerPricesToPrep('${o.id}')">💡 거래처 최근 단가 적용</button>
+        <button class="btn secondary" onclick="resetPrepPricesToMaster('${o.id}')">🔄 마스터값으로 초기화</button>
         <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
         <button class="btn danger" style="margin-left:auto;" onclick="deleteOrderFromPrep('${o.id}')">🗑 주문 삭제</button>
       </div>
@@ -6232,27 +6242,60 @@ function resetPrepPricesToMaster(orderId) {
   saveEntityField('orders', orderId, listKey);
   route(); // re-render
 }
+
+// ⭐ 거래처의 마지막 인보이스 단가를 모든 라인에 강제 재적용. 자동 인식이 안 됐을 때 수동 적용용.
+window.applyCustomerPricesToPrep = function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  if (!cust) { alert('거래처를 찾을 수 없습니다.'); return; }
+  if (!cust.customPrices || Object.keys(cust.customPrices).length === 0) {
+    alert(`${cust.name} 의 저장된 단가 학습 내역이 없습니다.\n\n인보이스 발행 시 단가가 자동 저장되므로,\n첫 인보이스를 한 번 발행하시면 다음부터 자동 적용됩니다.`);
+    return;
+  }
+  const lines = getInvoiceItems(o);
+  let applied = 0, masterFallback = 0;
+  lines.forEach(it => {
+    if (it._status === 'cancelled') return;
+    const customP = customerCustomPrice(cust, it.productId, it.notes);
+    if (customP != null) {
+      it.lineUnitPrice = customP;
+      applied++;
+    } else {
+      const p = DB.products.find(x => x.id === it.productId);
+      it.lineUnitPrice = p ? p.priceKg : 0;
+      masterFallback++;
+    }
+  });
+  const listKey = o.invoiceItems ? 'invoiceItems' : 'items';
+  saveEntityField('orders', orderId, listKey);
+  alert(`✅ 거래처 단가 재적용 완료\n\n거래처: ${cust.name}\n맞춤 단가 적용: ${applied}건\n마스터 폴백: ${masterFallback}건`);
+  route();
+};
 async function issueInvoice(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
+  if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
   const t = computeTotals(o);
   if (t.unweighedCount > 0) {
     if (!confirm(`${t.unweighedCount}건의 품목이 계근되지 않았습니다.\n그래도 인보이스를 발행하시겠습니까?`)) return;
   }
   if (!confirm(`인보이스를 발행합니다.\n총액: $${fmtMoney(t.grand)} (GST 포함)\n\n발행 후에는 단가 수정이 불가합니다. 진행할까요?`)) return;
 
-  // Phase 2 동시성: 두 매니저가 동시에 인보이스 발행해도 중복 번호 방지
-  // Firebase 트랜잭션으로 invoiceNoNext 를 원자적으로 증가시키고 그 값을 사용
+  // 1) 인보이스 번호 결정 — Firebase 트랜잭션 시도 (3초 타임아웃) + 실패 시 로컬 폴백.
   let invoiceNo;
   if (DB_REF) {
-    // 버그 수정 (2026-06-12): 트랜잭션 *전* 에 _lastSaveTime 설정 — local-apply
-    // 단계에서 빨간 배너 + DB 덮어쓰기로 인한 items "undefined" 표시 방지.
     _lastSaveTime = Date.now();
     try {
-      const result = await DB_REF.child('settings/invoiceNoNext').transaction(curr => {
+      const txnPromise = DB_REF.child('settings/invoiceNoNext').transaction(curr => {
         const next = (typeof curr === 'number' && curr >= 200001) ? curr : 200001;
         return next + 1;
       });
-      _lastSaveTime = Date.now(); // 서버 확정 후 갱신
+      // Firebase 응답이 없어도 3초 후 로컬 폴백 — 화면 멈춤 방지
+      const result = await Promise.race([
+        txnPromise,
+        new Promise((_, rej) => setTimeout(() => rej(new Error('invoiceNoNext timeout')), 3000))
+      ]);
+      _lastSaveTime = Date.now();
       const committed = result && result.committed;
       const newVal = result && result.snapshot && result.snapshot.val();
       if (committed && typeof newVal === 'number') {
@@ -6261,11 +6304,11 @@ async function issueInvoice(orderId) {
         DB.settings.invoiceNoNext = newVal;
       }
     } catch(e) {
-      console.warn('invoiceNoNext transaction failed, falling back to local counter:', e);
+      console.warn('invoiceNoNext transaction failed/timeout, falling back:', e);
     }
   }
   if (!invoiceNo) {
-    // Firebase 미연결 또는 트랜잭션 실패 시 로컬 폴백
+    if (!DB.settings) DB.settings = {};
     if (!DB.settings.invoiceNoNext) DB.settings.invoiceNoNext = 200001;
     invoiceNo = String(DB.settings.invoiceNoNext++);
   }
@@ -6273,35 +6316,50 @@ async function issueInvoice(orderId) {
   o.status = 'invoiced';
   o.invoicedAt = new Date().toISOString();
 
-  // 인보이스 발행 시 모든 라인 단가를 거래처 맞춤 단가로 저장 (품목+요청사항 짝별).
-  // 마스터값이라도 잠금 — 다음 인보이스 준비 시 이 단가가 자동으로 채워짐.
+  // 2) ⭐ 거래처 맞춤 단가 저장 (다음 인보이스 자동 인식의 핵심). 라인 단가가 0/마스터든 무관 — 무조건 잠금.
   const cust = DB.customers.find(x => x.id === o.customerId);
+  let savedPriceCount = 0;
   if (cust) {
     const lines = getInvoiceItems(o);
     lines.forEach(it => {
       if (!it || !it.productId) return;
-      if (it._status === 'cancelled') return; // 취소된 라인은 학습 안 함
+      if (it._status === 'cancelled') return;
       const price = parseFloat(it.lineUnitPrice);
       if (!isFinite(price) || price <= 0) return;
       setCustomerCustomPrice(cust, it.productId, it.notes, price);
+      savedPriceCount++;
     });
-    saveEntityField('customers', cust.id, 'customPrices');
+    if (savedPriceCount > 0) {
+      try { saveEntityField('customers', cust.id, 'customPrices'); }
+      catch(e){ console.warn('customPrices save failed:', e); }
+    }
+    console.log('[issueInvoice] 거래처 맞춤 단가 저장:', cust.name, '라인 수:', savedPriceCount, 'customPrices:', cust.customPrices);
   }
 
-  // Phase 2 동시성: 이 주문의 status/invoiceNo/invoicedAt 만 부분 업데이트
-  saveEntityFields('orders', orderId, {
-    status: o.status,
-    invoicedAt: o.invoicedAt,
-    invoiceNo: o.invoiceNo
-  });
-  saveLocalDB();
-  // 발행 확정 후 자동 백업 + 알림 + 이전 페이지(사무실)로 이동
-  autoSaveInvoice(orderId).catch(e => console.warn('autoSaveInvoice error:', e));
+  // 3) 로컬 즉시 저장 — 이후 작업이 실패해도 발행 결과는 유지
+  try { saveLocalDB(); } catch(e){ console.warn('saveLocalDB failed:', e); }
+  try {
+    saveEntityFields('orders', orderId, {
+      status: o.status,
+      invoicedAt: o.invoicedAt,
+      invoiceNo: o.invoiceNo
+    });
+  } catch(e){ console.warn('saveEntityFields failed:', e); }
+
+  // 4) ⭐ 즉시 화면 전환 (사무실로). PDF 자동 저장은 백그라운드.
   if (typeof showToast === 'function') {
-    showToast(`✅ 인보이스 ${invoiceNo} 발행 완료`);
+    showToast(`✅ 인보이스 ${invoiceNo} 발행 완료 — 거래처 단가 ${savedPriceCount}건 학습됨`);
   }
-  // 사용자 요청: 발행 확정 시 자동으로 전 페이지(사무실)로 이동
   location.hash = '#office';
+  // setTimeout 폴백 — 어떤 이유로든 hash 변경 실패 시 강제 재시도
+  setTimeout(() => {
+    if (location.hash.indexOf('#invoicePrep') === 0) {
+      location.hash = '#office';
+    }
+  }, 200);
+
+  // 5) PDF/JSON 자동 백업은 페이지 전환 후 백그라운드
+  autoSaveInvoice(orderId).catch(e => console.warn('autoSaveInvoice error:', e));
 }
 
 // =========================================================================
