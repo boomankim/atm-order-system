@@ -4730,10 +4730,12 @@ function viewOffice() {
   const app = document.getElementById('app');
   const ready = DB.orders.filter(o => o.status === 'weighed');
   // 발행 완료 — 당일 발행분만 (invoicedAt 기준). 이전 발행 건은 #history 에서 조회.
+  // ⭐ Bug fix (2026-07-07): invoicedAt 은 UTC ISO 문자열이라 .slice(0,10) 하면 시드니 오전엔
+  //   어제 날짜로 나와 오늘 목록에 안 잡힘. 반드시 로컬 날짜로 변환해 비교.
   const todayISO = todayLocalISO();
   const all = DB.orders.filter(o => {
     if (o.status !== 'invoiced' && o.status !== 'delivered') return false;
-    const ref = (o.invoicedAt || '').slice(0,10);
+    const ref = toLocalISODate(o.invoicedAt);
     return ref === todayISO;
   });
   app.innerHTML = `
