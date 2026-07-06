@@ -370,7 +370,25 @@ const firebaseConfig = {
   messagingSenderId: "356675041494",
   appId:             "1:356675041494:web:cb492963627ec620d3f177"
 };
-const FIREBASE_READY = firebaseConfig.apiKey !== 'PASTE_API_KEY_HERE';
+// ---- console shim: 일부 샌드박스(예: Claude artifact preview)는 console.info/debug 미구현 ----
+if (typeof console !== 'undefined') {
+  if (typeof console.info  !== 'function') console.info  = console.log  || function(){};
+  if (typeof console.debug !== 'function') console.debug = console.log  || function(){};
+  if (typeof console.warn  !== 'function') console.warn  = console.log  || function(){};
+  if (typeof console.error !== 'function') console.error = console.log  || function(){};
+}
+
+// ---- 실행 환경 감지: production(GitHub Pages / PWA 도메인)에서만 Firebase & SW 사용 ----
+// artifact preview(claudeusercontent.com)나 file:// 로컬 열기 등에서는 Firebase CDN·sw.js가 없어 오류가 남
+const _host = (typeof location !== 'undefined' && location.hostname) || '';
+const IS_PROD_ENV =
+     _host.endsWith('github.io')
+  || _host === 'localhost'
+  || _host === '127.0.0.1';
+
+const FIREBASE_READY = IS_PROD_ENV
+                    && firebaseConfig.apiKey !== 'PASTE_API_KEY_HERE'
+                    && typeof firebase !== 'undefined';
 let DB_REF = null;
 if (FIREBASE_READY) {
   try {
@@ -8814,7 +8832,9 @@ if (FIREBASE_READY && DB_REF) {
     if (_atmPendingUpdate && !_isAdminRoute()) showUpdateBanner();
   });
 
-  if ('serviceWorker' in navigator) {
+  // artifact preview(claudeusercontent.com) / file:// 등 비-production 환경에서는 SW 등록을 스킵
+  // (sw.js가 배포되어 있지 않아 404가 나면서 콘솔이 지저분해짐)
+  if ('serviceWorker' in navigator && IS_PROD_ENV) {
     window.addEventListener('load', () => {
       navigator.serviceWorker.register('sw.js').then(reg => {
         console.info('[PWA] Service Worker 등록 완료:', reg.scope);
