@@ -516,18 +516,63 @@ function migrateFavoritePairs() {
 
 function migrateProducts() {
   if (DB.productsVersion !== PRODUCTS_VERSION) {
-    DB.products = seed().products;
+    // ⭐ Bug fix (2026-07-07): 옛 productId → 새 productId 매핑 테이블 만들기 (품목명 정규화 기준).
+    // 이걸로 customPrices / favoriteProductIds / favoritePairs 를 새 마스터에 맞춰 rekey.
+    // 예전엔 그냥 필터링만 해서 옛 ID 로 저장된 거래처 맞춤 단가가 새 마스터 교체 후 전부 소실됐음.
+    const oldProducts = Array.isArray(DB.products) ? DB.products : [];
+    const newProducts = seed().products;
+    const _norm = function(nm) {
+      return String(nm || '').toLowerCase()
+        .replace(/[\s\-_]+/g, '')     // 공백/하이픈/언더스코어 제거
+        .replace(/[()·,./]/g, '');    // 흔한 문장부호 제거
+    };
+    const newByNormName = {};
+    newProducts.forEach(p => { if (p && p.name) newByNormName[_norm(p.name)] = p.id; });
+    const idMap = {}; // oldId → newId
+    oldProducts.forEach(op => {
+      if (!op || !op.id || !op.name) return;
+      const newId = newByNormName[_norm(op.name)];
+      if (newId && newId !== op.id) idMap[op.id] = newId;
+      else if (newId === op.id) idMap[op.id] = op.id; // 그대로 살아있음
+    });
+
+    DB.products = newProducts;
     DB.productsVersion = PRODUCTS_VERSION;
-    // Clean up stale favoriteProductIds + favoritePairs in all customers
+
     const validIds = new Set(DB.products.map(p => p.id));
+    let rekeyedPriceCount = 0;
     (DB.customers || []).forEach(c => {
-      if (c.favoriteProductIds) {
-        c.favoriteProductIds = c.favoriteProductIds.filter(id => validIds.has(id));
+      // favoriteProductIds — rekey then filter
+      if (Array.isArray(c.favoriteProductIds)) {
+        c.favoriteProductIds = c.favoriteProductIds
+          .map(id => idMap[id] || id)
+          .filter(id => validIds.has(id));
       }
+      // favoritePairs — rekey then filter
       if (Array.isArray(c.favoritePairs)) {
-        c.favoritePairs = c.favoritePairs.filter(p => p && validIds.has(p.productId));
+        c.favoritePairs = c.favoritePairs
+          .map(p => p ? { ...p, productId: (idMap[p.productId] || p.productId) } : p)
+          .filter(p => p && validIds.has(p.productId));
+      }
+      // ⭐ customPrices — rekey (품목명이 같으면 옛 ID → 새 ID 로 옮겨 단가 보존)
+      if (c.customPrices && typeof c.customPrices === 'object') {
+        const rekeyed = {};
+        Object.keys(c.customPrices).forEach(oldPid => {
+          const newPid = idMap[oldPid] || oldPid;
+          if (!validIds.has(newPid)) return; // 사라진 품목은 버림
+          // 이미 새 ID 에 값이 있으면 병합(옛 값은 우선하지 않음), 없으면 이동
+          if (rekeyed[newPid] == null) {
+            rekeyed[newPid] = c.customPrices[oldPid];
+            if (newPid !== oldPid) rekeyedPriceCount++;
+          }
+        });
+        c.customPrices = rekeyed;
       }
     });
+
+    if (rekeyedPriceCount > 0) {
+      console.info('[migrateProducts] 거래처 맞춤단가 ' + rekeyedPriceCount + '건 새 productId 로 이관됨');
+    }
     saveDB();  // localStorage + Firebase 모두 저장
     console.info('품목 마스터 업데이트 완료 (' + PRODUCTS_VERSION + ')');
     setTimeout(() => {
@@ -1392,9 +1437,11 @@ function renderStats() {
   const weekStartStr = toLocalISODate(monday);
   const monthStr = today.slice(0,7);
 
-  const dayCount   = DB.orders.filter(o => (o.orderDate||'').slice(0,10) === today).length;
-  const weekCount  = DB.orders.filter(o => { const d=(o.orderDate||'').slice(0,10); return d>=weekStartStr && d<=today; }).length;
-  const monthCount = DB.orders.filter(o => (o.orderDate||'').slice(0,7) === monthStr).length;
+  // ⭐ Bug fix (2026-07-07): o.orderDate 는 new Date().toISOString() 로 저장되는 UTC 값 →
+  // 시드니 새벽/오전엔 UTC 기준 어제로 나와 오늘 카운트에 안 잡힘. 반드시 로컬 날짜로 변환.
+  const dayCount   = DB.orders.filter(o => toLocalISODate(o.orderDate) === today).length;
+  const weekCount  = DB.orders.filter(o => { const d=toLocalISODate(o.orderDate); return d>=weekStartStr && d<=today; }).length;
+  const monthCount = DB.orders.filter(o => toLocalISODate(o.orderDate).slice(0,7) === monthStr).length;
 
   document.getElementById('stats').innerHTML = `
     <div style="display:flex; align-items:center; gap:0; flex-wrap:wrap; padding:8px 0;">
@@ -6364,15 +6411,16 @@ async function issueInvoice(orderId) {
     });
   } catch(e){ console.warn('saveEntityFields failed:', e); }
 
-  // 4) ⭐ 즉시 화면 전환 (사무실로). PDF 자동 저장은 백그라운드.
+  // 4) ⭐ 즉시 화면 전환 (인보이스 페이지로). 발행 즉시 확인/인쇄 가능. PDF 자동 저장은 백그라운드.
   if (typeof showToast === 'function') {
     showToast(`✅ 인보이스 ${invoiceNo} 발행 완료 — 거래처 단가 ${savedPriceCount}건 학습됨`);
   }
-  location.hash = '#office';
+  const _invoiceHash = '#invoice?id=' + orderId;
+  location.hash = _invoiceHash;
   // setTimeout 폴백 — 어떤 이유로든 hash 변경 실패 시 강제 재시도
   setTimeout(() => {
     if (location.hash.indexOf('#invoicePrep') === 0) {
-      location.hash = '#office';
+      location.hash = _invoiceHash;
     }
   }, 200);
 
