@@ -1437,11 +1437,13 @@ function renderStats() {
   const weekStartStr = toLocalISODate(monday);
   const monthStr = today.slice(0,7);
 
-  // ⭐ Bug fix (2026-07-07): o.orderDate 는 new Date().toISOString() 로 저장되는 UTC 값 →
-  // 시드니 새벽/오전엔 UTC 기준 어제로 나와 오늘 카운트에 안 잡힘. 반드시 로컬 날짜로 변환.
-  const dayCount   = DB.orders.filter(o => toLocalISODate(o.orderDate) === today).length;
-  const weekCount  = DB.orders.filter(o => { const d=toLocalISODate(o.orderDate); return d>=weekStartStr && d<=today; }).length;
-  const monthCount = DB.orders.filter(o => toLocalISODate(o.orderDate).slice(0,7) === monthStr).length;
+  // ⭐ 변경 (2026-07-07): 접수일(orderDate) 기준 → 배송일(deliveryDate) 기준으로 전환.
+  //   사장님 요청: "오늘 현황"은 오늘 나가야 하는 물량 기준으로 표시.
+  //   deliveryDate 는 이미 로컬 'YYYY-MM-DD' 형식으로 저장돼 시간대 변환 불필요.
+  const _dd = o => (o.deliveryDate || '').slice(0, 10);
+  const dayCount   = DB.orders.filter(o => _dd(o) === today).length;
+  const weekCount  = DB.orders.filter(o => { const d=_dd(o); return d>=weekStartStr && d<=today; }).length;
+  const monthCount = DB.orders.filter(o => _dd(o).slice(0,7) === monthStr).length;
 
   document.getElementById('stats').innerHTML = `
     <div style="display:flex; align-items:center; gap:0; flex-wrap:wrap; padding:8px 0;">
