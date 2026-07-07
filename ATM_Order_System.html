@@ -4662,6 +4662,8 @@ function viewWeigh(params) {
             const itemNote = it.notes
               ? `<br><small style="color:var(--brand-dark); font-weight:600;">📝 품목 요청사항: ${it.notes}</small>`
               : '';
+            // ⭐ 창고↔사무실 메모 (인보이스 미노출). 값은 warehouseMemo 로 저장.
+            const wmValueAttr = (it.warehouseMemo || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
             return `<tr>
               <td><b>${pName}</b><br><small style="color:var(--muted);">${pBrand}${pBrand&&pCut?' · ':''}${pCut}</small>${itemNote}</td>
               <td>${orderDisplay}</td>
@@ -4670,6 +4672,17 @@ function viewWeigh(params) {
                   style="width:110px; padding:8px; border:2px solid var(--warn); border-radius:5px; font-size:16px; text-align:right;"
                   onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"
                   onchange="updateWeighing('${order.id}', ${i}, this.value)">
+              </td>
+            </tr>
+            <tr class="wm-row">
+              <td colspan="3" style="padding:4px 8px 10px; background:#FFFCE8; border-top:none;">
+                <label style="display:flex; gap:8px; align-items:center; font-size:12px; color:#8B6914;">
+                  <span style="white-space:nowrap;">🗒️ 사무실 전달 메모</span>
+                  <input type="text" value="${wmValueAttr}"
+                    placeholder="예: 갈비 재고 부족 · 진공포장 대체 · 다음번 확인 필요 (인보이스에는 표시되지 않음)"
+                    style="flex:1; padding:6px 8px; border:1px solid #E5C158; border-radius:4px; font-size:12px; background:#fff;"
+                    onchange="updateWarehouseMemo('${order.id}', ${i}, this.value)">
+                </label>
               </td>
             </tr>`;
           }).join('')}
@@ -4711,6 +4724,15 @@ function updateWeighing(orderId, idx, val) {
   saveOrderItemField(orderId, 'items', idx, 'actualWeightKg');
   renderWeighingTotal(o);
 }
+
+// ⭐ (2026-07-07) 창고↔사무실 메모 저장. 인보이스에는 절대 노출되지 않음 (invoice/PDF 렌더가 참조 X).
+function updateWarehouseMemo(orderId, idx, val) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o || !o.items || !o.items[idx]) return;
+  o.items[idx].warehouseMemo = (val || '').trim();
+  saveOrderItemField(orderId, 'items', idx, 'warehouseMemo');
+}
+window.updateWarehouseMemo = updateWarehouseMemo;
 function renderWeighingTotal(o) {
   let total = 0, weighed = 0;
   o.items.forEach(it => {
@@ -6037,6 +6059,21 @@ function renderPrepTbody(o) {
       +          ' font-size:11px; color:var(--brand-dark); background:#FFFCF5; box-sizing:border-box;"'
       +   ' onchange="updatePrepItemNotes(window._prepOid,' + i + ',this.value)">'
       + '</div>';
+    // ⭐ (2026-07-07) 창고 메모 — 읽기 전용, 인보이스에는 노출 안 됨.
+    // invoiceItems 에도 warehouseMemo 를 복사하지 않으므로 원본 items 를 참조.
+    var _wm = '';
+    if (o && Array.isArray(o.items) && it.productId) {
+      var _srcIt = o.items.find(function(x){ return x && x.productId === it.productId; });
+      if (_srcIt && _srcIt.warehouseMemo) _wm = _srcIt.warehouseMemo;
+    }
+    if (!_wm && it.warehouseMemo) _wm = it.warehouseMemo;
+    var _wmEsc = String(_wm).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    var warehouseMemoLine = _wm
+      ? '<div style="margin-top:4px; padding:6px 10px; background:#FFFCE8; border-left:3px solid #E5C158; border-radius:3px; font-size:11px; color:#8B6914;">'
+        + '🗒️ <b>창고 메모:</b> ' + _wmEsc
+        + ' <small style="color:#B0954B;">(인보이스 미노출)</small>'
+        + '</div>'
+      : '';
     var pName  = p ? p.name         : '(품목없음)';
     var pBrand = p ? (p.brand || '') : '';
     var lineP  = isCancelled ? 0 : (it.lineUnitPrice || 0);
@@ -6069,7 +6106,7 @@ function renderPrepTbody(o) {
       +   ' onchange="updatePrepPrice(window._prepOid,' + i + ',this.value)">' + priceDiff;
     var amtCell = isCancelled ? '<span style="color:#999;">$0.00</span>' : '$' + amt;
     html += '<tr style="' + rowBg + '">'
-      + '<td>' + badge + '<b style="' + nameStyle + '">' + pName + '</b>' + cancelNote + addNote + itemNote + '</td>'
+      + '<td>' + badge + '<b style="' + nameStyle + '">' + pName + '</b>' + cancelNote + addNote + itemNote + warehouseMemoLine + '</td>'
       + '<td style="font-size:11px;color:var(--muted);">' + pBrand + '</td>'
       + '<td>' + orderDisplay + '</td>'
       + '<td class="num">' + wCell + '</td>'
