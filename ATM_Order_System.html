@@ -8129,30 +8129,45 @@ function viewStatement(params) {
     const cust = DB.customers.find(c => c.id === cid);
     if (!cust) return '<p style="color:var(--muted); padding:8px;">거래처를 선택하고 [조회]를 누르세요.</p>';
 
-    // 이월 잔액 = 시작일 이전의 모든 인보이스 - 입금
-    const openInv = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid && (o.invoicedAt||o.orderDate||'').slice(0,10) < dateFrom)
+    // ⭐ (2026-07-07) UTC/로컬 시차 통일 — toLocalISODate 사용.
+    // ⭐ (2026-07-07) 크레딧 노트 반영 — 이월잔액 차감 + 이벤트 라인 추가.
+
+    // 이월 잔액 = 시작일 이전의 모든 인보이스 - 입금 - 크레딧
+    const openInv = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid && toLocalISODate(o.invoicedAt||o.orderDate||'') < dateFrom)
       .reduce((s,o) => s + computeTotals(o).grand, 0);
     const openPaid = DB.payments.filter(p => p.customerId === cid && p.date < dateFrom)
       .reduce((s,p) => s + p.amount, 0);
-    const opening = openInv - openPaid;
+    const openCredit = (DB.creditNotes||[]).filter(c => c.customerId === cid && toLocalISODate(c.issuedAt) < dateFrom)
+      .reduce((s,c) => s + computeCreditNoteTotals(c).grand, 0);
+    const opening = openInv - openPaid - openCredit;
 
-    // 기간 내 인보이스 + 입금을 한 줄씩 이벤트로 모아 날짜순 정렬
+    // 기간 내 인보이스 + 입금 + 크레딧을 한 줄씩 이벤트로 모아 날짜순 정렬
     const events = [];
     DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid).forEach(o => {
-      const d = (o.invoicedAt||o.orderDate||'').slice(0,10);
-      if (d >= dateFrom && d <= dateTo) events.push({ date: d, kind: 'inv', no: (o.invoiceNo||o.orderNo||'-'), amount: computeTotals(o).grand });
+      const d = toLocalISODate(o.invoicedAt||o.orderDate||'');
+      if (d && d >= dateFrom && d <= dateTo) events.push({ date: d, kind: 'inv', no: (o.invoiceNo||o.orderNo||'-'), amount: computeTotals(o).grand });
     });
     DB.payments.filter(p => p.customerId === cid).forEach(p => {
       if (p.date >= dateFrom && p.date <= dateTo) events.push({ date: p.date, kind: 'pay', amount: p.amount });
     });
-    events.sort((a,b) => { if (a.date !== b.date) return a.date < b.date ? -1 : 1; return a.kind === 'inv' ? -1 : 1; });
+    (DB.creditNotes||[]).filter(c => c.customerId === cid).forEach(cn => {
+      const d = toLocalISODate(cn.issuedAt);
+      if (d && d >= dateFrom && d <= dateTo) events.push({ date: d, kind: 'cn', no: (cn.creditNo||'-'), refInv: (cn.invoiceNo||''), amount: computeCreditNoteTotals(cn).grand, id: cn.id, reason: cn.reason||'' });
+    });
+    // 정렬: 날짜순 → 같은 날은 인보이스 → 크레딧 → 입금 순
+    const kindOrder = { inv:0, cn:1, pay:2 };
+    events.sort((a,b) => { if (a.date !== b.date) return a.date < b.date ? -1 : 1; return kindOrder[a.kind] - kindOrder[b.kind]; });
 
-    let bal = opening, totInv = 0, totPay = 0;
+    let bal = opening, totInv = 0, totPay = 0, totCredit = 0;
     let rows = '<tr style="color:var(--muted);"><td>' + dateFrom + '</td><td>이월 잔액</td><td class="num">—</td><td class="num">—</td><td class="num"><b>$' + fmtMoney(opening) + '</b></td></tr>';
     events.forEach(e => {
       if (e.kind === 'inv') {
         bal += e.amount; totInv += e.amount;
         rows += '<tr><td>' + e.date + '</td><td>' + e.no + '</td><td class="num">$' + fmtMoney(e.amount) + '</td><td class="num">—</td><td class="num"><b>$' + fmtMoney(bal) + '</b></td></tr>';
+      } else if (e.kind === 'cn') {
+        bal -= e.amount; totCredit += e.amount;
+        const label = 'CN ' + e.no + (e.refInv ? ' <small style="color:var(--muted);">(Ref ' + e.refInv + ')</small>' : '') + (e.reason ? ' <small style="color:#C0392B;">' + e.reason + '</small>' : '');
+        rows += '<tr style="background:#FDECEA;"><td>' + e.date + '</td><td style="color:#C0392B;">' + label + '</td><td class="num" style="color:#C0392B;">-$' + fmtMoney(e.amount) + '</td><td class="num">—</td><td class="num"><b>$' + fmtMoney(bal) + '</b></td></tr>';
       } else {
         bal -= e.amount; totPay += e.amount;
         rows += '<tr><td>' + e.date + '</td><td style="color:var(--muted);">입금</td><td class="num">—</td><td class="num" style="color:var(--success);">$' + fmtMoney(e.amount) + '</td><td class="num"><b>$' + fmtMoney(bal) + '</b></td></tr>';
@@ -8172,9 +8187,10 @@ function viewStatement(params) {
           '<div>기간: ' + dateFrom + ' ~ ' + dateTo + '</div>' +
         '</div>' +
       '</div>' +
-      '<table class="t"><thead><tr><th>날짜</th><th>인보이스 번호</th><th class="num">금액</th><th class="num">입금</th><th class="num">발란스</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<table class="t"><thead><tr><th>날짜</th><th>인보이스 번호 / 크레딧</th><th class="num">금액</th><th class="num">입금</th><th class="num">발란스</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '<div style="margin-top:18px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
         '<div><span style="color:var(--muted);font-size:12px;">총 인보이스</span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
+        (totCredit > 0.001 ? '<div><span style="color:var(--muted);font-size:12px;">총 크레딧</span><br><b style="font-size:18px;color:#C0392B;">-$' + fmtMoney(totCredit) + '</b></div>' : '') +
         '<div><span style="color:var(--muted);font-size:12px;">총 입금</span><br><b style="font-size:18px;color:var(--success);">$' + fmtMoney(totPay) + '</b></div>' +
         '<div><span style="color:var(--muted);font-size:12px;">기말 미수금</span><br><b style="font-size:20px;color:' + balColor + ';">$' + fmtMoney(bal) + '</b></div>' +
       '</div></div>' +
@@ -8217,23 +8233,38 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   const invoices = DB.orders.filter(o =>
     ['invoiced','delivered'].includes(o.status) &&
     o.customerId === cid &&
-    (o.invoicedAt || o.orderDate || '').slice(0,10) >= dateFrom &&
-    (o.invoicedAt || o.orderDate || '').slice(0,10) <= dateTo
+    toLocalISODate(o.invoicedAt || o.orderDate || '') >= dateFrom &&
+    toLocalISODate(o.invoicedAt || o.orderDate || '') <= dateTo
   ).sort((a,b) => (a.invoicedAt||a.orderDate||'') > (b.invoicedAt||b.orderDate||'') ? 1 : -1);
 
   const payments = DB.payments.filter(p =>
     p.customerId === cid && p.date >= dateFrom && p.date <= dateTo
   ).sort((a,b) => a.date > b.date ? 1 : -1);
 
+  // ⭐ (2026-07-07) 크레딧 노트도 함께 표시
+  const credits = (DB.creditNotes||[]).filter(c =>
+    c.customerId === cid &&
+    toLocalISODate(c.issuedAt) >= dateFrom &&
+    toLocalISODate(c.issuedAt) <= dateTo
+  ).sort((a,b) => (a.issuedAt||'') > (b.issuedAt||'') ? 1 : -1);
+
   const totalInvoiced = invoices.reduce((s, o) => s + computeTotals(o).grand, 0);
   const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
-  const balance = totalInvoiced - totalPaid;
+  const totalCredit = credits.reduce((s, c) => s + computeCreditNoteTotals(c).grand, 0);
+  const balance = totalInvoiced - totalPaid - totalCredit;
 
   let txt = '[ALL THAT MEAT] ' + custName + ' 거래내역서\n기준일: ' + today + '\n';
   if (dateFrom !== '2000-01-01' || dateTo !== today) txt += '기간: ' + dateFrom + ' ~ ' + dateTo + '\n';
   txt += '\n--- 인보이스 ---\n';
   if (invoices.length === 0) { txt += '(없음)\n'; }
-  else { invoices.forEach(function(o) { txt += (o.invoicedAt||o.orderDate||'').slice(0,10) + ' ' + (o.invoiceNo||o.orderNo) + ' $' + fmtMoney(computeTotals(o).grand) + '\n'; }); }
+  else { invoices.forEach(function(o) { txt += toLocalISODate(o.invoicedAt||o.orderDate||'') + ' ' + (o.invoiceNo||o.orderNo) + ' $' + fmtMoney(computeTotals(o).grand) + '\n'; }); }
+  if (credits.length > 0) {
+    txt += '\n--- 크레딧 노트 ---\n';
+    credits.forEach(function(c) {
+      const amt = computeCreditNoteTotals(c).grand;
+      txt += toLocalISODate(c.issuedAt) + ' CN' + (c.creditNo||'-') + (c.invoiceNo?' (Ref '+c.invoiceNo+')':'') + ' -$' + fmtMoney(amt) + (c.reason?' — '+c.reason:'') + '\n';
+    });
+  }
   txt += '\n--- 입금 ---\n';
   if (payments.length === 0) { txt += '(없음)\n'; }
   else { payments.forEach(function(p) { txt += p.date + ' ' + (methodLabel[p.method]||p.method) + ' $' + fmtMoney(p.amount) + (p.reference ? ' (' + p.reference + ')' : '') + '\n'; }); }
