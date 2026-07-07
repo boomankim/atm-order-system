@@ -832,6 +832,7 @@ function seed() {
     ],
     orders: [],
     payments: [],
+    creditNotes: [],   // ⭐ (2026-07-07) 크레딧 노트 (반품)
     settings: {
       orderSeq: 1,
       invoiceSeq: 1,
@@ -4901,16 +4902,22 @@ function dailyReportComputeRows(dateISO) {
       .filter(x => x.dateISO);
     const allPayments = (DB.payments||[]).filter(p => p.customerId === c.id);
 
-    // 전미수금 = 선택일 이전(<)까지의 인보이스 - 입금
+    // ⭐ (2026-07-07) 크레딧 노트 반영 — 매출/미수금에서 차감.
+    //   전미수금은 이전 크레딧까지 차감, 당일 매출은 당일 크레딧 net으로 반영.
+    const priorCredit = getCreditsForCustomerBefore(c.id, dateISO);
+    const todayCredit = getCreditsForCustomerOnDate(c.id, dateISO);
+
+    // 전미수금 = 선택일 이전(<)까지의 인보이스 - 입금 - 크레딧
     const priorInvoiced = allInvoices.filter(x => x.dateISO < dateISO).reduce((s,x)=>s+x.amount,0);
     const priorPaid = allPayments.filter(p => (p.date||'') < dateISO).reduce((s,p)=>s+p.amount,0);
-    const priorBalance = priorInvoiced - priorPaid;
+    const priorBalance = priorInvoiced - priorPaid - priorCredit;
 
-    // 당일 매출액 / 입금액
-    const todaySales = allInvoices.filter(x => x.dateISO === dateISO).reduce((s,x)=>s+x.amount,0);
+    // 당일 매출액 / 입금액 (크레딧은 매출에서 차감 → net sales로 표시)
+    const todaySalesGross = allInvoices.filter(x => x.dateISO === dateISO).reduce((s,x)=>s+x.amount,0);
+    const todaySales = todaySalesGross - todayCredit;
     const todayPaid = allPayments.filter(p => (p.date||'') === dateISO).reduce((s,p)=>s+p.amount,0);
 
-    // 현잔액 = 전미수금 + 매출액 - 입금액
+    // 현잔액 = 전미수금 + 매출액(net) - 입금액
     const currentBalance = priorBalance + todaySales - todayPaid;
 
     // Overdue 정책 (2026-06-16 변경):
@@ -4920,15 +4927,31 @@ function dailyReportComputeRows(dateISO) {
     const GRACE_DAYS = 7;
     let overdue = 0;
     if (days > 0) {
-      const invoicesAsOf = allInvoices
-        .filter(x => x.dateISO <= dateISO)
+      // 인보이스별로 연결된 크레딧 총액을 미리 매핑 (dateISO 이하만)
+      const creditByOrderId = {};
+      (DB.creditNotes || []).forEach(cn => {
+        if (!cn || cn.customerId !== c.id) return;
+        if (toLocalISODate(cn.issuedAt) > dateISO) return;
+        creditByOrderId[cn.orderId] = (creditByOrderId[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+      });
+      // dateISO 기준 이 거래처의 인보이스 목록 (orderId 매핑용 원본 참조 필요)
+      const invoicesAsOf = DB.orders
+        .filter(o => o.status === 'delivered' && o.customerId === c.id)
+        .map(o => ({
+          orderId: o.id,
+          dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
+          amount: computeTotals(o).grand
+        }))
+        .filter(x => x.dateISO && x.dateISO <= dateISO)
         .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
       let totalPaymentAsOf = allPayments
         .filter(p => (p.date||'') <= dateISO)
         .reduce((s,p)=>s+p.amount,0);
       for (const inv of invoicesAsOf) {
-        let unpaid = inv.amount;
-        if (totalPaymentAsOf > 0) {
+        // ⭐ 크레딧으로 이미 상쇄된 부분 먼저 차감
+        let unpaid = inv.amount - (creditByOrderId[inv.orderId] || 0);
+        if (unpaid < 0) unpaid = 0;
+        if (totalPaymentAsOf > 0 && unpaid > 0) {
           const applied = Math.min(totalPaymentAsOf, unpaid);
           unpaid -= applied;
           totalPaymentAsOf -= applied;
@@ -4941,7 +4964,7 @@ function dailyReportComputeRows(dateISO) {
         }
       }
     }
-    return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue };
+    return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue, todayCredit };
   });
   // 거래 활동 없는 거래처도 모두 표시 — overdue 큰 순 → 잔액 큰 순 → 이름 가나다순
   rows.sort((a,b) => (b.overdue - a.overdue) || (b.currentBalance - a.currentBalance) || a.c.name.localeCompare(b.c.name, 'ko'));
@@ -6488,8 +6511,32 @@ function viewInvoice(params) {
       <button class="btn" onclick="window.print()">🖨️ 인쇄 / PDF 저장</button>
       <button class="btn kakao" onclick="sendInvoice('${o.id}')">📤 카톡/이메일 공유</button>
       ${o.status==='invoiced' ? `<button class="btn secondary" onclick="markDelivered('${o.id}')">배송완료 처리</button>` : ''}
+      <button class="btn" style="background:#C0392B;color:#fff;" onclick="location.hash='#creditIssue?orderId=${o.id}'">🧾 크레딧 노트 발행 (반품)</button>
       <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
     </div>
+    ${(() => {
+      const cns = getCreditNotesForOrder(o.id);
+      if (cns.length === 0) return '';
+      const totalCredit = cns.reduce((s,c) => s + computeCreditNoteTotals(c).grand, 0);
+      return `<div class="card" style="border-left:4px solid #C0392B; background:#FDECEA; margin-bottom:14px;">
+        <h3 style="color:#C0392B; margin-top:0;">🧾 이 인보이스의 크레딧 노트 (${cns.length}건, 총 -$${fmtMoney(totalCredit)})</h3>
+        <table class="t">
+          <thead><tr><th>크레딧#</th><th>발행일</th><th>사유</th><th class="num">금액</th><th class="act"></th></tr></thead>
+          <tbody>
+            ${cns.map(cn => {
+              const cnTotals = computeCreditNoteTotals(cn);
+              return `<tr>
+                <td><b style="color:#C0392B;">${cn.creditNo || '-'}</b></td>
+                <td>${new Date(cn.issuedAt).toLocaleDateString('en-AU')}</td>
+                <td>${cn.reason || '-'}</td>
+                <td class="num" style="color:#C0392B; font-weight:700;">-$${fmtMoney(cnTotals.grand)}</td>
+                <td class="act"><button class="btn sm secondary" onclick="location.hash='#creditNote?id=${cn.id}'">보기</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    })()}
 
     <div class="invoice">
       <div class="invoice-header">
@@ -6661,6 +6708,493 @@ function shareOrder(orderId) {
     });
   }
 }
+
+// =========================================================================
+// ⭐ CREDIT NOTE (2026-07-07) — 반품/취소용 크레딧 노트 (사무실 전용)
+// -------------------------------------------------------------------------
+// 원본 인보이스는 절대 수정 안 함. 별도 문서(DB.creditNotes)로 관리.
+// 인보이스와 번호 시퀀스 공유(invoiceNoNext). PDF 자동 저장.
+// =========================================================================
+
+// 크레딧 노트 합계 계산 — 인보이스와 동일 GST 방식(가격은 GST inclusive 관례).
+function computeCreditNoteTotals(cn) {
+  let subtotal = 0;
+  let totalKg = 0;
+  (cn.items || []).forEach(it => {
+    subtotal += Number(it.amount) || 0;
+    totalKg  += Number(it.returnKg) || 0;
+  });
+  const gstRate = (DB.company && DB.company.gstRate) || 0;
+  const gst = subtotal * (gstRate / (1 + gstRate));
+  return { subtotal: subtotal - gst, gst, grand: subtotal, totalKg };
+}
+
+// 주문에 연결된 모든 크레딧 노트
+function getCreditNotesForOrder(orderId) {
+  return (DB.creditNotes || []).filter(c => c && c.orderId === orderId);
+}
+// 거래처의 특정 날짜 크레딧 합계 (매출일보용)
+function getCreditsForCustomerOnDate(customerId, dateISO) {
+  return (DB.creditNotes || [])
+    .filter(c => c && c.customerId === customerId && toLocalISODate(c.issuedAt) === dateISO)
+    .reduce((s, c) => s + (computeCreditNoteTotals(c).grand || 0), 0);
+}
+// 거래처의 특정 날짜 이전(<) 크레딧 합계 (전미수금용)
+function getCreditsForCustomerBefore(customerId, dateISO) {
+  return (DB.creditNotes || [])
+    .filter(c => c && c.customerId === customerId && toLocalISODate(c.issuedAt) < dateISO)
+    .reduce((s, c) => s + (computeCreditNoteTotals(c).grand || 0), 0);
+}
+// 거래처의 전체 크레딧 합계 (스테이트먼트용)
+function getCreditsForCustomerAll(customerId, uptoISO) {
+  return (DB.creditNotes || [])
+    .filter(c => c && c.customerId === customerId && (!uptoISO || toLocalISODate(c.issuedAt) <= uptoISO))
+    .reduce((s, c) => s + (computeCreditNoteTotals(c).grand || 0), 0);
+}
+
+// -------- 발행 화면 --------
+function viewCreditIssue(params) {
+  const orderId = params.get('orderId') || params.get('id');
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return location.hash = '#office';
+  if (o.status !== 'invoiced' && o.status !== 'delivered') {
+    alert('아직 인보이스가 발행되지 않은 주문입니다.');
+    return location.hash = '#invoice?id=' + o.id;
+  }
+  const cust = DB.customers.find(c => c.id === o.customerId) || {};
+  const invoiceItems = getInvoiceItems(o);
+
+  // 크레딧 초안(draft) — 세션 임시 상태. 라인별 { pick, mode, returnKg, amount, unitPrice }
+  window._creditDraft = {
+    orderId: o.id,
+    reason: '',
+    notes: '',
+    lines: invoiceItems.map(function(it) {
+      const p = DB.products.find(function(x){ return x.id === it.productId; });
+      const price = (it._status === 'cancelled') ? 0 : lineUnitPrice(it, p, cust);
+      const w = (it.actualWeightKg != null) ? Number(it.actualWeightKg) : 0;
+      return {
+        productId: it.productId,
+        name: p ? p.name : '(품목없음)',
+        origKg: w,
+        unitPrice: price,
+        pick: false,       // 체크 여부
+        mode: 'kg',        // 'kg' | 'amt'
+        returnKg: 0,
+        amount: 0
+      };
+    })
+  };
+
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <h2 class="page-title">🧾 크레딧 노트 발행
+      <span class="sub">원본 인보이스 <b>${o.invoiceNo || '-'}</b> · ${cust.name || '-'}</span>
+    </h2>
+    <div class="card">
+      <div class="notice" style="border-left-color:#C0392B; background:#FDECEA;">
+        <b>반품/취소 처리:</b> 원본 인보이스는 그대로 유지되고, 별도 <b>크레딧 노트</b>로 발행됩니다.
+        발행 후 매출일보/미수금에서 자동 차감됩니다.
+      </div>
+
+      <table class="t" id="creditTable" style="margin-top:12px;">
+        <thead><tr>
+          <th style="width:32px;">선택</th>
+          <th>품목</th>
+          <th class="num">원본 중량</th>
+          <th class="num">단가</th>
+          <th>모드</th>
+          <th class="num">반품 수량 / 금액</th>
+          <th class="num">크레딧 금액</th>
+        </tr></thead>
+        <tbody id="creditTbody"></tbody>
+      </table>
+
+      <div id="creditTotalsBox" style="display:flex; justify-content:flex-end; margin-top:14px;"></div>
+
+      <div style="margin-top:16px; padding:12px 14px; background:#FBF4E0; border:1px dashed #B8860B; border-radius:8px;">
+        <div style="display:grid; grid-template-columns:130px 1fr; gap:10px; align-items:center;">
+          <label style="font-weight:600;">사유 (필수)</label>
+          <input type="text" id="creditReason" placeholder="예: 품질 문제, 재고 반품, 수량 오류"
+            style="padding:8px 10px; border:1px solid var(--line); border-radius:5px; font-size:13px;"
+            oninput="window._creditDraft.reason=this.value">
+          <label style="font-weight:600;">메모 (선택)</label>
+          <input type="text" id="creditNotes" placeholder="추가 설명 (사무실 참고용)"
+            style="padding:8px 10px; border:1px solid var(--line); border-radius:5px; font-size:13px;"
+            oninput="window._creditDraft.notes=this.value">
+        </div>
+      </div>
+
+      <div class="btn-row" style="margin-top:18px;">
+        <button class="btn success" onclick="confirmIssueCreditNote()">✅ 크레딧 노트 발행 확정</button>
+        <button class="btn secondary" onclick="location.hash='#invoice?id=${o.id}'">← 인보이스로 돌아가기</button>
+      </div>
+    </div>
+  `;
+  renderCreditTbody();
+}
+
+function renderCreditTbody() {
+  const d = window._creditDraft;
+  if (!d) return;
+  const tbody = document.getElementById('creditTbody');
+  if (!tbody) return;
+  let html = '';
+  d.lines.forEach(function(ln, i) {
+    const disabled = !ln.pick;
+    const kgVal = (ln.returnKg != null) ? Number(ln.returnKg).toFixed(2) : '';
+    const amtVal = (ln.amount   != null) ? Number(ln.amount).toFixed(2)   : '';
+    const rowStyle = ln.pick ? 'background:#FFF6F6;' : '';
+    const kgInput  = '<input type="number" step="0.01" min="0" ' + (disabled?'disabled':'') + ' value="' + kgVal
+      + '" style="width:100px;padding:5px;border:1px solid var(--line);border-radius:4px;text-align:right;'
+      + (disabled?'background:#f5f5f5;color:#aaa;':'') + '"'
+      + ' oninput="updateCreditLineKgLive(' + i + ', this.value)" onchange="updateCreditLineKg(' + i + ', this.value)">';
+    const amtInput = '<input type="number" step="0.01" min="0" ' + (disabled?'disabled':'') + ' value="' + amtVal
+      + '" style="width:100px;padding:5px;border:1px solid var(--line);border-radius:4px;text-align:right;'
+      + (disabled?'background:#f5f5f5;color:#aaa;':'') + '"'
+      + ' oninput="updateCreditLineAmtLive(' + i + ', this.value)" onchange="updateCreditLineAmt(' + i + ', this.value)">';
+    const modeSelect = '<select ' + (disabled?'disabled':'') + ' style="padding:4px 6px;border:1px solid var(--line);border-radius:4px;font-size:12px;"'
+      + ' onchange="updateCreditLineMode(' + i + ', this.value)">'
+      + '<option value="kg"' + (ln.mode==='kg'?' selected':'') + '>kg 기준</option>'
+      + '<option value="amt"' + (ln.mode==='amt'?' selected':'') + '>금액 직접</option>'
+      + '</select>';
+    const inputCell = ln.mode === 'amt'
+      ? '$ ' + amtInput
+      : kgInput + ' kg';
+    const currentAmt = computeCreditLineAmount(ln);
+    html += '<tr style="' + rowStyle + '">'
+      + '<td style="text-align:center;"><input type="checkbox" ' + (ln.pick?'checked':'') + ' onchange="toggleCreditLinePick(' + i + ', this.checked)"></td>'
+      + '<td><b>' + ln.name + '</b></td>'
+      + '<td class="num">' + ln.origKg.toFixed(2) + ' kg</td>'
+      + '<td class="num">$' + fmtMoney(ln.unitPrice) + '</td>'
+      + '<td>' + modeSelect + '</td>'
+      + '<td class="num">' + inputCell + '</td>'
+      + '<td class="num"><b style="color:' + (currentAmt>0?'#C0392B':'#999') + ';">-$' + fmtMoney(currentAmt) + '</b></td>'
+      + '</tr>';
+  });
+  tbody.innerHTML = html;
+  renderCreditTotalsBox();
+}
+function computeCreditLineAmount(ln) {
+  if (!ln.pick) return 0;
+  if (ln.mode === 'amt') return Number(ln.amount) || 0;
+  const kg = Number(ln.returnKg) || 0;
+  return kg * (Number(ln.unitPrice) || 0);
+}
+function renderCreditTotalsBox() {
+  const d = window._creditDraft;
+  if (!d) return;
+  const box = document.getElementById('creditTotalsBox');
+  if (!box) return;
+  const subtotalGross = d.lines.reduce(function(s, ln){ return s + computeCreditLineAmount(ln); }, 0);
+  const gstRate = (DB.company && DB.company.gstRate) || 0;
+  const gst = subtotalGross * (gstRate / (1 + gstRate));
+  const sub = subtotalGross - gst;
+  box.innerHTML = ''
+    + '<div style="min-width:280px; padding:12px 16px; border:2px solid #C0392B; border-radius:8px; background:#FDECEA;">'
+    + '<div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:2px;"><span>Subtotal (ex GST)</span><span>-$' + fmtMoney(sub) + '</span></div>'
+    + '<div style="display:flex; justify-content:space-between; font-size:13px; margin-bottom:6px;"><span>GST (' + (gstRate*100).toFixed(0) + '%)</span><span>-$' + fmtMoney(gst) + '</span></div>'
+    + '<div style="display:flex; justify-content:space-between; font-size:18px; font-weight:800; color:#C0392B; padding-top:6px; border-top:1.5px solid #C0392B;"><span>CREDIT TOTAL</span><span>-$' + fmtMoney(subtotalGross) + '</span></div>'
+    + '</div>';
+}
+window.toggleCreditLinePick = function(i, checked) {
+  const d = window._creditDraft;
+  if (!d || !d.lines[i]) return;
+  d.lines[i].pick = !!checked;
+  // 처음 체크 시 kg 모드는 origKg로 미리 채움
+  if (checked && d.lines[i].mode === 'kg' && (!d.lines[i].returnKg || d.lines[i].returnKg === 0)) {
+    d.lines[i].returnKg = d.lines[i].origKg;
+  }
+  renderCreditTbody();
+};
+// oninput 중에는 데이터만 갱신 + 합계만 다시 그림(입력 포커스 유지). onchange(=blur)일 때 전체 재렌더.
+window.updateCreditLineKgLive  = function(i, v) { const d=window._creditDraft; if(!d||!d.lines[i])return; d.lines[i].returnKg = parseFloat(v)||0; renderCreditTotalsBox(); };
+window.updateCreditLineAmtLive = function(i, v) { const d=window._creditDraft; if(!d||!d.lines[i])return; d.lines[i].amount   = parseFloat(v)||0; renderCreditTotalsBox(); };
+window.updateCreditLineKg      = function(i, v) { const d=window._creditDraft; if(!d||!d.lines[i])return; d.lines[i].returnKg = parseFloat(v)||0; renderCreditTbody(); };
+window.updateCreditLineAmt     = function(i, v) { const d=window._creditDraft; if(!d||!d.lines[i])return; d.lines[i].amount   = parseFloat(v)||0; renderCreditTbody(); };
+window.updateCreditLineMode    = function(i, v) { const d=window._creditDraft; if(!d||!d.lines[i])return; d.lines[i].mode = (v==='amt'?'amt':'kg'); renderCreditTbody(); };
+
+window.confirmIssueCreditNote = async function() {
+  const d = window._creditDraft;
+  if (!d) return;
+  const picked = d.lines.filter(function(ln){ return ln.pick && computeCreditLineAmount(ln) > 0.001; });
+  if (picked.length === 0) { alert('반품 처리할 품목을 하나 이상 선택하고 수량/금액을 입력하세요.'); return; }
+  if (!d.reason || d.reason.trim().length < 2) { alert('반품 사유를 입력하세요.'); return; }
+  const order = DB.orders.find(function(x){ return x.id === d.orderId; });
+  if (!order) return;
+  const cust  = DB.customers.find(function(c){ return c.id === order.customerId; });
+  const totalPreview = picked.reduce(function(s, ln){ return s + computeCreditLineAmount(ln); }, 0);
+  if (!confirm('크레딧 노트를 발행합니다.\n\n반품 총액: -$' + fmtMoney(totalPreview) + '\n라인 수: ' + picked.length + '건\n\n발행 후에는 수정 불가. 진행할까요?')) return;
+
+  // 번호 발행 — 인보이스와 동일 시퀀스(invoiceNoNext) 공유 (사용자 확정 정책)
+  let cnNo;
+  if (DB_REF) {
+    _lastSaveTime = Date.now();
+    try {
+      const txn = DB_REF.child('settings/invoiceNoNext').transaction(function(curr) {
+        const next = (typeof curr === 'number' && curr >= 200001) ? curr : 200001;
+        return next + 1;
+      });
+      const result = await Promise.race([ txn, new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('cn number timeout')); }, 3000); }) ]);
+      _lastSaveTime = Date.now();
+      if (result && result.committed && result.snapshot && typeof result.snapshot.val() === 'number') {
+        cnNo = String(result.snapshot.val() - 1);
+        if (!DB.settings) DB.settings = {};
+        DB.settings.invoiceNoNext = result.snapshot.val();
+      }
+    } catch(e) { console.warn('CN number transaction failed, using local:', e); }
+  }
+  if (!cnNo) {
+    if (!DB.settings) DB.settings = {};
+    if (!DB.settings.invoiceNoNext) DB.settings.invoiceNoNext = 200001;
+    cnNo = String(DB.settings.invoiceNoNext++);
+  }
+
+  const cnId = 'cn_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const items = picked.map(function(ln) {
+    const amt = computeCreditLineAmount(ln);
+    // kg 모드이면 returnKg/unitPrice 그대로; 금액모드이면 kg=0, 단가는 참조용으로 유지
+    return {
+      productId: ln.productId,
+      name: ln.name,
+      returnKg: ln.mode === 'kg' ? (Number(ln.returnKg) || 0) : 0,
+      unitPrice: Number(ln.unitPrice) || 0,
+      amount: amt,          // GST 포함 총액
+      mode: ln.mode
+    };
+  });
+  const cn = {
+    id: cnId,
+    creditNo: cnNo,
+    orderId: order.id,
+    invoiceNo: order.invoiceNo || '',
+    customerId: order.customerId,
+    issuedAt: new Date().toISOString(),
+    reason: d.reason.trim(),
+    notes: (d.notes || '').trim(),
+    items: items
+  };
+
+  if (!Array.isArray(DB.creditNotes)) DB.creditNotes = [];
+  DB.creditNotes.push(cn);
+  if (!Array.isArray(order.credits)) order.credits = [];
+  order.credits.push(cnId);
+
+  // Firebase 부분 업데이트 + 로컬 저장
+  try { saveLocalDB(); } catch(e){}
+  try {
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      const idx = DB.creditNotes.length - 1;
+      DB_REF.child('creditNotes/' + idx).set(cn);
+      const orderIdx = DB.orders.findIndex(function(x){ return x.id === order.id; });
+      if (orderIdx >= 0) DB_REF.child('orders/' + orderIdx + '/credits').set(order.credits);
+    }
+  } catch(e) { console.warn('creditNote Firebase save failed:', e); }
+
+  showToast('✅ 크레딧 노트 ' + cnNo + ' 발행 완료 — -$' + fmtMoney(totalPreview));
+  window._creditDraft = null;
+  location.hash = '#creditNote?id=' + cnId;
+  // PDF 자동 저장
+  autoSaveCreditNotePDF(cnId).catch(function(e){ console.warn('autoSaveCreditNotePDF error:', e); });
+};
+
+// -------- 열람 화면 --------
+function viewCreditNote(params) {
+  const id = params.get('id');
+  const cn = (DB.creditNotes || []).find(function(x){ return x.id === id; });
+  if (!cn) return location.hash = '#office';
+  const order = DB.orders.find(function(x){ return x.id === cn.orderId; }) || null;
+  const cust  = DB.customers.find(function(c){ return c.id === cn.customerId; }) || {};
+  const totals = computeCreditNoteTotals(cn);
+  const itemRowsHTML = cn.items.map(function(it) {
+    const qty = it.mode === 'amt' ? '(금액 직접)' : it.returnKg.toFixed(2) + ' kg';
+    return `<tr>
+      <td class="item-cell"><b>${it.name}</b></td>
+      <td class="num">${qty}</td>
+      <td class="num">$${fmtMoney(it.unitPrice)}</td>
+      <td class="num" style="font-weight:600; color:#C0392B;">-$${fmtMoney(it.amount)}</td>
+    </tr>`;
+  }).join('');
+  const backToInvoiceBtn = order
+    ? `<button class="btn secondary" onclick="location.hash='#invoice?id=${order.id}'">← 원본 인보이스로</button>`
+    : '';
+  const app = document.getElementById('app');
+  app.innerHTML = `
+    <div class="btn-row" style="margin-bottom:14px;">
+      <button class="btn" onclick="window.print()">🖨️ 인쇄 / PDF 저장</button>
+      ${backToInvoiceBtn}
+      <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
+    </div>
+    <div class="invoice">
+      <div class="invoice-header">
+        <div>
+          <h1>${DB.company.name}</h1>
+          <div style="font-size:12px; color:var(--muted); margin-top:4px;">
+            ABN: ${DB.company.abn||'-'} · ${DB.company.phone||''}${companyAddrLine()?'<br>'+companyAddrLine():''}
+          </div>
+        </div>
+        <div style="text-align:right;">
+          <div style="font-size:28px; font-weight:800; color:#C0392B; letter-spacing:3px;">CREDIT NOTE</div>
+          <div style="margin-top:6px; font-size:13px;">
+            Credit No: <b>${cn.creditNo||'-'}</b><br>
+            Date: ${new Date(cn.issuedAt).toLocaleDateString('en-AU')}<br>
+            ${cn.invoiceNo ? `<small style="color:var(--muted);">Ref Invoice: ${cn.invoiceNo}</small>` : ''}
+          </div>
+        </div>
+      </div>
+      <div style="display:flex; justify-content:space-between; margin-bottom:14px;">
+        <div>
+          <div style="font-size:11px; color:var(--muted);">BILL TO</div>
+          <div style="font-weight:700; font-size:16px;">${cust.name||'-'}</div>
+          <div style="font-size:12px; color:var(--muted);">
+            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}
+          </div>
+        </div>
+        <div style="text-align:right; font-size:13px;">
+          Terms: ${termsLabel(cust.terms)}
+        </div>
+      </div>
+      <div style="margin:0 0 10px 0; padding:8px 12px; background:#FDECEA; border-left:4px solid #C0392B; border-radius:4px; font-size:13px;">
+        <b>📝 반품 사유:</b> ${cn.reason||'-'}${cn.notes ? ` <small style="color:var(--muted);">(${cn.notes})</small>` : ''}
+      </div>
+      <table>
+        <colgroup>
+          <col style="width:52%;"><col style="width:16%;"><col style="width:16%;"><col style="width:16%;">
+        </colgroup>
+        <thead><tr>
+          <th>Item / 품목</th>
+          <th class="num">Return / 반품</th>
+          <th class="num">Unit Price / 단가</th>
+          <th class="num">Credit / 크레딧</th>
+        </tr></thead>
+        <tbody>${itemRowsHTML}</tbody>
+      </table>
+      <div class="tot-block">
+        <div class="tot-box" style="border:2px solid #C0392B;">
+          <div class="tot-row"><span>Subtotal (ex GST)</span><span>-$${fmtMoney(totals.subtotal)}</span></div>
+          <div class="tot-row"><span>GST (${((DB.company.gstRate||0)*100).toFixed(0)}%)</span><span>-$${fmtMoney(totals.gst)}</span></div>
+          <div class="tot-row grand" style="color:#C0392B;"><span>TOTAL CREDIT</span><span>-$${fmtMoney(totals.grand)}</span></div>
+        </div>
+      </div>
+      <div style="margin-top:18px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted);">
+        This credit note reduces the amount owed on invoice ${cn.invoiceNo||'N/A'}.<br>
+        ${DB.company.name} · All prices in ${DB.company.currency||'AUD'}, GST inclusive.
+      </div>
+    </div>
+  `;
+}
+
+// -------- PDF용 HTML 빌더 --------
+function buildCreditNoteHTML(cn, cust) {
+  const totals = computeCreditNoteTotals(cn);
+  const itemRows = cn.items.map(function(it) {
+    const qty = it.mode === 'amt' ? '(직접)' : it.returnKg.toFixed(2) + ' kg';
+    return '<tr style="border-bottom:1px solid #E5DCD3;">'
+      + '<td style="padding:3px 6px;"><b>' + it.name + '</b></td>'
+      + '<td style="padding:3px 6px; text-align:right;">' + qty + '</td>'
+      + '<td style="padding:3px 6px; text-align:right;">$' + fmtMoney(it.unitPrice) + '</td>'
+      + '<td style="padding:3px 6px; text-align:right; font-weight:600; color:#C0392B;">-$' + fmtMoney(it.amount) + '</td>'
+      + '</tr>';
+  }).join('');
+  return ''
+    + '<div style="font-family:\'Malgun Gothic\',\'Apple SD Gothic Neo\',\'Helvetica Neue\',Arial,sans-serif; padding:24px 28px; background:#fff; color:#2A1A1A; width:740px;">'
+    +   '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:10px;">'
+    +     '<div>'
+    +       '<div style="font-size:20px; font-weight:800; color:#5C0F0F;">' + DB.company.name + '</div>'
+    +       '<div style="font-size:10px; color:#6B5B5B; margin-top:3px; line-height:1.5;">ABN: ' + (DB.company.abn||'-') + ' · ' + (DB.company.phone||'') + (companyAddrLine()?'<br>'+companyAddrLine():'') + '</div>'
+    +     '</div>'
+    +     '<div style="text-align:right;">'
+    +       '<div style="font-size:22px; font-weight:800; color:#C0392B; letter-spacing:2px;">CREDIT NOTE</div>'
+    +       '<div style="margin-top:4px; font-size:11px; line-height:1.6;">'
+    +         'Credit No: <b>' + (cn.creditNo||'-') + '</b><br>'
+    +         'Date: ' + new Date(cn.issuedAt).toLocaleDateString('en-AU') + '<br>'
+    +         (cn.invoiceNo ? '<span style="color:#666;">Ref Invoice: ' + cn.invoiceNo + '</span>' : '')
+    +       '</div>'
+    +     '</div>'
+    +   '</div>'
+    +   '<div style="border-top:2px solid #C0392B; margin-bottom:10px;"></div>'
+    +   '<div style="display:flex; justify-content:space-between; margin-bottom:12px;">'
+    +     '<div>'
+    +       '<div style="font-size:9px; color:#888; text-transform:uppercase; margin-bottom:2px; font-weight:700;">Bill To</div>'
+    +       '<div style="font-weight:700; font-size:14px;">' + (cust.name||'-') + '</div>'
+    +       '<div style="font-size:10px; color:#6B5B5B; line-height:1.5;">' + (cust.contact||'') + (cust.phone?' · '+cust.phone:'') + (cust.address?'<br>'+cust.address:'') + '</div>'
+    +     '</div>'
+    +     '<div style="text-align:right; font-size:11px;"><b>Terms:</b> ' + termsLabel(cust.terms) + '</div>'
+    +   '</div>'
+    +   '<div style="margin:0 0 8px 0; padding:5px 10px; background:#FDECEA; border:1px solid #C0392B; border-radius:3px; font-size:10px;">'
+    +     '<b>Reason:</b> ' + (cn.reason||'-') + (cn.notes?' — '+cn.notes:'')
+    +   '</div>'
+    +   '<table style="width:100%; border-collapse:collapse; font-size:11px; margin-bottom:10px; table-layout:fixed;">'
+    +     '<colgroup><col style="width:52%;"><col style="width:16%;"><col style="width:16%;"><col style="width:16%;"></colgroup>'
+    +     '<thead>'
+    +       '<tr style="color:#C0392B; border-top:2px solid #C0392B; border-bottom:2px solid #C0392B;">'
+    +         '<th style="text-align:left; padding:6px 6px; font-weight:800;">Item / 품목</th>'
+    +         '<th style="text-align:right; padding:6px 6px; font-weight:800;">Return</th>'
+    +         '<th style="text-align:right; padding:6px 6px; font-weight:800;">Unit Price</th>'
+    +         '<th style="text-align:right; padding:6px 6px; font-weight:800;">Credit</th>'
+    +       '</tr>'
+    +     '</thead>'
+    +     '<tbody>' + itemRows + '</tbody>'
+    +   '</table>'
+    +   '<div style="display:flex; justify-content:flex-end;">'
+    +     '<div style="min-width:260px; padding:8px 14px; border:2px solid #C0392B; border-radius:4px; background:#fff; font-size:12px;">'
+    +       '<div style="display:flex; justify-content:space-between;"><span>Subtotal (ex GST)</span><span>-$' + fmtMoney(totals.subtotal) + '</span></div>'
+    +       '<div style="display:flex; justify-content:space-between;"><span>GST (' + ((DB.company.gstRate||0)*100).toFixed(0) + '%)</span><span>-$' + fmtMoney(totals.gst) + '</span></div>'
+    +       '<div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1.5px solid #C0392B; margin-top:3px; font-weight:800; font-size:14px; color:#C0392B;"><span>TOTAL CREDIT</span><span>-$' + fmtMoney(totals.grand) + '</span></div>'
+    +     '</div>'
+    +   '</div>'
+    +   '<div style="margin-top:8px; padding-top:5px; border-top:1px solid #E5DCD3; font-size:9px; color:#999; line-height:1.5;">This credit note reduces the amount owed on invoice ' + (cn.invoiceNo||'N/A') + '. / ' + DB.company.name + '</div>'
+    + '</div>';
+}
+
+// -------- PDF 자동 저장 --------
+async function autoSaveCreditNotePDF(cnId) {
+  const cn = (DB.creditNotes || []).find(function(x){ return x.id === cnId; });
+  if (!cn) return;
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') return;
+  const cust = DB.customers.find(function(c){ return c.id === cn.customerId; }) || { name: '미확인' };
+  const now = new Date();
+  const pad = function(n){ return String(n).padStart(2,'0'); };
+  const dateStr = now.getFullYear() + '-' + pad(now.getMonth()+1) + '-' + pad(now.getDate());
+  const dirHandle = await getBackupDirHandle();
+  try {
+    const container = document.createElement('div');
+    container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
+    document.body.appendChild(container);
+    container.innerHTML = buildCreditNoteHTML(cn, cust);
+    await new Promise(function(r){ setTimeout(r, 120); });
+    const { jsPDF } = window.jspdf;
+    const canvas = await html2canvas(container.firstElementChild, { scale:2, useCORS:true, backgroundColor:'#ffffff', logging:false });
+    document.body.removeChild(container);
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const pageW = 210, pageH = 297;
+    const imgH = canvas.height * pageW / canvas.width;
+    const doc = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
+    if (imgH <= pageH) doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+    else {
+      let yOff = 0;
+      while (yOff < imgH) {
+        if (yOff > 0) doc.addPage();
+        doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+        yOff += pageH;
+      }
+    }
+    const custName = (cust.name || '거래처').replace(/[\/:*?"<>|]/g, '_');
+    const pdfFilename = 'CN' + (cn.creditNo || cn.id) + '_' + dateStr + '_' + custName + '.pdf';
+    if (dirHandle) {
+      const buf = doc.output('arraybuffer');
+      await writeToFolderPath(dirHandle, ['ATM Credit', custName], pdfFilename, buf);
+      showToast('✅ 크레딧 노트 PDF 저장 완료 — 📁 ATM Credit/거래처/');
+    } else {
+      doc.save(pdfFilename);
+      showToast('💾 크레딧 노트 PDF 다운로드 완료');
+    }
+  } catch(e) {
+    console.warn('CN PDF 저장 실패:', e);
+    showToast('⚠️ 크레딧 노트 PDF 저장 실패 — 화면에서 인쇄 버튼 사용');
+  }
+}
+
 
 // =========================================================================
 //  VIEW: MY ORDERS (Customer-only — shows only this customer's orders)
@@ -8607,6 +9141,8 @@ const ROUTES = {
   'office': viewOffice,
   'invoicePrep': viewInvoicePrep,
   'invoice': viewInvoice,
+  'creditIssue': viewCreditIssue,   // ⭐ (2026-07-07) 크레딧 노트 발행
+  'creditNote':  viewCreditNote,    // ⭐ (2026-07-07) 크레딧 노트 열람
   'history': viewHistory,
   'payment': viewPayment,
   'statement': viewStatement,
@@ -8628,12 +9164,13 @@ function initApp(data) {
     saveDB(); // push existing data up to Firebase
   }
   // 방어적 배열 초기화 — Firebase 데이터 누락 필드 보완
-  if (!DB.products)  DB.products  = seed().products;
-  if (!DB.customers) DB.customers = [];
-  if (!DB.orders)    DB.orders    = [];
-  if (!DB.payments)  DB.payments  = [];
-  if (!DB.settings)  DB.settings  = seed().settings;
-  if (!DB.company)   DB.company   = seed().company;
+  if (!DB.products)    DB.products    = seed().products;
+  if (!DB.customers)   DB.customers   = [];
+  if (!DB.orders)      DB.orders      = [];
+  if (!DB.payments)    DB.payments    = [];
+  if (!DB.creditNotes) DB.creditNotes = [];   // ⭐ (2026-07-07) 크레딧 노트
+  if (!DB.settings)    DB.settings    = seed().settings;
+  if (!DB.company)     DB.company     = seed().company;
   if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{} };
   migrateProducts();
   migrateFavoritePairs();
