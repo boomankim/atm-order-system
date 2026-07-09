@@ -8336,6 +8336,49 @@ function viewStatement(params) {
     });
     const balColor = bal > 0 ? 'var(--warn)' : 'var(--success)';
 
+    // ⭐ (2026-07-07) Overdue 계산 — 매출일보와 동일 로직 (term + 7일 grace, delivered 만, 크레딧 반영)
+    //   기준일: dateTo (조회 종료일)
+    const daysT = termsDays(cust.terms);
+    const GRACE_DAYS = 7;
+    const overdueCutoff = new Date(dateTo + 'T00:00:00');
+    let overdue = 0;
+    if (daysT > 0) {
+      const creditByOrderId = {};
+      (DB.creditNotes || []).forEach(cn => {
+        if (!cn || cn.customerId !== cust.id) return;
+        if (toLocalISODate(cn.issuedAt) > dateTo) return;
+        creditByOrderId[cn.orderId] = (creditByOrderId[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+      });
+      const invoicesAsOf = DB.orders
+        .filter(o => o.status === 'delivered' && o.customerId === cust.id)
+        .map(o => ({
+          orderId: o.id,
+          dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
+          amount: computeTotals(o).grand
+        }))
+        .filter(x => x.dateISO && x.dateISO <= dateTo)
+        .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+      let totalPaymentAsOf = DB.payments
+        .filter(p => p.customerId === cust.id && (p.date||'') <= dateTo)
+        .reduce((s,p)=>s+p.amount, 0);
+      for (const inv of invoicesAsOf) {
+        let unpaid = inv.amount - (creditByOrderId[inv.orderId] || 0);
+        if (unpaid < 0) unpaid = 0;
+        if (totalPaymentAsOf > 0 && unpaid > 0) {
+          const applied = Math.min(totalPaymentAsOf, unpaid);
+          unpaid -= applied;
+          totalPaymentAsOf -= applied;
+        }
+        if (unpaid > 0.001) {
+          const invDate = new Date(inv.dateISO + 'T00:00:00');
+          const overdueDate = new Date(invDate.getTime());
+          overdueDate.setDate(overdueDate.getDate() + daysT + GRACE_DAYS);
+          if (overdueDate < overdueCutoff) overdue += unpaid;
+        }
+      }
+    }
+    const overdueColor = overdue > 0.001 ? '#D32F2F' : 'var(--muted)';
+
     return '<div id="statementPrintArea">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">' +
         '<div>' +
@@ -8346,6 +8389,7 @@ function viewStatement(params) {
         '<div style="text-align:right;font-size:12px;color:var(--muted);">' +
           '<div style="font-weight:700;color:var(--brand-dark);">ALL THAT MEAT WHOLESALE PTY LTD</div>' +
           '<div>기간: ' + dateFrom + ' ~ ' + dateTo + '</div>' +
+          '<div>결제조건: ' + termsLabel(cust.terms) + '</div>' +
         '</div>' +
       '</div>' +
       '<table class="t"><thead><tr><th>날짜</th><th>인보이스 번호 / 크레딧</th><th class="num">금액</th><th class="num">입금</th><th class="num">발란스</th></tr></thead><tbody>' + rows + '</tbody></table>' +
@@ -8353,7 +8397,8 @@ function viewStatement(params) {
         '<div><span style="color:var(--muted);font-size:12px;">총 인보이스</span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
         (totCredit > 0.001 ? '<div><span style="color:var(--muted);font-size:12px;">총 크레딧</span><br><b style="font-size:18px;color:#C0392B;">-$' + fmtMoney(totCredit) + '</b></div>' : '') +
         '<div><span style="color:var(--muted);font-size:12px;">총 입금</span><br><b style="font-size:18px;color:var(--success);">$' + fmtMoney(totPay) + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">기말 미수금</span><br><b style="font-size:20px;color:' + balColor + ';">$' + fmtMoney(bal) + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">현 미수금 / Balance Due</span><br><b style="font-size:20px;color:' + balColor + ';">$' + fmtMoney(bal) + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">Overdue<br><small style="font-size:10px;">(결제조건 + 7일 초과)</small></span><br><b style="font-size:20px;color:' + overdueColor + ';">' + (overdue > 0.001 ? '🔴 $' + fmtMoney(overdue) : '$0.00') + '</b></div>' +
       '</div></div>' +
       '<div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap;" class="no-print">' +
         '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>' +
@@ -8429,7 +8474,50 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   txt += '\n--- 입금 ---\n';
   if (payments.length === 0) { txt += '(없음)\n'; }
   else { payments.forEach(function(p) { txt += p.date + ' ' + (methodLabel[p.method]||p.method) + ' $' + fmtMoney(p.amount) + (p.reference ? ' (' + p.reference + ')' : '') + '\n'; }); }
-  txt += '\n미수금: $' + fmtMoney(balance);
+
+  // ⭐ (2026-07-07) Overdue 계산 (매출일보 기준: term + 7일 grace, delivered만, 크레딧 반영)
+  const daysT = termsDays(cust && cust.terms);
+  const GRACE_DAYS = 7;
+  const cutoff = new Date(dateTo + 'T00:00:00');
+  let overdue = 0;
+  if (cust && daysT > 0) {
+    const creditByOrderId = {};
+    (DB.creditNotes || []).forEach(function(cn) {
+      if (!cn || cn.customerId !== cid) return;
+      if (toLocalISODate(cn.issuedAt) > dateTo) return;
+      creditByOrderId[cn.orderId] = (creditByOrderId[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+    });
+    const invoicesAsOf = DB.orders
+      .filter(function(o){ return o.status === 'delivered' && o.customerId === cid; })
+      .map(function(o){ return {
+        orderId: o.id,
+        dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
+        amount: computeTotals(o).grand
+      }; })
+      .filter(function(x){ return x.dateISO && x.dateISO <= dateTo; })
+      .sort(function(a,b){ return a.dateISO.localeCompare(b.dateISO); });
+    let totalPaymentAsOf = DB.payments
+      .filter(function(p){ return p.customerId === cid && (p.date||'') <= dateTo; })
+      .reduce(function(s,p){ return s + p.amount; }, 0);
+    for (const inv of invoicesAsOf) {
+      let unpaid = inv.amount - (creditByOrderId[inv.orderId] || 0);
+      if (unpaid < 0) unpaid = 0;
+      if (totalPaymentAsOf > 0 && unpaid > 0) {
+        const applied = Math.min(totalPaymentAsOf, unpaid);
+        unpaid -= applied;
+        totalPaymentAsOf -= applied;
+      }
+      if (unpaid > 0.001) {
+        const invDate = new Date(inv.dateISO + 'T00:00:00');
+        const overdueDate = new Date(invDate.getTime());
+        overdueDate.setDate(overdueDate.getDate() + daysT + GRACE_DAYS);
+        if (overdueDate < cutoff) overdue += unpaid;
+      }
+    }
+  }
+
+  txt += '\n현 미수금: $' + fmtMoney(balance);
+  if (overdue > 0.001) txt += '\n🔴 Overdue: $' + fmtMoney(overdue) + ' (결제조건 + 7일 초과)';
 
   if (navigator.clipboard) {
     navigator.clipboard.writeText(txt).then(function() {
