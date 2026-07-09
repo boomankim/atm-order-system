@@ -4282,12 +4282,9 @@ function renderCart() {
   } else {
     div.innerHTML = CART.map((item, idx) => {
       const p = DB.products.find(x => x.id === item.productId);
-      // ⭐ (2026-07-07) 수량 라벨 영문 병기 — 단위 버튼 클릭 시 자동 변경
-      const qtyLabel = item.unit === '작업중량'
-        ? '수량/kg'
-        : item.unit === '팩'
-        ? '수량/pack'
-        : '수량/box';
+      // ⭐ (2026-07-07) 수량 입력창 내부에 단위 영문 표기 — 박스/팩 혼동 방지
+      //   버튼 클릭으로 단위 전환 시 입력창 우측에 box/pack/kg 뱃지 즉시 반영
+      const qtyUnitEn = item.unit === '작업중량' ? 'kg' : item.unit === '팩' ? 'pack' : 'box';
       const qtyStep = item.unit === '작업중량' ? 0.1 : 1;
       // 작업육 분류 → [박스, 작업중량], 그 외 → [박스, 팩]
       const isProcMeat = (p.cut === '작업육') || (p.name && p.name.includes('작업'));
@@ -4306,12 +4303,15 @@ function renderCart() {
             }).join('')}
           </div>
           <div style="display:flex; gap:8px; align-items:flex-end; margin-top:8px;">
-            <div style="flex:0 0 90px;">
-              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">${qtyLabel}</label>
-              <input type="number" min="0" step="${qtyStep}" value="${qtyDisp}" placeholder=""
-                style="width:100%; padding:6px 8px; font-size:14px; text-align:right;"
-                onchange="CART[${idx}].quantity=(this.value===''?null:parseFloat(this.value)); renderCart();"
-                onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)">
+            <div style="flex:0 0 110px;">
+              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">수량</label>
+              <div style="display:flex; align-items:stretch; border:1px solid var(--line); border-radius:5px; background:#fff; overflow:hidden;">
+                <input type="number" min="0" step="${qtyStep}" value="${qtyDisp}" placeholder=""
+                  style="flex:1; min-width:0; padding:6px 6px; font-size:14px; text-align:right; border:none; outline:none; background:transparent;"
+                  onchange="CART[${idx}].quantity=(this.value===''?null:parseFloat(this.value)); renderCart();"
+                  onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)">
+                <span style="display:flex; align-items:center; padding:0 8px; background:#F2EEE8; color:#5C0F0F; font-size:12px; font-weight:700; border-left:1px solid var(--line); user-select:none;">${qtyUnitEn}</span>
+              </div>
             </div>
             <div style="flex:1;">
               <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">품목 요청사항 (예: 3mm 슬라이스, 진공포장)</label>
