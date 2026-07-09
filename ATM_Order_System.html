@@ -4878,7 +4878,7 @@ function viewOffice() {
         <label style="font-size:12px; color:var(--muted);">기준일자:</label>
         <input type="date" id="drDate" value="${todayLocalISO()}" onchange="renderDailyReport()" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px;">
         <button class="btn sm" onclick="setDrDateToday()">오늘</button>
-        <button class="btn sm" onclick="togglePaymentPanel()">💳 입금 처리</button>
+        <button class="btn sm" onclick="togglePaymentPanel()">💳 입금/수정</button>
         <button class="btn sm secondary" onclick="location.hash='#statement'">📄 스테이트먼트</button>
         <span style="border-left:1px solid var(--line); height:24px; margin:0 4px;"></span>
         <button class="btn sm" style="background:var(--info);" onclick="printDailyReport()">🖨️ 인쇄</button>
@@ -4888,10 +4888,29 @@ function viewOffice() {
       <div id="drFolderInfo" style="font-size:11px; color:var(--muted); margin-bottom:12px;"></div>
       ${(() => {
         const today = todayLocalISO();
+        // ⭐ (2026-07-07) 입금/수정 패널 확장 — 상단 이력(수정/삭제) + 하단 신규 등록
         return `<div id="inlinePaymentPanel" style="display:none; margin-bottom:14px; padding:14px 16px; background:var(--surface); border:1px solid var(--line); border-radius:8px;">
+          <!-- 섹션 1: 입금 이력 -->
+          <div style="padding-bottom:12px; border-bottom:1px dashed var(--line); margin-bottom:12px;">
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+              <div style="font-size:13px; font-weight:700; color:var(--brand-dark);">
+                🗂 입금 이력
+                <span style="font-weight:400; color:var(--muted); font-size:11px; margin-left:6px;">거래처 선택 시 표시</span>
+              </div>
+              <label style="font-size:11px; color:var(--muted); display:flex; align-items:center; gap:4px;">
+                <input type="checkbox" id="ipHistShowAll" onchange="renderPaymentHistoryList(document.getElementById('ipCustomer').value)">
+                전체 보기 (기본: 최근 30일)
+              </label>
+            </div>
+            <div id="paymentHistoryList" style="font-size:12px;">
+              <div style="color:var(--muted); font-size:11px; padding:6px 2px;">거래처를 선택하면 최근 입금 목록이 표시됩니다.</div>
+            </div>
+          </div>
+          <!-- 섹션 2: 신규 등록 -->
+          <div style="font-size:13px; font-weight:700; color:var(--brand-dark); margin-bottom:8px;">➕ 새 입금 등록</div>
           <div class="grid-3">
             <div class="field"><label>거래처</label>
-              ${renderCustomerSearchSelect({ selectId: 'ipCustomer', placeholder: '— 선택하세요 —' })}
+              ${renderCustomerSearchSelect({ selectId: 'ipCustomer', placeholder: '— 선택하세요 —', onChange: 'renderPaymentHistoryList(this.value)' })}
             </div>
             <div class="field"><label>입금일</label><input type="date" id="ipDate" value="${today}"></div>
             <div class="field"><label>금액 ($)</label><input type="number" id="ipAmount" min="0" step="0.01" placeholder="0.00" onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"></div>
@@ -4916,7 +4935,90 @@ function viewOffice() {
 }
 window.togglePaymentPanel = function() {
   const el = document.getElementById('inlinePaymentPanel');
-  if (el) el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+  if (!el) return;
+  el.style.display = (el.style.display === 'none' || !el.style.display) ? 'block' : 'none';
+  // 열릴 때 현재 선택된 거래처 이력 자동 표시
+  if (el.style.display === 'block') {
+    const cSel = document.getElementById('ipCustomer');
+    if (cSel && cSel.value) renderPaymentHistoryList(cSel.value);
+  }
+};
+
+// ⭐ (2026-07-07) 매출일보 입금/수정 패널 — 거래처의 최근 입금 이력 목록 렌더링.
+//   기본 30일, 체크박스 전환 시 전체 표시.
+window.renderPaymentHistoryList = function(cid) {
+  const box = document.getElementById('paymentHistoryList');
+  if (!box) return;
+  if (!cid) {
+    box.innerHTML = '<div style="color:var(--muted); font-size:11px; padding:6px 2px;">거래처를 선택하면 최근 입금 목록이 표시됩니다.</div>';
+    return;
+  }
+  const showAll = !!(document.getElementById('ipHistShowAll') && document.getElementById('ipHistShowAll').checked);
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - 30);
+  const cutoffISO = cutoff.getFullYear() + '-' + String(cutoff.getMonth()+1).padStart(2,'0') + '-' + String(cutoff.getDate()).padStart(2,'0');
+  const payments = (DB.payments || [])
+    .filter(p => p && p.customerId === cid)
+    .filter(p => showAll ? true : (p.date >= cutoffISO))
+    .sort((a,b) => (a.date < b.date ? 1 : -1));  // 최신순
+  if (payments.length === 0) {
+    box.innerHTML = '<div style="color:var(--muted); font-size:11px; padding:6px 2px;">' + (showAll ? '해당 거래처 입금 이력 없음' : '최근 30일 내 입금 없음 · [전체 보기]로 과거 확인') + '</div>';
+    return;
+  }
+  const methodLbl = { cash:'현금', cheque:'체크', bank:'은행이체' };
+  let html = '<table class="t" style="font-size:12px;">'
+    + '<thead><tr>'
+    + '<th>날짜</th><th class="num">금액</th><th>방법</th><th>참조</th><th>메모</th><th class="act"></th>'
+    + '</tr></thead><tbody>';
+  payments.forEach(p => {
+    const esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    html += '<tr>'
+      + '<td>' + esc(p.date) + '</td>'
+      + '<td class="num" style="font-weight:600;">$' + fmtMoney(p.amount) + '</td>'
+      + '<td>' + (methodLbl[p.method] || esc(p.method)) + '</td>'
+      + '<td><small style="color:var(--muted);">' + esc(p.reference || '—') + '</small></td>'
+      + '<td><small style="color:var(--muted);">' + esc(p.notes || '') + '</small></td>'
+      + '<td class="act"><button class="btn sm danger" style="padding:2px 8px; font-size:11px;" onclick="deletePayment(\'' + p.id + '\')">🗑 삭제</button></td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  box.innerHTML = html;
+};
+
+// ⭐ (2026-07-07) 입금 삭제 — 확인 후 DB.payments에서 제거 + Firebase 부분 삭제.
+//   삭제 시점에 최신 인덱스로 재검사 (다른 기기 동시 수정 방어).
+window.deletePayment = function(payId) {
+  if (!payId) return;
+  const idx = (DB.payments || []).findIndex(p => p && p.id === payId);
+  if (idx < 0) { alert('해당 입금을 찾을 수 없습니다. (이미 삭제됐을 수 있습니다)'); return; }
+  const p = DB.payments[idx];
+  const cust = DB.customers.find(c => c.id === p.customerId);
+  const custName = cust ? cust.name : '(거래처 불명)';
+  const dateStr = p.date || '';
+  const amtStr = fmtMoney(p.amount || 0);
+  if (!confirm('입금 기록 삭제:\n\n' + custName + '\n' + dateStr + ' $' + amtStr + '\n\n되돌릴 수 없습니다. 계속할까요?')) return;
+
+  // 저장 시점 재검사 — 인덱스가 이동했을 수 있음
+  const idxNow = DB.payments.findIndex(x => x && x.id === payId);
+  if (idxNow < 0) { alert('삭제 대상이 사라졌습니다. 새로고침 후 다시 시도해주세요.'); return; }
+
+  // 로컬 제거
+  DB.payments.splice(idxNow, 1);
+  try { saveLocalDB(); } catch(e){}
+
+  // Firebase 부분 반영 — 배열 전체 재기록이 가장 안전 (인덱스 밀림 대응)
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    _lastSaveTime = Date.now();
+    DB_REF.child('payments').set(DB.payments).catch(function(e){
+      console.warn('payments delete Firebase save failed:', e);
+    });
+  }
+
+  showToast('🗑 입금 기록 삭제 완료 (' + custName + ' · $' + amtStr + ')');
+
+  // UI 재렌더링: 이력 목록 + 매출일보 표
+  renderPaymentHistoryList(p.customerId);
+  if (typeof renderDailyReport === 'function') renderDailyReport();
 };
 
 // =========================================================================
@@ -4980,11 +5082,11 @@ function dailyReportComputeRows(dateISO) {
     // 현잔액 = 전미수금 + 매출액(net) - 입금액
     const currentBalance = priorBalance + todaySales - todayPaid;
 
-    // Overdue 정책 (2026-06-16 변경):
-    //   - 외상 거래처: due date(인보이스 발행일 + 결제텀일) 이후 추가로 7일 grace period가 지나야 Overdue
-    //     예) 7일 외상 → 발행일 + 14일 이후 미결제분, 14일 외상 → 발행일 + 21일 이후
+    // Overdue 정책 (2026-07-07 변경: grace 7→5):
+    //   - 외상 거래처: due date(인보이스 발행일 + 결제텀일) 이후 추가로 5일 grace period가 지나야 Overdue
+    //     예) 7일 외상 → 발행일 + 12일 이후 미결제분, 14일 외상 → 발행일 + 19일 이후
     //   - 현금/계좌이체(termsDays=0): Overdue 계산 자체에서 제외 (사용자 정책)
-    const GRACE_DAYS = 7;
+    const GRACE_DAYS = 5;
     let overdue = 0;
     if (days > 0) {
       // 인보이스별로 연결된 크레딧 총액을 미리 매핑 (dateISO 이하만)
@@ -5457,7 +5559,14 @@ window.saveInlinePayment = function() {
   viewOffice();
   const panel = document.getElementById('inlinePaymentPanel');
   if (panel) panel.style.display = 'block';
-  const cSel = document.getElementById('ipCustomer'); if (cSel) cSel.value = cid;
+  const cSel = document.getElementById('ipCustomer');
+  if (cSel) cSel.value = cid;
+  // ⭐ (2026-07-07) 등록 후 이력 자동 갱신 — 방금 등록한 것이 목록에 즉시 나타남
+  if (typeof renderPaymentHistoryList === 'function') renderPaymentHistoryList(cid);
+  // 다음 입력을 위해 폼 초기화
+  const amtEl = document.getElementById('ipAmount'); if (amtEl) amtEl.value = '';
+  const refEl = document.getElementById('ipRef');    if (refEl) refEl.value = '';
+  const notesEl = document.getElementById('ipNotes'); if (notesEl) notesEl.value = '';
   showToast('✅ 입금이 기록됐습니다.');
 };
 function lineUnitPrice(it, p, cust) {
@@ -8290,56 +8399,99 @@ function viewStatement(params) {
     const cust = DB.customers.find(c => c.id === cid);
     if (!cust) return '<p style="color:var(--muted); padding:8px;">거래처를 선택하고 [조회]를 누르세요.</p>';
 
-    // ⭐ (2026-07-07) UTC/로컬 시차 통일 — toLocalISODate 사용.
-    // ⭐ (2026-07-07) 크레딧 노트 반영 — 이월잔액 차감 + 이벤트 라인 추가.
+    // ⭐ (2026-07-07) FIFO 입금 배분 방식으로 재구성:
+    //   - 입금 별도 행 없음 → 인보이스 발행일 오래된 순으로 순차 배분.
+    //   - 크레딧은 연결된 인보이스 행의 "크레딧" 컬럼에 -금액 표시.
+    //   - 발란스는 누적. 초과 입금 시 하단 "선입금" 행으로 발란스 음수 반영.
 
-    // 이월 잔액 = 시작일 이전의 모든 인보이스 - 입금 - 크레딧
-    const openInv = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid && toLocalISODate(o.invoicedAt||o.orderDate||'') < dateFrom)
-      .reduce((s,o) => s + computeTotals(o).grand, 0);
-    const openPaid = DB.payments.filter(p => p.customerId === cid && p.date < dateFrom)
+    // 1) 조회 종료일 기준 이 거래처의 모든 인보이스 (발행일순)
+    const allInvoices = DB.orders
+      .filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid)
+      .map(o => ({
+        id: o.id,
+        dateISO: toLocalISODate(o.invoicedAt || o.orderDate || ''),
+        invNo: (o.invoiceNo || o.orderNo || '-'),
+        amount: computeTotals(o).grand
+      }))
+      .filter(x => x.dateISO && x.dateISO <= dateTo)
+      .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+
+    // 2) 인보이스별 크레딧 합계 (dateTo 이내)
+    const creditByInv = {};
+    (DB.creditNotes || []).forEach(cn => {
+      if (!cn || cn.customerId !== cid) return;
+      if (toLocalISODate(cn.issuedAt) > dateTo) return;
+      creditByInv[cn.orderId] = (creditByInv[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+    });
+
+    // 3) 총 입금 (dateTo 이내) → FIFO pool
+    let pool = DB.payments
+      .filter(p => p.customerId === cid && p.date <= dateTo)
       .reduce((s,p) => s + p.amount, 0);
-    const openCredit = (DB.creditNotes||[]).filter(c => c.customerId === cid && toLocalISODate(c.issuedAt) < dateFrom)
-      .reduce((s,c) => s + computeCreditNoteTotals(c).grand, 0);
-    const opening = openInv - openPaid - openCredit;
+    const totalPaymentsAsOf = pool;
 
-    // 기간 내 인보이스 + 입금 + 크레딧을 한 줄씩 이벤트로 모아 날짜순 정렬
-    const events = [];
-    DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid).forEach(o => {
-      const d = toLocalISODate(o.invoicedAt||o.orderDate||'');
-      if (d && d >= dateFrom && d <= dateTo) events.push({ date: d, kind: 'inv', no: (o.invoiceNo||o.orderNo||'-'), amount: computeTotals(o).grand });
-    });
-    DB.payments.filter(p => p.customerId === cid).forEach(p => {
-      if (p.date >= dateFrom && p.date <= dateTo) events.push({ date: p.date, kind: 'pay', amount: p.amount });
-    });
-    (DB.creditNotes||[]).filter(c => c.customerId === cid).forEach(cn => {
-      const d = toLocalISODate(cn.issuedAt);
-      if (d && d >= dateFrom && d <= dateTo) events.push({ date: d, kind: 'cn', no: (cn.creditNo||'-'), refInv: (cn.invoiceNo||''), amount: computeCreditNoteTotals(cn).grand, id: cn.id, reason: cn.reason||'' });
-    });
-    // 정렬: 날짜순 → 같은 날은 인보이스 → 크레딧 → 입금 순
-    const kindOrder = { inv:0, cn:1, pay:2 };
-    events.sort((a,b) => { if (a.date !== b.date) return a.date < b.date ? -1 : 1; return kindOrder[a.kind] - kindOrder[b.kind]; });
+    // 4) FIFO 배분 — 발행일 오래된 인보이스부터
+    const invApplied = {};
+    for (const inv of allInvoices) {
+      const net = Math.max(0, inv.amount - (creditByInv[inv.id] || 0));
+      const apply = Math.min(pool, net);
+      invApplied[inv.id] = apply;
+      pool -= apply;
+    }
+    const excessPayment = pool;  // 초과 입금 (선입금)
 
-    let bal = opening, totInv = 0, totPay = 0, totCredit = 0;
-    let rows = '<tr style="color:var(--muted);"><td>' + dateFrom + '</td><td>이월 잔액</td><td class="num">—</td><td class="num">—</td><td class="num"><b>$' + fmtMoney(opening) + '</b></td></tr>';
-    events.forEach(e => {
-      if (e.kind === 'inv') {
-        bal += e.amount; totInv += e.amount;
-        rows += '<tr><td>' + e.date + '</td><td>' + e.no + '</td><td class="num">$' + fmtMoney(e.amount) + '</td><td class="num">—</td><td class="num"><b>$' + fmtMoney(bal) + '</b></td></tr>';
-      } else if (e.kind === 'cn') {
-        bal -= e.amount; totCredit += e.amount;
-        const label = 'CN ' + e.no + (e.refInv ? ' <small style="color:var(--muted);">(Ref ' + e.refInv + ')</small>' : '') + (e.reason ? ' <small style="color:#C0392B;">' + e.reason + '</small>' : '');
-        rows += '<tr style="background:#FDECEA;"><td>' + e.date + '</td><td style="color:#C0392B;">' + label + '</td><td class="num" style="color:#C0392B;">-$' + fmtMoney(e.amount) + '</td><td class="num">—</td><td class="num"><b>$' + fmtMoney(bal) + '</b></td></tr>';
-      } else {
-        bal -= e.amount; totPay += e.amount;
-        rows += '<tr><td>' + e.date + '</td><td style="color:var(--muted);">입금</td><td class="num">—</td><td class="num" style="color:var(--success);">$' + fmtMoney(e.amount) + '</td><td class="num"><b>$' + fmtMoney(bal) + '</b></td></tr>';
+    // 5) 이월 잔액 = 시작일 이전 인보이스의 net 미결제 합
+    let opening = 0;
+    for (const inv of allInvoices) {
+      if (inv.dateISO < dateFrom) {
+        opening += inv.amount - (creditByInv[inv.id] || 0) - (invApplied[inv.id] || 0);
       }
-    });
-    const balColor = bal > 0 ? 'var(--warn)' : 'var(--success)';
+    }
 
-    // ⭐ (2026-07-07) Overdue 계산 — 매출일보와 동일 로직 (term + 7일 grace, delivered 만, 크레딧 반영)
+    // 6) 기간 내 인보이스 행 렌더
+    const inPeriodInvoices = allInvoices.filter(inv => inv.dateISO >= dateFrom && inv.dateISO <= dateTo);
+    let bal = opening, totInv = 0, totCredit = 0, totPay = 0;
+    let rows = '<tr style="color:var(--muted);"><td>' + dateFrom + '</td><td>이월 잔액</td><td class="num">—</td><td class="num">—</td><td class="num">—</td><td class="num"><b>$' + fmtMoney(opening) + '</b></td></tr>';
+    for (const inv of inPeriodInvoices) {
+      const cred = creditByInv[inv.id] || 0;
+      const paid = invApplied[inv.id] || 0;
+      const delta = inv.amount - cred - paid;
+      bal += delta;
+      totInv += inv.amount;
+      totCredit += cred;
+      totPay += paid;
+      const credCell = cred > 0.001 ? '<span style="color:#C0392B;">-$' + fmtMoney(cred) + '</span>' : '—';
+      const paidCell = paid > 0.001 ? '<span style="color:var(--success);">$' + fmtMoney(paid) + '</span>' : '—';
+      const rowBg = (cred > 0.001) ? ' style="background:#FDECEA;"' : '';
+      rows += '<tr' + rowBg + '>'
+        + '<td>' + inv.dateISO + '</td>'
+        + '<td><b>' + inv.invNo + '</b></td>'
+        + '<td class="num">$' + fmtMoney(inv.amount) + '</td>'
+        + '<td class="num">' + credCell + '</td>'
+        + '<td class="num">' + paidCell + '</td>'
+        + '<td class="num"><b>$' + fmtMoney(bal) + '</b></td>'
+        + '</tr>';
+    }
+    // 선입금 초과분 → 발란스 음수 반영
+    if (excessPayment > 0.001) {
+      bal -= excessPayment;
+      totPay += excessPayment;
+      rows += '<tr style="background:#E8F5E9;">'
+        + '<td>—</td>'
+        + '<td style="color:var(--success);"><b>선입금 (Prepayment)</b></td>'
+        + '<td class="num">—</td>'
+        + '<td class="num">—</td>'
+        + '<td class="num" style="color:var(--success);">$' + fmtMoney(excessPayment) + '</td>'
+        + '<td class="num" style="color:var(--success);"><b>-$' + fmtMoney(Math.abs(bal)) + '</b></td>'
+        + '</tr>';
+    }
+    const balColor = bal > 0 ? 'var(--warn)' : (bal < -0.001 ? 'var(--success)' : 'var(--muted)');
+    const balDisplay = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
+
+    // ⭐ (2026-07-07) Overdue 계산 — 매출일보와 동일 로직 (term + 5일 grace, delivered 만, 크레딧 반영)
     //   기준일: dateTo (조회 종료일)
     const daysT = termsDays(cust.terms);
-    const GRACE_DAYS = 7;
+    const GRACE_DAYS = 5;
     const overdueCutoff = new Date(dateTo + 'T00:00:00');
     let overdue = 0;
     if (daysT > 0) {
@@ -8392,13 +8544,13 @@ function viewStatement(params) {
           '<div>결제조건: ' + termsLabel(cust.terms) + '</div>' +
         '</div>' +
       '</div>' +
-      '<table class="t"><thead><tr><th>날짜</th><th>인보이스 번호 / 크레딧</th><th class="num">금액</th><th class="num">입금</th><th class="num">발란스</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<table class="t"><thead><tr><th>날짜</th><th>인보이스 번호</th><th class="num">금액</th><th class="num">크레딧</th><th class="num">입금</th><th class="num">발란스</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '<div style="margin-top:18px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
         '<div><span style="color:var(--muted);font-size:12px;">총 인보이스</span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
         (totCredit > 0.001 ? '<div><span style="color:var(--muted);font-size:12px;">총 크레딧</span><br><b style="font-size:18px;color:#C0392B;">-$' + fmtMoney(totCredit) + '</b></div>' : '') +
         '<div><span style="color:var(--muted);font-size:12px;">총 입금</span><br><b style="font-size:18px;color:var(--success);">$' + fmtMoney(totPay) + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">현 미수금 / Balance Due</span><br><b style="font-size:20px;color:' + balColor + ';">$' + fmtMoney(bal) + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">Overdue<br><small style="font-size:10px;">(결제조건 + 7일 초과)</small></span><br><b style="font-size:20px;color:' + overdueColor + ';">' + (overdue > 0.001 ? '🔴 $' + fmtMoney(overdue) : '$0.00') + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">현 미수금 / Balance Due</span><br><b style="font-size:20px;color:' + balColor + ';">' + balDisplay + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">Overdue<br><small style="font-size:10px;">(결제일 + 5일 초과)</small></span><br><b style="font-size:20px;color:' + overdueColor + ';">' + (overdue > 0.001 ? '🔴 $' + fmtMoney(overdue) : '$0.00') + '</b></div>' +
       '</div></div>' +
       '<div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap;" class="no-print">' +
         '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>' +
@@ -8436,48 +8588,73 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   const today = toLocalISODate(new Date());
   const methodLabel = { cash: '현금', cheque: '체크', bank: '은행이체' };
 
-  const invoices = DB.orders.filter(o =>
-    ['invoiced','delivered'].includes(o.status) &&
-    o.customerId === cid &&
-    toLocalISODate(o.invoicedAt || o.orderDate || '') >= dateFrom &&
-    toLocalISODate(o.invoicedAt || o.orderDate || '') <= dateTo
-  ).sort((a,b) => (a.invoicedAt||a.orderDate||'') > (b.invoicedAt||b.orderDate||'') ? 1 : -1);
+  // ⭐ (2026-07-07) FIFO 입금 배분: 인보이스 발행일순 오래된 것부터 순차 상쇄
+  const allInvoicesAsOf = DB.orders
+    .filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid)
+    .map(o => ({
+      id: o.id,
+      dateISO: toLocalISODate(o.invoicedAt || o.orderDate || ''),
+      invNo: (o.invoiceNo || o.orderNo || '-'),
+      amount: computeTotals(o).grand
+    }))
+    .filter(x => x.dateISO && x.dateISO <= dateTo)
+    .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
 
-  const payments = DB.payments.filter(p =>
-    p.customerId === cid && p.date >= dateFrom && p.date <= dateTo
-  ).sort((a,b) => a.date > b.date ? 1 : -1);
+  const creditByInv = {};
+  (DB.creditNotes||[]).forEach(function(cn) {
+    if (!cn || cn.customerId !== cid) return;
+    if (toLocalISODate(cn.issuedAt) > dateTo) return;
+    creditByInv[cn.orderId] = (creditByInv[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+  });
 
-  // ⭐ (2026-07-07) 크레딧 노트도 함께 표시
-  const credits = (DB.creditNotes||[]).filter(c =>
-    c.customerId === cid &&
-    toLocalISODate(c.issuedAt) >= dateFrom &&
-    toLocalISODate(c.issuedAt) <= dateTo
-  ).sort((a,b) => (a.issuedAt||'') > (b.issuedAt||'') ? 1 : -1);
+  let pool = DB.payments
+    .filter(p => p.customerId === cid && p.date <= dateTo)
+    .reduce((s,p) => s + p.amount, 0);
+  const totalPaid = pool;
 
-  const totalInvoiced = invoices.reduce((s, o) => s + computeTotals(o).grand, 0);
-  const totalPaid = payments.reduce((s, p) => s + p.amount, 0);
-  const totalCredit = credits.reduce((s, c) => s + computeCreditNoteTotals(c).grand, 0);
-  const balance = totalInvoiced - totalPaid - totalCredit;
+  const invApplied = {};
+  for (const inv of allInvoicesAsOf) {
+    const net = Math.max(0, inv.amount - (creditByInv[inv.id] || 0));
+    const apply = Math.min(pool, net);
+    invApplied[inv.id] = apply;
+    pool -= apply;
+  }
+  const excessPayment = pool;
+
+  const inPeriodInvoices = allInvoicesAsOf.filter(inv => inv.dateISO >= dateFrom && inv.dateISO <= dateTo);
+  const totalInvoiced = inPeriodInvoices.reduce((s, i) => s + i.amount, 0);
+  const totalCredit = inPeriodInvoices.reduce((s, i) => s + (creditByInv[i.id]||0), 0);
+  const balance = totalInvoiced
+    - inPeriodInvoices.reduce((s, i) => s + (creditByInv[i.id]||0), 0)
+    - inPeriodInvoices.reduce((s, i) => s + (invApplied[i.id]||0), 0)
+    // opening 잔액 추가
+    + allInvoicesAsOf.filter(i => i.dateISO < dateFrom)
+        .reduce((s, i) => s + (i.amount - (creditByInv[i.id]||0) - (invApplied[i.id]||0)), 0)
+    - excessPayment;
 
   let txt = '[ALL THAT MEAT] ' + custName + ' 거래내역서\n기준일: ' + today + '\n';
   if (dateFrom !== '2000-01-01' || dateTo !== today) txt += '기간: ' + dateFrom + ' ~ ' + dateTo + '\n';
-  txt += '\n--- 인보이스 ---\n';
-  if (invoices.length === 0) { txt += '(없음)\n'; }
-  else { invoices.forEach(function(o) { txt += toLocalISODate(o.invoicedAt||o.orderDate||'') + ' ' + (o.invoiceNo||o.orderNo) + ' $' + fmtMoney(computeTotals(o).grand) + '\n'; }); }
-  if (credits.length > 0) {
-    txt += '\n--- 크레딧 노트 ---\n';
-    credits.forEach(function(c) {
-      const amt = computeCreditNoteTotals(c).grand;
-      txt += toLocalISODate(c.issuedAt) + ' CN' + (c.creditNo||'-') + (c.invoiceNo?' (Ref '+c.invoiceNo+')':'') + ' -$' + fmtMoney(amt) + (c.reason?' — '+c.reason:'') + '\n';
+  txt += '\n--- 인보이스 (입금 배분) ---\n';
+  if (inPeriodInvoices.length === 0) { txt += '(없음)\n'; }
+  else {
+    inPeriodInvoices.forEach(function(inv) {
+      const cred = creditByInv[inv.id] || 0;
+      const paid = invApplied[inv.id] || 0;
+      const remaining = inv.amount - cred - paid;
+      let line = inv.dateISO + ' ' + inv.invNo + ' $' + fmtMoney(inv.amount);
+      if (cred > 0.001) line += ' | 크레딧 -$' + fmtMoney(cred);
+      if (paid > 0.001) line += ' | 입금 $' + fmtMoney(paid);
+      line += ' → 잔여 $' + fmtMoney(remaining);
+      txt += line + '\n';
     });
   }
-  txt += '\n--- 입금 ---\n';
-  if (payments.length === 0) { txt += '(없음)\n'; }
-  else { payments.forEach(function(p) { txt += p.date + ' ' + (methodLabel[p.method]||p.method) + ' $' + fmtMoney(p.amount) + (p.reference ? ' (' + p.reference + ')' : '') + '\n'; }); }
+  if (excessPayment > 0.001) {
+    txt += '\n선입금 (Prepayment): $' + fmtMoney(excessPayment) + '\n';
+  }
 
-  // ⭐ (2026-07-07) Overdue 계산 (매출일보 기준: term + 7일 grace, delivered만, 크레딧 반영)
+  // ⭐ (2026-07-07) Overdue 계산 (매출일보 기준: term + 5일 grace, delivered만, 크레딧 반영)
   const daysT = termsDays(cust && cust.terms);
-  const GRACE_DAYS = 7;
+  const GRACE_DAYS = 5;
   const cutoff = new Date(dateTo + 'T00:00:00');
   let overdue = 0;
   if (cust && daysT > 0) {
@@ -8516,8 +8693,10 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
     }
   }
 
-  txt += '\n현 미수금: $' + fmtMoney(balance);
-  if (overdue > 0.001) txt += '\n🔴 Overdue: $' + fmtMoney(overdue) + ' (결제조건 + 7일 초과)';
+  txt += '\n총 입금: $' + fmtMoney(totalPaid);
+  const balDisplayTxt = balance < -0.001 ? '-$' + fmtMoney(Math.abs(balance)) : '$' + fmtMoney(balance);
+  txt += '\n현 미수금: ' + balDisplayTxt;
+  if (overdue > 0.001) txt += '\n🔴 Overdue: $' + fmtMoney(overdue) + ' (결제일 + 5일 초과)';
 
   if (navigator.clipboard) {
     navigator.clipboard.writeText(txt).then(function() {
