@@ -6012,7 +6012,12 @@ function renderHistoryResults() {
                   <td class="num">$${fmtMoney(t.grand)}</td>
                   <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
                   <td>${o.invoiceNo || '-'}</td>
-                  <td class="act"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button></td>
+                  <td class="act">
+                    <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
+                    ${(o.status==='invoiced' || o.status==='delivered')
+                      ? `<button class="btn sm" style="background:#B8860B;color:#fff;margin-left:4px;" onclick="event.stopPropagation(); openInvoicePDF('${o.id}')" title="인보이스 PDF 새 창에서 열기">📄 PDF</button>`
+                      : ''}
+                  </td>
                 </tr>`;
               }).join('')}
             </tbody>
@@ -6022,6 +6027,69 @@ function renderHistoryResults() {
     </div>
   `;
 }
+
+// ⭐ (2026-07-07) 주문 이력에서 인보이스 PDF 즉석 생성 — 새 창에서 열기 (팝업 차단 시 다운로드)
+window.openInvoicePDF = async function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  if (o.status !== 'invoiced' && o.status !== 'delivered') {
+    alert('인보이스가 발행된 주문만 PDF로 생성할 수 있습니다.');
+    return;
+  }
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+    alert('PDF 라이브러리 로딩 중입니다. 잠시 후 다시 시도해 주세요.');
+    return;
+  }
+  const cust = DB.customers.find(c => c.id === o.customerId) || { name:'미확인', contact:'', phone:'', address:'', terms:'' };
+  const totals = computeTotals(o);
+  showToast('📄 인보이스 PDF 생성 중...');
+  try {
+    const container = document.createElement('div');
+    container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
+    document.body.appendChild(container);
+    container.innerHTML = buildInvoiceHTML(o, cust, totals);
+    await new Promise(r => setTimeout(r, 120));
+    const { jsPDF } = window.jspdf;
+    const canvas = await html2canvas(container.firstElementChild, {
+      scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+    });
+    document.body.removeChild(container);
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const pageW = 210, pageH = 297;
+    const imgH = canvas.height * pageW / canvas.width;
+    const doc = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
+    if (imgH <= pageH) doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+    else {
+      let yOff = 0;
+      while (yOff < imgH) {
+        if (yOff > 0) doc.addPage();
+        doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+        yOff += pageH;
+      }
+    }
+    // 파일명
+    const dateStr = (o.invoicedAt || o.orderDate || '').slice(0, 10);
+    const custName = (cust.name || '거래처').replace(/[\/:*?"<>|]/g, '_');
+    const pdfFilename = (o.invoiceNo || o.orderNo) + '_' + dateStr + '_' + custName + '.pdf';
+    // 새 창에서 열기 — 팝업 차단 시 다운로드 폴백
+    const blob = doc.output('blob');
+    const url = URL.createObjectURL(blob);
+    const win = window.open(url, '_blank');
+    if (!win) {
+      // 팝업 차단 → 다운로드
+      const a = document.createElement('a');
+      a.href = url; a.download = pdfFilename; document.body.appendChild(a); a.click(); document.body.removeChild(a);
+      showToast('💾 팝업 차단 감지 — PDF 다운로드로 대체');
+    } else {
+      showToast('📄 인보이스 PDF 새 창에서 열림');
+    }
+    // 브라우저가 blob 참조 유지하도록 잠시 후 revoke
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+  } catch(e) {
+    console.warn('openInvoicePDF error:', e);
+    alert('PDF 생성 실패: ' + e.message);
+  }
+};
 
 function exportHistoryCSV(detailed) {
   const orders = getFilteredHistory();
