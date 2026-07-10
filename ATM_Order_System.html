@@ -6963,7 +6963,8 @@ function sendInvoice(id) {
   let msg = `[ALL THAT MEAT] ${cust.name} 사장님\n\n`;
   msg += `인보이스 ${o.invoiceNo}\n\n`;
   msg += `--- 품목 ---\n`;
-  o.items.forEach(it => {
+  // ⭐ Bug fix (2026-07-07): o.items → getInvoiceItems(o) 로 변경. 취소 라인 제외.
+  getInvoiceItems(o).filter(it => it && it._status !== 'cancelled').forEach(it => {
     const p = DB.products.find(x => x.id === it.productId);
     const w = it.actualWeightKg;
     const price = lineUnitPrice(it, p, cust);
@@ -7756,8 +7757,11 @@ async function setInvoiceBackupFolder() {
 }
 
 function buildInvoiceHTML(o, cust, totals) {
-  // 행 단일 줄 — Brand 제거, padding 축소, 폰트 11px.
-  const itemRows = o.items.map((it, idx) => {
+  // ⭐ Bug fix (2026-07-07): o.items 는 원본 주문 아이템이라 lineUnitPrice 미보유 → 단가/금액 0으로 렌더됨.
+  //   반드시 getInvoiceItems(o) 로 invoiceItems (인보이스 준비 시 확정된 단가 포함) 사용.
+  //   취소된 라인(_status === 'cancelled')은 인보이스에서 제외.
+  const items = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
+  const itemRows = items.map((it, idx) => {
     const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
     const w = it.actualWeightKg;
     const price = lineUnitPrice(it, p, cust);
