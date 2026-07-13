@@ -8919,6 +8919,141 @@ function inventoryBoxConvert(kgTotal, cut) {
   return full + (rem >= rule.threshold ? 1 : 0);
 }
 
+// =========================================================================
+// ⭐ (2026-07-07) 작업육 → 원료 매칭 엔진
+// -------------------------------------------------------------------------
+// 스코어링:
+//   ① 학습 매핑 (DB.workedMeatMap)   : 확정 (스코어 200)
+//   ② notes 완전 매칭 (품목명 부분문자열): +100
+//   ③ notes 부분 매칭 (2글자 이상 공통): +50
+//   ④ 작업육 이름의 원료 힌트 (예: '척롤')  : +40
+//   ⑤ 카테고리 힌트 (소/돼지/와규 첫 단어): +30
+//   ⑥ 재고량 tiebreaker             : +stock*0.5
+//   ⑦ 혼합 원료 판정 (샤브샤브 등)   : -100 (실패로 유도)
+// 자동 확정 임계값: 90점 이상. 미달 시 실패 리스트.
+// =========================================================================
+
+// 원료 카테고리 (작업육이 아닌 실제 재고 관리 대상)
+const RAW_CATEGORIES = ['소고기','와규','돼지고기','오리','양고기'];
+// 혼합 원료 키워드 — 자동 매칭 제외
+const MIXED_MEAT_KEYWORDS = ['샤브','불고기','민스','mince','shabu','slice'];
+
+// 한글/영문 정규화 (공백·부호 제거·소문자)
+function _wmNormalize(s) {
+  return String(s || '').toLowerCase()
+    .replace(/[\s\-_]+/g, '')
+    .replace(/[()·,./]/g, '');
+}
+
+// 작업육 이름에서 카테고리 힌트 추출 (소/돼지/와규 등)
+function _wmCategoryHint(workedName) {
+  const n = _wmNormalize(workedName);
+  if (n.indexOf('와규') === 0 || n.startsWith('wagyu')) return '와규';
+  if (n.indexOf('앵거스') === 0 || n.startsWith('angus')) return '소고기';
+  if (n.indexOf('돼지') === 0 || n.startsWith('pork')) return '돼지고기';
+  if (n.indexOf('오리') === 0 || n.startsWith('duck')) return '오리';
+  if (n.indexOf('양') === 0 || n.startsWith('lamb')) return '양고기';
+  if (n.indexOf('소') === 0 || n.startsWith('beef')) return '소고기';
+  return null;
+}
+
+// 혼합 원료 판정 (샤브샤브·불고기·민스 등)
+function _wmIsMixed(workedName, notes) {
+  const key = _wmNormalize(workedName + ' ' + (notes || ''));
+  return MIXED_MEAT_KEYWORDS.some(kw => key.indexOf(_wmNormalize(kw)) >= 0);
+}
+
+// 원료 후보 스코어링 (상위 N개 정렬 반환)
+function getRawMaterialCandidates(workedProduct, notes, topN) {
+  topN = topN || 5;
+  if (!workedProduct) return [];
+  const workedName = workedProduct.name || '';
+  const workedPid  = workedProduct.id;
+  const catHint = _wmCategoryHint(workedName);
+  const isMixed = _wmIsMixed(workedName, notes);
+  const learnedRawPid = (DB.workedMeatMap || {})[workedPid];
+
+  const notesN = _wmNormalize(notes);
+  const workedNameN = _wmNormalize(workedName);
+  // 원료 이름에서 부위(척롤/부채살 등) 추출 후보 — 작업육 이름의 뒷부분
+  const workedTailN = workedNameN.replace(/^(와규|앵거스|돼지|오리|양|소|wagyu|angus|pork|duck|lamb|beef)/, '');
+
+  const candidates = [];
+  DB.products.forEach(p => {
+    if (!p || !p.id || p.id === workedPid) return;
+    if (!RAW_CATEGORIES.includes(p.cut)) return;
+    if (p.active === false) return;
+
+    const rawNameN = _wmNormalize(p.name);
+    let score = 0;
+
+    // ① 학습 매핑 — 최우선
+    if (learnedRawPid && p.id === learnedRawPid) score += 200;
+
+    // ② notes 완전 매칭 (원료명이 notes를 포함)
+    if (notesN && rawNameN.indexOf(notesN) >= 0 && notesN.length >= 2) score += 100;
+
+    // ③ notes 부분 매칭 (2글자 이상 공통 문자열)
+    if (notesN && !score && notesN.length >= 2) {
+      for (let len = notesN.length; len >= 2; len--) {
+        for (let start = 0; start + len <= notesN.length; start++) {
+          const chunk = notesN.slice(start, start + len);
+          if (rawNameN.indexOf(chunk) >= 0) { score += 50; break; }
+        }
+        if (score >= 50) break;
+      }
+    }
+
+    // ④ 작업육 이름 뒷부분 힌트 (예: 척롤 슬라이스 → 척롤)
+    if (workedTailN.length >= 2) {
+      for (let len = Math.min(workedTailN.length, 6); len >= 2; len--) {
+        for (let start = 0; start + len <= workedTailN.length; start++) {
+          const chunk = workedTailN.slice(start, start + len);
+          if (rawNameN.indexOf(chunk) >= 0) { score += 40; break; }
+        }
+        if (score >= 40) break;
+      }
+    }
+
+    // ⑤ 카테고리 힌트
+    if (catHint && p.cut === catHint) score += 30;
+
+    // ⑥ 재고량 tiebreaker
+    const invE = (DB.inventory.byProduct || {})[p.id] || {};
+    const stock = Math.max(0, invE.stock || 0);
+    score += stock * 0.5;
+
+    // ⑦ 혼합 원료 감점 (실패 유도)
+    if (isMixed && !learnedRawPid) score -= 100;
+
+    candidates.push({ product: p, score: score, stock: stock });
+  });
+
+  // 스코어 내림차순, 재고 내림차순
+  candidates.sort((a, b) => b.score - a.score || b.stock - a.stock);
+  return candidates.slice(0, topN);
+}
+
+// 최적 매칭 (자동 확정 여부 판정) — 스코어 90+ 이면 자동
+function matchWorkedMeatToRaw(workedProduct, notes) {
+  const cands = getRawMaterialCandidates(workedProduct, notes, 1);
+  if (cands.length === 0) return { auto: false, candidate: null, score: 0 };
+  const best = cands[0];
+  return { auto: best.score >= 90, candidate: best.product, score: best.score, stock: best.stock };
+}
+
+// 학습 저장
+function learnWorkedMeatMapping(workedPid, rawPid) {
+  if (!workedPid || !rawPid) return;
+  if (!DB.workedMeatMap) DB.workedMeatMap = {};
+  DB.workedMeatMap[workedPid] = rawPid;
+  try { saveLocalDB(); } catch(e){}
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    _lastSaveTime = Date.now();
+    DB_REF.child('workedMeatMap/' + workedPid).set(rawPid).catch(function(e){ console.warn('workedMeatMap save failed:', e); });
+  }
+}
+
 // 팩 누적값을 단위(박스 또는 팩)로 환산.
 // - 가공육: 단위 자체가 팩 → 1팩 = 1팩 (그대로)
 // - 그 외(소·와규·돼지·오리·양): 2팩 = 1박스 (floor)
@@ -8955,7 +9090,9 @@ function inventoryRolloverIfNeeded() {
 
 // 품목 항목 초기화 (없으면 생성)
 function inventoryEnsureProduct(pid) {
-  if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{} };
+  if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{}, workedMeatDeductions:{} };
+  if (!DB.inventory.workedMeatDeductions) DB.inventory.workedMeatDeductions = {};
+  if (!DB.workedMeatMap) DB.workedMeatMap = {};   // ⭐ (2026-07-07) 작업육 → 원료 매핑 학습
   const inv = DB.inventory;
   if (!inv.byProduct) inv.byProduct = {};         // 구버전 DB 보호
   if (!inv.deductedOrders) inv.deductedOrders = {};
@@ -8983,29 +9120,88 @@ function inventoryComputeTodaysOutgoing() {
     if (ref !== today) return;
     const cust = DB.customers.find(c => c.id === o.customerId);
     const custName = cust ? cust.name : '-';
-    // ⭐ (2026-07-07) 인보이스 실제 라인(invoiceItems, 취소 제외) 기준으로 통일.
-    //   인보이스 준비에서 추가된 품목은 포함, 취소된 품목은 제외, 조정된 실측중량 반영.
+    // ⭐ (2026-07-07) 인보이스 실제 라인(invoiceItems, 취소 제외) 기준.
+    //   작업육 라인은 원료로 자동 매핑 시도 → 성공하면 원료 pid로 집계.
     const invItems = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
-    invItems.forEach(it => {
+    invItems.forEach((it, idx) => {
       if (!it.productId) return;
-      const pid = it.productId;
-      if (!out[pid]) out[pid] = { boxQty: 0, packQty: 0, kgQty: 0, perOrder: [] };
+      const p = DB.products.find(x => x.id === it.productId);
+      if (!p) return;
+      let targetPid = it.productId;
+      let mappedFromWorked = false;
+      // 작업육 자동 매칭 시도
+      if (p.cut === '작업육') {
+        const m = matchWorkedMeatToRaw(p, it.notes);
+        if (m.auto && m.candidate) {
+          targetPid = m.candidate.id;
+          mappedFromWorked = true;
+        } else {
+          // 매칭 실패 → out 에 담지 않음 (실패 리스트로만 표시)
+          return;
+        }
+      }
+      if (!out[targetPid]) out[targetPid] = { boxQty: 0, packQty: 0, kgQty: 0, perOrder: [] };
       let boxQty = 0, packQty = 0, kgQty = 0;
       if (it.unit === '작업중량') {
         kgQty = +(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0;
       } else if (it.unit === '팩') {
         packQty = +(it.quantity) || 0;
       } else {
-        // 박스 (기본)
         boxQty = +(it.quantity) || 0;
       }
-      out[pid].boxQty += boxQty;
-      out[pid].packQty += packQty;
-      out[pid].kgQty += kgQty;
-      out[pid].perOrder.push({ orderId: o.id, custName, boxQty, packQty, kgQty, unit: it.unit, notes: it.notes||'' });
+      out[targetPid].boxQty += boxQty;
+      out[targetPid].packQty += packQty;
+      out[targetPid].kgQty += kgQty;
+      out[targetPid].perOrder.push({
+        orderId: o.id, custName, boxQty, packQty, kgQty,
+        unit: it.unit, notes: it.notes||'',
+        workedFrom: mappedFromWorked ? (p.name || '') : null,
+        itemIdx: idx
+      });
     });
   });
   return out;
+}
+
+// ⭐ (2026-07-07) 오늘 배송완료된 주문의 매칭 실패한 작업육 라인 수집.
+function inventoryComputeUnmatchedWorkedMeat() {
+  const today = todayLocalISO();
+  const list = [];
+  DB.orders.forEach(o => {
+    if (o.status !== 'delivered') return;
+    const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
+    if (ref !== today) return;
+    const cust = DB.customers.find(c => c.id === o.customerId);
+    const custName = cust ? cust.name : '-';
+    const invItems = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
+    invItems.forEach((it, idx) => {
+      if (!it.productId) return;
+      const p = DB.products.find(x => x.id === it.productId);
+      if (!p || p.cut !== '작업육') return;
+      const m = matchWorkedMeatToRaw(p, it.notes);
+      if (m.auto && m.candidate) return; // 자동 매칭 성공은 스킵
+      // 이미 수동 처리된 라인 스킵
+      const done = ((DB.inventory.workedMeatDeductions || {})[o.id] || [])
+        .some(d => d && d.itemIdx === idx);
+      if (done) return;
+      // 중량 계산 (kg 우선, 없으면 unit 기준으로 kg 유추 안 함 → 사장님이 확인)
+      let kgUsed = 0;
+      if (it.unit === '작업중량') {
+        kgUsed = +(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0;
+      } else if (it.unit === '박스') {
+        // 박스는 실측중량이 있으면 사용, 아니면 0 (사장님 판단)
+        kgUsed = +(it.actualWeightKg || 0);
+      } else if (it.unit === '팩') {
+        kgUsed = +(it.actualWeightKg || 0);
+      }
+      list.push({
+        orderId: o.id, custName, itemIdx: idx,
+        workedPid: p.id, workedName: p.name, notes: it.notes || '',
+        unit: it.unit, quantity: it.quantity, kg: kgUsed
+      });
+    });
+  });
+  return list;
 }
 
 // 5개 카테고리 요약: 각 카테고리별 전재고/입고/출고/현재고 합계
@@ -9350,7 +9546,141 @@ function inventoryRenderOutgoing() {
         </table>
       </div>
     `;
-  }).join('');
+  }).join('') + renderUnmatchedWorkedMeatList();
+}
+
+// ⭐ (2026-07-07) 매칭 실패 작업육 리스트 렌더러 — 재고 화면 하단 표시
+function renderUnmatchedWorkedMeatList() {
+  const list = inventoryComputeUnmatchedWorkedMeat();
+  if (list.length === 0) return '';
+  // 거래처별로 그룹화
+  const byCust = {};
+  list.forEach(item => {
+    if (!byCust[item.custName]) byCust[item.custName] = [];
+    byCust[item.custName].push(item);
+  });
+  const custNames = Object.keys(byCust).sort();
+  let html = '<div style="margin-top:20px; padding-top:12px; border-top:2px dashed var(--warn);">';
+  html += '<div style="padding:10px 14px; background:#FFF3E0; border-left:4px solid var(--warn); border-radius:6px; margin-bottom:10px;">';
+  html += '<b style="color:#C05500;">⚠️ 자동 매칭 실패 작업육 (수동 처리 필요) — ' + list.length + '건</b>';
+  html += '<div style="font-size:11px; color:#7A4A0A; margin-top:4px;">품목명·요청사항으로 원료 자동 유추 실패. 아래에서 원료를 선택하고 차감하세요. [기억] 체크 시 다음번 자동 매칭됨.</div>';
+  html += '</div>';
+  custNames.forEach(custName => {
+    const items = byCust[custName];
+    html += '<div style="margin-bottom:14px;">';
+    html += '<div style="font-weight:700; color:var(--brand-dark); padding:6px 8px; background:#F5F5F5; border-left:3px solid var(--muted);">👤 ' + custName + '</div>';
+    html += '<table class="t" style="margin-top:4px;">';
+    html += '<thead><tr><th>작업육</th><th>요청사항</th><th class="num">중량</th><th style="width:280px;">원료 선택 (근사치순)</th><th style="width:60px;">기억</th><th class="act">액션</th></tr></thead><tbody>';
+    items.forEach(item => {
+      const cands = getRawMaterialCandidates(
+        DB.products.find(p => p.id === item.workedPid),
+        item.notes, 5
+      );
+      const uid = item.orderId + '__' + item.itemIdx;
+      const kgTxt = item.kg > 0 ? item.kg.toFixed(2) + ' kg' : (item.quantity + ' ' + item.unit);
+      const optHtml = cands.map((c, i) => {
+        const stockTxt = c.stock > 0 ? ' (재고 ' + c.stock + ')' : ' (재고 0)';
+        return '<option value="' + c.product.id + '"' + (i === 0 ? ' selected' : '') + '>' + c.product.name + stockTxt + '</option>';
+      }).join('');
+      const optSearch = '<option value="">— 다른 품목 검색 —</option>';
+      html += '<tr>';
+      html += '<td style="font-size:12px;"><b>' + item.workedName + '</b></td>';
+      html += '<td style="font-size:11px; color:var(--muted);">' + (item.notes || '—') + '</td>';
+      html += '<td class="num">' + kgTxt + '</td>';
+      html += '<td><select id="wm_sel_' + uid + '" style="width:100%; padding:4px 6px; font-size:12px;">' + optHtml + optSearch + '</select></td>';
+      html += '<td style="text-align:center;"><input type="checkbox" id="wm_learn_' + uid + '"></td>';
+      html += '<td class="act"><button class="btn sm success" style="font-size:11px;" onclick="applyManualWorkedMeatDeduction(\'' + item.orderId + '\', ' + item.itemIdx + ')">🔻 차감</button></td>';
+      html += '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '</div>';
+  });
+  // 일괄 확정 버튼
+  html += '<div style="text-align:right; margin-top:10px;">';
+  html += '<button class="btn success" onclick="applyAllManualWorkedMeatDeductions()">✅ 일괄 확정 (선택한 옵션 전부 차감)</button>';
+  html += '</div>';
+  html += '</div>';
+  return html;
+}
+
+// ⭐ (2026-07-07) 개별 수동 차감 실행
+window.applyManualWorkedMeatDeduction = function(orderId, itemIdx) {
+  const uid = orderId + '__' + itemIdx;
+  const sel = document.getElementById('wm_sel_' + uid);
+  const learn = document.getElementById('wm_learn_' + uid);
+  if (!sel || !sel.value) { alert('원료를 선택해주세요.'); return; }
+  const rawPid = sel.value;
+  const rememberFlag = learn && learn.checked;
+  const result = _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag);
+  if (!result.ok) { alert(result.error); return; }
+  saveDB();
+  inventoryRenderSummary();
+  inventoryRenderOutgoing();
+  showToast('🔻 작업육 수동 차감 완료 (' + result.msg + ')');
+};
+
+// ⭐ (2026-07-07) 화면의 모든 매칭 실패 라인 일괄 확정
+window.applyAllManualWorkedMeatDeductions = function() {
+  const list = inventoryComputeUnmatchedWorkedMeat();
+  if (list.length === 0) { alert('처리할 항목이 없습니다.'); return; }
+  if (!confirm('선택된 원료로 ' + list.length + '건을 일괄 차감합니다.\n\n진행할까요?')) return;
+  let success = 0, failed = [];
+  list.forEach(item => {
+    const uid = item.orderId + '__' + item.itemIdx;
+    const sel = document.getElementById('wm_sel_' + uid);
+    const learn = document.getElementById('wm_learn_' + uid);
+    if (!sel || !sel.value) { failed.push(item.workedName + ' (원료 미선택)'); return; }
+    const r = _wmDeductOne(item.orderId, item.itemIdx, sel.value, learn && learn.checked);
+    if (r.ok) success++;
+    else failed.push(item.workedName + ' — ' + r.error);
+  });
+  saveDB();
+  inventoryRenderSummary();
+  inventoryRenderOutgoing();
+  let msg = '✅ 일괄 차감 완료: ' + success + '건 성공';
+  if (failed.length > 0) msg += '\n\n⚠️ 실패 ' + failed.length + '건:\n' + failed.join('\n');
+  alert(msg);
+};
+
+// 내부 헬퍼: 한 라인 수동 차감. 재고 부족 시 실패 반환.
+function _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return { ok:false, error: '주문 없음' };
+  const invItems = getInvoiceItems(o);
+  const it = invItems[itemIdx];
+  if (!it) return { ok:false, error: '항목 없음' };
+  const workedP = DB.products.find(x => x.id === it.productId);
+  const rawP = DB.products.find(x => x.id === rawPid);
+  if (!rawP || !INVENTORY_CATEGORIES.includes(rawP.cut)) return { ok:false, error: '원료가 재고 관리 대상이 아님' };
+  // 중량 계산
+  let addedKg = 0, addedPack = 0, addedBox = 0;
+  if (it.unit === '작업중량') addedKg = +(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0;
+  else if (it.unit === '팩') addedPack = +(it.quantity) || 0;
+  else addedBox = +(it.quantity) || 0;
+  const packBox = inventoryPackToBox(addedPack, rawP.cut);
+  const kgBox = inventoryBoxConvert(addedKg, rawP.cut);
+  const totalDeduct = addedBox + packBox + kgBox;
+  if (totalDeduct <= 0) return { ok:false, error: '차감할 중량 없음 (중량 미입력)' };
+  // 재고 부족 검사 (정책: 부족 시 차감 안 함 + 수동 확인)
+  const invE = inventoryEnsureProduct(rawPid);
+  if ((invE.stock || 0) < totalDeduct) {
+    return { ok:false, error: '재고 부족 (필요: ' + totalDeduct + ', 재고: ' + (invE.stock || 0) + ')' };
+  }
+  // 실제 차감
+  invE.deductedToday = (invE.deductedToday || 0) + totalDeduct;
+  invE.stock = (invE.stock || 0) - totalDeduct;
+  // 감사 추적 저장
+  if (!DB.inventory.workedMeatDeductions) DB.inventory.workedMeatDeductions = {};
+  if (!DB.inventory.workedMeatDeductions[orderId]) DB.inventory.workedMeatDeductions[orderId] = [];
+  DB.inventory.workedMeatDeductions[orderId].push({
+    workedPid: workedP ? workedP.id : it.productId,
+    rawPid, itemIdx,
+    kg: addedKg, pack: addedPack, box: addedBox,
+    manual: true, at: new Date().toISOString()
+  });
+  // 학습 저장 (선택 시)
+  if (rememberFlag && workedP) learnWorkedMeatMapping(workedP.id, rawPid);
+  return { ok:true, msg: rawP.name + ' -' + totalDeduct + '박스' };
 }
 
 // 전체 일괄 차감: 오늘 배송완료 + 아직 미차감 주문 전부 적용
@@ -9382,23 +9712,54 @@ window.inventoryApplyAllToday = function() {
   const byProductPack = {}; // pid -> pack total
   const byProductKg   = {}; // pid -> kg total
 
+  const perOrderMappings = {};  // orderId → [{workedPid, rawPid, itemIdx, kg}] (감사 추적용)
   DB.orders.forEach(o => {
     if (o.status !== 'delivered') return;
     if (!pendingOrderIds.has(o.id)) return;
     const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
     if (ref !== today) return;
-    // ⭐ (2026-07-07) 인보이스 실제 라인 기준으로 통일 — 취소 제외, 추가 포함, 조정된 실측중량 반영.
+    // ⭐ (2026-07-07) 인보이스 실제 라인 기준 + 작업육 자동 매칭.
     const invItems = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
-    invItems.forEach(it => {
+    invItems.forEach((it, idx) => {
       if (!it.productId) return;
       const p = DB.products.find(x => x.id === it.productId);
-      if (!p || !INVENTORY_CATEGORIES.includes(p.cut)) return;
+      if (!p) return;
+      let targetPid = it.productId;
+      let workedPid = null;
+      // 작업육 자동 매칭
+      if (p.cut === '작업육') {
+        const m = matchWorkedMeatToRaw(p, it.notes);
+        if (m.auto && m.candidate) {
+          workedPid = p.id;
+          targetPid = m.candidate.id;
+        } else {
+          return; // 매칭 실패 → 수동 리스트로만 처리
+        }
+      } else if (!INVENTORY_CATEGORIES.includes(p.cut)) {
+        return; // 재고 관리 대상 아님
+      }
+      // 목표 원료가 재고 카테고리에 있는지 재확인
+      const tp = DB.products.find(x => x.id === targetPid);
+      if (!tp || !INVENTORY_CATEGORIES.includes(tp.cut)) return;
+
+      let addedKg = 0, addedPack = 0, addedBox = 0;
       if (it.unit === '작업중량') {
-        byProductKg[it.productId] = (byProductKg[it.productId] || 0) + (+(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0);
+        addedKg = +(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0;
+        byProductKg[targetPid] = (byProductKg[targetPid] || 0) + addedKg;
       } else if (it.unit === '팩') {
-        byProductPack[it.productId] = (byProductPack[it.productId] || 0) + (+(it.quantity) || 0);
+        addedPack = +(it.quantity) || 0;
+        byProductPack[targetPid] = (byProductPack[targetPid] || 0) + addedPack;
       } else {
-        byProductBox[it.productId] = (byProductBox[it.productId] || 0) + (+(it.quantity) || 0);
+        addedBox = +(it.quantity) || 0;
+        byProductBox[targetPid] = (byProductBox[targetPid] || 0) + addedBox;
+      }
+      if (workedPid) {
+        if (!perOrderMappings[o.id]) perOrderMappings[o.id] = [];
+        perOrderMappings[o.id].push({
+          workedPid, rawPid: targetPid, itemIdx: idx,
+          kg: addedKg, pack: addedPack, box: addedBox,
+          at: new Date().toISOString()
+        });
       }
     });
   });
@@ -9421,6 +9782,13 @@ window.inventoryApplyAllToday = function() {
     const total = boxOut + packBox + kgBox;
     e.deductedToday += total;
     e.stock -= total;
+  });
+
+  // ⭐ (2026-07-07) 작업육 자동 매칭 감사 기록 저장
+  if (!DB.inventory.workedMeatDeductions) DB.inventory.workedMeatDeductions = {};
+  Object.keys(perOrderMappings).forEach(oid => {
+    if (!DB.inventory.workedMeatDeductions[oid]) DB.inventory.workedMeatDeductions[oid] = [];
+    perOrderMappings[oid].forEach(m => DB.inventory.workedMeatDeductions[oid].push(m));
   });
 
   // 차감 완료 마킹
@@ -9800,7 +10168,9 @@ function initApp(data) {
     DB.settings.lastFullBackupAt = _yst.toISOString();
   }
   if (!DB.company)     DB.company     = seed().company;
-  if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{} };
+  if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{}, workedMeatDeductions:{} };
+  if (!DB.inventory.workedMeatDeductions) DB.inventory.workedMeatDeductions = {};
+  if (!DB.workedMeatMap) DB.workedMeatMap = {};   // ⭐ (2026-07-07) 작업육 → 원료 매핑 학습
   migrateProducts();
   migrateFavoritePairs();
   route();
