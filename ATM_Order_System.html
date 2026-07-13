@@ -8983,7 +8983,10 @@ function inventoryComputeTodaysOutgoing() {
     if (ref !== today) return;
     const cust = DB.customers.find(c => c.id === o.customerId);
     const custName = cust ? cust.name : '-';
-    (o.items || []).forEach(it => {
+    // ⭐ (2026-07-07) 인보이스 실제 라인(invoiceItems, 취소 제외) 기준으로 통일.
+    //   인보이스 준비에서 추가된 품목은 포함, 취소된 품목은 제외, 조정된 실측중량 반영.
+    const invItems = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
+    invItems.forEach(it => {
       if (!it.productId) return;
       const pid = it.productId;
       if (!out[pid]) out[pid] = { boxQty: 0, packQty: 0, kgQty: 0, perOrder: [] };
@@ -9384,7 +9387,9 @@ window.inventoryApplyAllToday = function() {
     if (!pendingOrderIds.has(o.id)) return;
     const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
     if (ref !== today) return;
-    (o.items || []).forEach(it => {
+    // ⭐ (2026-07-07) 인보이스 실제 라인 기준으로 통일 — 취소 제외, 추가 포함, 조정된 실측중량 반영.
+    const invItems = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
+    invItems.forEach(it => {
       if (!it.productId) return;
       const p = DB.products.find(x => x.id === it.productId);
       if (!p || !INVENTORY_CATEGORIES.includes(p.cut)) return;
