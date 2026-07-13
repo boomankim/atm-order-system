@@ -8945,7 +8945,7 @@ function _wmNormalize(s) {
     .replace(/[()·,./]/g, '');
 }
 
-// 작업육 이름에서 카테고리 힌트 추출 (소/돼지/와규 등)
+// 작업육 이름에서 카테고리 힌트 추출 (소/돼지/와규 등) — 스코어링 보조용, 단일 값.
 function _wmCategoryHint(workedName) {
   const n = _wmNormalize(workedName);
   if (n.indexOf('와규') === 0 || n.startsWith('wagyu')) return '와규';
@@ -8955,6 +8955,38 @@ function _wmCategoryHint(workedName) {
   if (n.indexOf('양') === 0 || n.startsWith('lamb')) return '양고기';
   if (n.indexOf('소') === 0 || n.startsWith('beef')) return '소고기';
   return null;
+}
+
+// ⭐ (2026-07-07) 원료 카테고리 하드 필터 — 드롭다운·매칭에서 관련 카테고리만 남김.
+//   우선순위:
+//     1) 요청사항(notes) 힌트 (최우선)
+//     2) 이름 첫 단어 (와규/앵거스/돼지/오리/양/소)
+//     3) 이름 키워드 (샤브·삼겹살 등 특수)
+//     4) fallback: 전체 카테고리
+function _wmAllowedCategories(workedName, notes) {
+  const nameN  = _wmNormalize(workedName);
+  const notesN = _wmNormalize(notes);
+  // 1) notes 힌트
+  if (notesN) {
+    if (notesN.indexOf('와규') >= 0 || notesN.indexOf('wagyu') >= 0)   return ['와규'];
+    if (notesN.indexOf('앵거스') >= 0 || notesN.indexOf('angus') >= 0) return ['소고기'];
+    if (notesN.indexOf('돼지') >= 0 || notesN.indexOf('pork') >= 0)     return ['돼지고기'];
+    if (notesN.indexOf('오리') >= 0 || notesN.indexOf('duck') >= 0)     return ['오리'];
+    if (notesN.indexOf('양') >= 0 || notesN.indexOf('lamb') >= 0)       return ['양고기'];
+  }
+  // 2) 이름 첫 단어
+  if (nameN.indexOf('와규') === 0 || nameN.startsWith('wagyu'))   return ['와규'];
+  if (nameN.indexOf('앵거스') === 0 || nameN.startsWith('angus')) return ['소고기'];
+  if (nameN.indexOf('돼지') === 0 || nameN.startsWith('pork'))     return ['돼지고기'];
+  if (nameN.indexOf('오리') === 0 || nameN.startsWith('duck'))     return ['오리'];
+  if (nameN.indexOf('양') === 0 || nameN.startsWith('lamb'))       return ['양고기'];
+  if (nameN.indexOf('소') === 0 || nameN.startsWith('beef'))       return ['소고기'];
+  // 3) 이름 키워드 특수
+  if (nameN.indexOf('샤브') >= 0 || nameN.indexOf('shabu') >= 0)   return ['소고기','와규'];
+  if (nameN.indexOf('삼겹살') >= 0 || nameN.indexOf('belly') >= 0)  return ['돼지고기'];
+  if (nameN.indexOf('불고기') >= 0)                                  return ['소고기'];
+  // 4) fallback — 전체
+  return RAW_CATEGORIES.slice();
 }
 
 // 혼합 원료 판정 (샤브샤브·불고기·민스 등)
@@ -8970,6 +9002,7 @@ function getRawMaterialCandidates(workedProduct, notes, topN) {
   const workedName = workedProduct.name || '';
   const workedPid  = workedProduct.id;
   const catHint = _wmCategoryHint(workedName);
+  const allowedCats = _wmAllowedCategories(workedName, notes);
   const isMixed = _wmIsMixed(workedName, notes);
   const learnedRawPid = (DB.workedMeatMap || {})[workedPid];
 
@@ -8982,6 +9015,8 @@ function getRawMaterialCandidates(workedProduct, notes, topN) {
   DB.products.forEach(p => {
     if (!p || !p.id || p.id === workedPid) return;
     if (!RAW_CATEGORIES.includes(p.cut)) return;
+    // ⭐ (2026-07-07) 하드 필터: 허용 카테고리 밖은 후보에서 제외.
+    if (!allowedCats.includes(p.cut)) return;
     if (p.active === false) return;
 
     const rawNameN = _wmNormalize(p.name);
@@ -9572,22 +9607,23 @@ function renderUnmatchedWorkedMeatList() {
     html += '<table class="t" style="margin-top:4px;">';
     html += '<thead><tr><th>작업육</th><th>요청사항</th><th class="num">중량</th><th style="width:280px;">원료 선택 (근사치순)</th><th style="width:60px;">기억</th><th class="act">액션</th></tr></thead><tbody>';
     items.forEach(item => {
-      // ⭐ (2026-07-07) 카테고리별 그룹 표시 — 전체 원료 후보를 카테고리로 optgroup 화.
-      //   각 카테고리 내에서는 스코어(재고 tiebreaker) 내림차순.
+      // ⭐ (2026-07-07) 카테고리 하드 필터 + optgroup 표시 — 관련 카테고리만.
+      //   예: 소불고기 → 소고기만 / 샤브 → 소고기+와규 / notes에 '와규' → 와규만.
       const workedProduct = DB.products.find(p => p.id === item.workedPid);
+      const allowedCats = _wmAllowedCategories(item.workedName || (workedProduct && workedProduct.name), item.notes);
       const allCands = getRawMaterialCandidates(workedProduct, item.notes, 500);
       const bestPid = allCands.length > 0 ? allCands[0].product.id : '';
-      // 카테고리별 그룹화
+      // 허용 카테고리만 그룹화
       const byCat = {};
-      RAW_CATEGORIES.forEach(cat => { byCat[cat] = []; });
+      allowedCats.forEach(cat => { byCat[cat] = []; });
       allCands.forEach(c => {
         const cat = c.product.cut;
         if (byCat[cat]) byCat[cat].push(c);
       });
       const uid = item.orderId + '__' + item.itemIdx;
       const kgTxt = item.kg > 0 ? item.kg.toFixed(2) + ' kg' : (item.quantity + ' ' + item.unit);
-      // optgroup 생성 — 후보 없는 카테고리는 스킵
-      const optgroupsHtml = RAW_CATEGORIES.map(cat => {
+      // optgroup 생성 — 허용 카테고리 순서로만
+      const optgroupsHtml = allowedCats.map(cat => {
         const arr = byCat[cat];
         if (!arr || arr.length === 0) return '';
         const opts = arr.map(c => {
