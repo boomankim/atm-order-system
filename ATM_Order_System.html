@@ -9572,22 +9572,36 @@ function renderUnmatchedWorkedMeatList() {
     html += '<table class="t" style="margin-top:4px;">';
     html += '<thead><tr><th>작업육</th><th>요청사항</th><th class="num">중량</th><th style="width:280px;">원료 선택 (근사치순)</th><th style="width:60px;">기억</th><th class="act">액션</th></tr></thead><tbody>';
     items.forEach(item => {
-      const cands = getRawMaterialCandidates(
-        DB.products.find(p => p.id === item.workedPid),
-        item.notes, 5
-      );
+      // ⭐ (2026-07-07) 카테고리별 그룹 표시 — 전체 원료 후보를 카테고리로 optgroup 화.
+      //   각 카테고리 내에서는 스코어(재고 tiebreaker) 내림차순.
+      const workedProduct = DB.products.find(p => p.id === item.workedPid);
+      const allCands = getRawMaterialCandidates(workedProduct, item.notes, 500);
+      const bestPid = allCands.length > 0 ? allCands[0].product.id : '';
+      // 카테고리별 그룹화
+      const byCat = {};
+      RAW_CATEGORIES.forEach(cat => { byCat[cat] = []; });
+      allCands.forEach(c => {
+        const cat = c.product.cut;
+        if (byCat[cat]) byCat[cat].push(c);
+      });
       const uid = item.orderId + '__' + item.itemIdx;
       const kgTxt = item.kg > 0 ? item.kg.toFixed(2) + ' kg' : (item.quantity + ' ' + item.unit);
-      const optHtml = cands.map((c, i) => {
-        const stockTxt = c.stock > 0 ? ' (재고 ' + c.stock + ')' : ' (재고 0)';
-        return '<option value="' + c.product.id + '"' + (i === 0 ? ' selected' : '') + '>' + c.product.name + stockTxt + '</option>';
+      // optgroup 생성 — 후보 없는 카테고리는 스킵
+      const optgroupsHtml = RAW_CATEGORIES.map(cat => {
+        const arr = byCat[cat];
+        if (!arr || arr.length === 0) return '';
+        const opts = arr.map(c => {
+          const stockTxt = c.stock > 0 ? ' (재고 ' + c.stock + ')' : ' (재고 0)';
+          const sel = (c.product.id === bestPid) ? ' selected' : '';
+          return '<option value="' + c.product.id + '"' + sel + '>' + c.product.name + stockTxt + '</option>';
+        }).join('');
+        return '<optgroup label="▼ ' + cat + '">' + opts + '</optgroup>';
       }).join('');
-      const optSearch = '<option value="">— 다른 품목 검색 —</option>';
       html += '<tr>';
       html += '<td style="font-size:12px;"><b>' + item.workedName + '</b></td>';
       html += '<td style="font-size:11px; color:var(--muted);">' + (item.notes || '—') + '</td>';
       html += '<td class="num">' + kgTxt + '</td>';
-      html += '<td><select id="wm_sel_' + uid + '" style="width:100%; padding:4px 6px; font-size:12px;">' + optHtml + optSearch + '</select></td>';
+      html += '<td><select id="wm_sel_' + uid + '" style="width:100%; padding:4px 6px; font-size:12px;">' + optgroupsHtml + '</select></td>';
       html += '<td style="text-align:center;"><input type="checkbox" id="wm_learn_' + uid + '"></td>';
       html += '<td class="act"><button class="btn sm success" style="font-size:11px;" onclick="applyManualWorkedMeatDeduction(\'' + item.orderId + '\', ' + item.itemIdx + ')">🔻 차감</button></td>';
       html += '</tr>';
