@@ -5959,6 +5959,81 @@ function lineUnitPrice(it, p, cust) {
 // 거래처 맞춤 단가 — 품목+요청사항 짝 단위.
 // 데이터: customPrices[productId] = { '': price, '진공포장': price, ... }
 // 레거시 number 값도 자동 호환 (모든 요청사항에 동일 적용).
+// ⭐ (2026-07-09) 진단 도구 — 콘솔에서 window.debugCustomerPrices('거래처명') 호출.
+//   특정 거래처의 저장된 맞춤 단가를 확인해 다음 인보이스에 왜 자동 적용 안 되는지 즉시 파악.
+window.debugCustomerPrices = function(nameOrCid) {
+  const q = String(nameOrCid || '').toLowerCase();
+  const c = DB.customers.find(x => x && (
+    x.id === nameOrCid ||
+    (x.name || '').toLowerCase().includes(q) ||
+    (x.code || '').toLowerCase().includes(q)
+  ));
+  if (!c) {
+    console.warn('❌ 거래처 못 찾음:', nameOrCid);
+    console.log('전체 거래처:', DB.customers.map(x => x.name).join(', '));
+    return null;
+  }
+  console.group('🔍 거래처 단가 진단 —', c.name);
+  console.log('customerId:', c.id, '· code:', c.code);
+  console.log('customPrices 필드 존재:', !!c.customPrices);
+  const cp = c.customPrices || {};
+  const pids = Object.keys(cp);
+  console.log('저장된 품목 수:', pids.length);
+  if (pids.length === 0) {
+    console.warn('⚠️ 저장된 맞춤 단가가 없습니다. 인보이스 발행 후에도 저장 실패한 것으로 보임.');
+  } else {
+    pids.forEach(pid => {
+      const p = DB.products.find(x => x.id === pid);
+      const entry = cp[pid];
+      const label = p ? p.name : ('❌ 삭제된 품목 (' + pid + ')');
+      console.log('  •', label, '→', JSON.stringify(entry));
+    });
+  }
+  console.log('---');
+  console.log('Firebase 연결 상태:', typeof DB_REF !== 'undefined' && DB_REF ? '✅ 연결됨' : '❌ 오프라인');
+  console.log('로컬 저장 시각(_lastSaveTime):', new Date(_lastSaveTime).toLocaleTimeString());
+  console.groupEnd();
+  return cp;
+};
+
+// 최근 발행 인보이스의 라인별 단가와 저장 여부를 비교 진단
+window.debugRecentInvoiceLearn = function(customerNameOrCid) {
+  const q = String(customerNameOrCid || '').toLowerCase();
+  const c = DB.customers.find(x => x && (
+    x.id === customerNameOrCid ||
+    (x.name || '').toLowerCase().includes(q)
+  ));
+  if (!c) { console.warn('❌ 거래처 못 찾음'); return; }
+  const invs = DB.orders
+    .filter(o => o.customerId === c.id && (o.status === 'invoiced' || o.status === 'delivered'))
+    .sort((a,b) => (b.invoicedAt||b.orderDate||'').localeCompare(a.invoicedAt||a.orderDate||''));
+  if (invs.length === 0) { console.warn('발행 인보이스 없음'); return; }
+  const latest = invs[0];
+  console.group('🔍 최근 인보이스 학습 진단 —', c.name, 'INV', latest.invoiceNo);
+  console.log('발행 시각:', latest.invoicedAt);
+  const items = getInvoiceItems(latest);
+  const cp = c.customPrices || {};
+  items.forEach(it => {
+    if (!it || !it.productId) return;
+    if (it._status === 'cancelled') return;
+    const p = DB.products.find(x => x.id === it.productId);
+    const pName = p ? p.name : '(?)';
+    const linePrice = it.lineUnitPrice;
+    const notes = String(it.notes || '').trim();
+    const savedEntry = cp[it.productId];
+    const savedPrice = (typeof savedEntry === 'number') ? savedEntry
+      : (savedEntry && typeof savedEntry === 'object' ? (savedEntry[notes] != null ? savedEntry[notes] : savedEntry['']) : null);
+    const status = (savedPrice == null) ? '❌ 저장 안 됨'
+      : (Math.abs(savedPrice - linePrice) < 0.01 ? '✅ 일치' : '⚠️ 저장값 다름: $' + savedPrice);
+    console.log(' •', pName, '| notes:', JSON.stringify(notes), '| 라인$:', linePrice, '|', status);
+  });
+  console.groupEnd();
+};
+
+console.log('%c💡 단가 진단 도구:', 'color:#5C0F0F; font-weight:700;');
+console.log('  window.debugCustomerPrices("강남")     — 거래처 저장된 단가 목록');
+console.log('  window.debugRecentInvoiceLearn("강남")  — 최근 인보이스 학습 여부');
+
 function customerCustomPrice(cust, productId, notes) {
   if (!cust || !cust.customPrices || !productId) return null;
   const entry = cust.customPrices[productId];
@@ -7132,10 +7207,35 @@ async function issueInvoice(orderId) {
       savedPriceCount++;
     });
     if (savedPriceCount > 0) {
-      try { saveEntityField('customers', cust.id, 'customPrices'); }
-      catch(e){ console.warn('customPrices save failed:', e); }
+      try {
+        saveEntityField('customers', cust.id, 'customPrices');
+        // ⭐ (2026-07-09) Firebase 저장 확인 — 다음 발행 시 자동 적용 안 되는 문제 진단용
+        console.log('✅ [issueInvoice] Firebase 저장 요청:', cust.name, '/ customers/' + DB.customers.findIndex(x => x.id === cust.id) + '/customPrices');
+        // 저장 검증: Firebase에 실제로 반영됐는지 3초 후 재확인
+        if (typeof DB_REF !== 'undefined' && DB_REF) {
+          const _cid = cust.id;
+          const _snap = JSON.parse(JSON.stringify(cust.customPrices));
+          setTimeout(() => {
+            DB_REF.child('customers').once('value').then(snap => {
+              const remote = snap.val() || [];
+              const rc = Array.isArray(remote) ? remote.find(x => x && x.id === _cid) : Object.values(remote).find(x => x && x.id === _cid);
+              if (!rc || !rc.customPrices) {
+                console.warn('⚠️ [단가 저장 검증] Firebase에 customPrices 필드 없음 (거래처:', cust.name, ')');
+              } else {
+                const remoteKeys = Object.keys(rc.customPrices).length;
+                const localKeys = Object.keys(_snap).length;
+                if (remoteKeys < localKeys) {
+                  console.warn('⚠️ [단가 저장 검증] Firebase 반영 부분 손실 - local:', localKeys, 'vs remote:', remoteKeys, '(거래처:', cust.name, ')');
+                } else {
+                  console.log('✅ [단가 저장 검증] Firebase 반영 완료 -', remoteKeys, '개 품목');
+                }
+              }
+            }).catch(e => console.warn('저장 검증 실패:', e));
+          }, 3000);
+        }
+      } catch(e){ console.warn('❌ customPrices save failed:', e); }
     }
-    console.log('[issueInvoice] 거래처 맞춤 단가 저장:', cust.name, '라인 수:', savedPriceCount, 'customPrices:', cust.customPrices);
+    console.log('[issueInvoice] 거래처 맞춤 단가 저장:', cust.name, '라인 수:', savedPriceCount, 'customPrices:', JSON.parse(JSON.stringify(cust.customPrices)));
   }
 
   // 3) 로컬 즉시 저장 — 이후 작업이 실패해도 발행 결과는 유지
