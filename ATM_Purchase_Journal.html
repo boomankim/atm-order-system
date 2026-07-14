@@ -1,0 +1,916 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATM 매입일보</title>
+<style>
+  :root{
+    --line:#1f2937; --line2:#9ca3af; --head:#eef2f7; --accent:#1d4ed8;
+    --shade:#d9d9d9;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0; background:#f3f4f6; color:#111827;
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","Malgun Gothic","Apple SD Gothic Neo",sans-serif;
+  }
+  /* ---------- 화면 툴바 ---------- */
+  .toolbar{
+    position:sticky; top:0; z-index:20; background:#ffffff; border-bottom:1px solid #e5e7eb;
+    padding:10px 12px; display:flex; flex-wrap:wrap; gap:8px; align-items:center;
+  }
+  .toolbar .grp{display:flex; gap:6px; align-items:center;}
+  .toolbar label{font-size:12px; color:#6b7280;}
+  .toolbar input[type=date]{
+    font-size:14px; padding:6px 8px; border:1px solid #cbd5e1; border-radius:8px;
+  }
+  button{
+    font-size:13px; font-weight:600; padding:8px 12px; border-radius:8px;
+    border:1px solid #cbd5e1; background:#fff; color:#111827; cursor:pointer;
+  }
+  button:hover{background:#f8fafc;}
+  button.primary{background:var(--accent); border-color:var(--accent); color:#fff;}
+  button.primary:hover{background:#1742c0;}
+  button.ghost{border-style:dashed;}
+  .hint{font-size:12px; color:#6b7280; padding:6px 14px 0;}
+  .wrap{padding:14px; overflow-x:auto;}
+  .sheet{
+    background:#fff; margin:0 auto; max-width:900px; padding:22px 24px 30px;
+    box-shadow:0 1px 6px rgba(0,0,0,.08); border-radius:4px;
+  }
+  .title-row{
+    position:relative; margin:4px 0 18px; padding-bottom:2px;
+  }
+  h1.title{
+    text-align:center; font-size:26px; font-weight:800; margin:0;
+    text-decoration:underline; text-underline-offset:6px; letter-spacing:1px;
+  }
+  .date-tag{
+    position:absolute; right:0; bottom:0; font-size:12px;
+    color:#374151; font-weight:600;
+  }
+  .lock-badge{
+    position:absolute; left:0; bottom:0; font-size:11px;
+    color:#dc2626; font-weight:700; padding:2px 6px;
+    border:1px solid #fca5a5; border-radius:6px; background:#fef2f2;
+  }
+  /* 잠금 상태 — 과거 날짜 또는 18시 이후 또는 저장 이후 */
+  body.locked input.fld{ pointer-events:none; background:#f8fafc !important; color:#475569 !important; cursor:not-allowed; }
+  body.locked .memo-btn, body.locked .del{ display:none !important; }
+  body.locked .vname{ pointer-events:none; cursor:default; }
+  body.locked .vname:hover{ color:inherit; text-decoration:none; }
+  body.locked #addVendor{ display:none; }
+  /* 잠금 해제 버튼 — 잠긴 상태에서만 노출, 경고 톤 */
+  body.locked #unlockBtn{ display:inline-block !important; }
+  body.frozen #unlockBtn{ display:none !important; }   /* 영구 잠금 — 해제 불가 */
+  .unlock-btn{ background:#fff7ed !important; border-color:#fdba74 !important; color:#c2410c !important; }
+  .unlock-btn:hover{ background:#ffedd5 !important; }
+  body.unlocked-session #unlockBtn{ display:inline-block !important; background:#ecfccb !important; border-color:#84cc16 !important; color:#3f6212 !important; }
+  table{border-collapse:collapse; width:100%; table-layout:fixed;}
+  /* 6개 컬럼 합 = 20 + 15.5×4 + 18 = 100% (오버플로우 0) */
+  col.c-name{width:20%;} col.c-num{width:15.5%;} col.c-note{width:18%;}
+  th,td{border:1px solid var(--line); padding:0; font-size:14px;}
+  thead th{
+    background:var(--head); text-align:center; font-weight:700; padding:9px 4px; height:38px;
+  }
+  td{position:relative;}                              /* 메모 아이콘 기준 */
+  td .cell-name{
+    padding:8px 10px; font-weight:600; display:flex; align-items:center; gap:6px; min-height:36px;
+  }
+  td .cell-name .vname{ cursor:pointer; }
+  td .cell-name .vname:hover{ color:var(--accent); text-decoration:underline; }
+  td .cell-name .del{
+    margin-left:auto; border:none; background:transparent; color:#cbd5e1; font-size:15px;
+    padding:2px 4px; cursor:pointer; line-height:1;
+  }
+  td .cell-name .del:hover{color:#dc2626;}
+  td.shade .cell-name{background:var(--shade);}
+  /* 입력 셀 */
+  input.fld{
+    width:100%; border:none; outline:none; background:transparent; font:inherit;
+    padding:9px 18px 9px 10px; height:36px;            /* 우측에 메모 아이콘 공간 */
+  }
+  input.num{ text-align:right; }
+  input.num.calc{ background:#f9fafb; color:#6b7280; } /* (안 씀) */
+  td.bal{ text-align:right; padding:9px 10px; font-weight:700; }
+  td.bal.neg{ color:#dc2626; }
+  input.fld:focus{ background:#fff7d6; }
+  input.editable{ background:#fffefb; }
+  tr.total td{ background:#f1f5f9; font-weight:800; }
+  tr.total .cell-name{ font-weight:800; }
+  td.bal.total-bal{ font-weight:800; }
+  /* 메모 표시 — 셀 우상단 삼각형 */
+  .memo-btn{
+    position:absolute; top:0; right:0; width:0; height:0;
+    border-top:10px solid #cbd5e1; border-left:10px solid transparent;
+    background:transparent; padding:0; cursor:pointer; opacity:.45;
+  }
+  .memo-btn:hover{ opacity:1; }
+  .memo-btn.has-memo{ border-top-color:#dc2626; opacity:1; }
+  /* 서명란 */
+  .sign{
+    margin-top:18px; display:flex; justify-content:flex-end;
+  }
+  .sign table{width:280px;}
+  .sign th{height:30px;}
+  .sign td.sigbox{height:70px;}
+  .footnote{ font-size:11px; color:#9ca3af; text-align:right; margin-top:10px; }
+
+  /* ---------- 모달 ---------- */
+  .modal-back{
+    position:fixed; inset:0; background:rgba(15,23,42,.45); z-index:50;
+    display:none; align-items:center; justify-content:center; padding:16px;
+  }
+  .modal-back.open{ display:flex; }
+  .modal{
+    background:#fff; border-radius:12px; padding:18px 20px 16px;
+    width:100%; max-width:420px; box-shadow:0 10px 30px rgba(0,0,0,.25);
+  }
+  .modal h3{ margin:0 0 12px; font-size:16px; }
+  .modal h3 .sub{ font-weight:500; color:#6b7280; font-size:13px; margin-left:6px; }
+  .form-row{ display:flex; flex-direction:column; gap:4px; margin-bottom:10px; }
+  .form-row label{ font-size:12px; color:#374151; font-weight:600; }
+  .form-row input, .form-row textarea{
+    font:inherit; padding:8px 10px; border:1px solid #cbd5e1; border-radius:8px; width:100%;
+  }
+  .form-row textarea{ resize:vertical; min-height:90px; }
+  .modal-actions{ display:flex; gap:6px; justify-content:flex-end; margin-top:8px; }
+  .modal-actions .left{ margin-right:auto; }
+  .danger{ color:#dc2626; border-color:#fca5a5; }
+  .danger:hover{ background:#fef2f2; }
+
+  /* 경로 표시 박스 */
+  .path-box{
+    padding:8px 10px; background:#f1f5f9; border:1px solid #e5e7eb; border-radius:8px;
+    font-family:ui-monospace,Consolas,monospace; font-size:13px; word-break:break-all;
+    color:#0f172a;
+  }
+  .path-box .small{ color:#64748b; font-size:11px; display:block; margin-top:2px; }
+
+  /* ---------- 인쇄(PDF) — A4 세로 ---------- */
+  @page{ size:A4 portrait; margin:10mm; }
+  @media print{
+    body{background:#fff;}
+    .toolbar,.hint,.del,.footnote,.memo-btn,.modal-back,.lock-badge{ display:none !important; }
+    .wrap{padding:0; overflow:visible;}
+    .sheet{box-shadow:none; max-width:none; padding:0; border-radius:0;}
+    .title-row{ margin:0 0 calc(var(--pdf-title-mb, 12px)); }
+    h1.title{ font-size: var(--pdf-title, 22px); letter-spacing:1.2px; color:#0f172a; }
+    .date-tag{ font-size:10.5px; color:#475569; }
+    th,td{ font-size: var(--pdf-fs, 11.5px); border-color:#475569 !important; }
+    input.fld{ padding: var(--pdf-pad-v, 5px) var(--pdf-pad-h, 6px); height:auto; color:#000 !important; background:transparent !important; font-size: var(--pdf-fs, 11.5px); }
+    td .cell-name{ padding: var(--pdf-pad-v, 5px) calc(var(--pdf-pad-h, 6px) + 1px); min-height:0; font-size: var(--pdf-fs, 11.5px); }
+    td.bal{ padding: var(--pdf-pad-v, 5px) var(--pdf-pad-h, 6px); font-size: var(--pdf-fs, 11.5px); }
+    thead th{ padding: calc(var(--pdf-pad-v, 5px) + 1px) 3px; height:auto; font-size: var(--pdf-fs, 11.5px); background:#1e293b !important; color:#ffffff !important; border-color:#0f172a !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    tbody tr:nth-child(even) td{ background:#f8fafc !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    td.shade .cell-name{ background:transparent !important; }
+    tr.total td{ background:#dbeafe !important; color:#1e3a8a; font-weight:800 !important; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+    input.fld:focus, input.editable{ background:transparent !important; }
+    .sign td.sigbox{ height: var(--pdf-sig-h, 40px); }
+    .sign th{ height:auto; padding:3px; font-size: var(--pdf-fs, 11.5px); background:#e2e8f0 !important; color:#0f172a; -webkit-print-color-adjust:exact; print-color-adjust:exact; }
+  }
+  /* PDF 저장 모드 — A4 세로 기준 (210mm = 793px @96dpi) */
+  body.pdf-mode{ background:#fff; width:793px; margin:0; padding:0; }
+  body.pdf-mode html{ background:#fff; }
+  body.pdf-mode .toolbar,
+  body.pdf-mode .hint,
+  body.pdf-mode .del,
+  body.pdf-mode .footnote,
+  body.pdf-mode .memo-btn,
+  body.pdf-mode .modal-back,
+  body.pdf-mode .lock-badge{ display:none !important; }
+  body.pdf-mode .wrap{ padding:0; overflow:visible; }
+  body.pdf-mode .sheet{ box-shadow:none; max-width:none; width:793px; margin:0 auto; padding:0; border-radius:0; }
+  body.pdf-mode .title-row{ margin:0 0 var(--pdf-title-mb, 12px); }
+  body.pdf-mode h1.title{ font-size: var(--pdf-title, 22px); letter-spacing:1.2px; color:#0f172a; }
+  body.pdf-mode .date-tag{ font-size:10.5px; color:#475569; }
+  body.pdf-mode th, body.pdf-mode td{ font-size: var(--pdf-fs, 11.5px); border-color:#475569; }
+  body.pdf-mode input.fld{ padding: var(--pdf-pad-v, 5px) var(--pdf-pad-h, 6px); height:auto; color:#000 !important; background:transparent !important; font-size: var(--pdf-fs, 11.5px); }
+  body.pdf-mode td .cell-name{ padding: var(--pdf-pad-v, 5px) calc(var(--pdf-pad-h, 6px) + 1px); min-height:0; font-size: var(--pdf-fs, 11.5px); }
+  body.pdf-mode td.bal{ padding: var(--pdf-pad-v, 5px) var(--pdf-pad-h, 6px); font-size: var(--pdf-fs, 11.5px); }
+  body.pdf-mode thead th{ padding: calc(var(--pdf-pad-v, 5px) + 1px) 3px; height:auto; font-size: var(--pdf-fs, 11.5px); background:#1e293b; color:#ffffff; border-color:#0f172a; font-weight:700; }
+  body.pdf-mode tbody tr:nth-child(even) td{ background:#f8fafc; }
+  body.pdf-mode td.shade .cell-name{ background:transparent; }
+  body.pdf-mode tr.total td{ background:#dbeafe; color:#1e3a8a; font-weight:800; }
+  body.pdf-mode .sign{ margin-top:14px; }
+  body.pdf-mode .sign td.sigbox{ height: var(--pdf-sig-h, 40px); }
+  body.pdf-mode .sign th{ height:auto; padding:3px; font-size: var(--pdf-fs, 11.5px); background:#e2e8f0; color:#0f172a; }
+</style>
+</head>
+<body>
+
+<div class="toolbar">
+  <div class="grp">
+    <label>날짜</label>
+    <input type="date" id="dateInput">
+  </div>
+  <div class="grp">
+    <button id="prevDay">◀ 이전날</button>
+    <button id="nextDay" class="primary">다음날 ▶ (이월)</button>
+  </div>
+  <div class="grp">
+    <button id="addVendor" class="ghost">＋ 업체 추가</button>
+    <button id="unlockBtn" class="unlock-btn" style="display:none;">🔓 잠금 해제 (수정 모드)</button>
+    <button id="printBtn">🖨 PDF로 저장 / 인쇄</button>
+  </div>
+  <div class="grp">
+    <button id="backupBtn" title="모든 거래처·일자 데이터를 JSON 파일로 내보내기">💾 백업</button>
+    <button id="restoreBtn" title="백업 JSON 파일에서 데이터 복원">📥 복원</button>
+  </div>
+</div>
+<div class="hint" id="hint">「다음날 ▶」을 누르면 오늘의 <b>현미지급합계</b>가 다음날 <b>미지급합계</b>로 자동 이월됩니다. · 매입금액·지급금액·비고만 입력하면 현미지급합계는 자동 계산됩니다. · 매입금액·지급금액·비고 셀 우상단의 작은 ▾ 표시를 클릭하면 메모를 남길 수 있어요. · 업체명을 클릭하면 연락처 정보를 확인/수정할 수 있어요.</div>
+
+<div class="wrap">
+  <div class="sheet">
+    <div class="title-row">
+      <div class="lock-badge" id="lockBadge" style="display:none;">🔒 수정 잠금</div>
+      <h1 class="title" id="title">ATM 매입일보</h1>
+      <div class="date-tag" id="dateTag"></div>
+    </div>
+    <table>
+      <colgroup>
+        <col class="c-name"><col class="c-num"><col class="c-num">
+        <col class="c-num"><col class="c-note"><col class="c-num">
+      </colgroup>
+      <thead>
+        <tr>
+          <th>업체</th>
+          <th>미지급합계</th>
+          <th>매입금액</th>
+          <th>지급금액</th>
+          <th>비고</th>
+          <th>현미지급합계</th>
+        </tr>
+      </thead>
+      <tbody id="tbody"></tbody>
+      <tfoot id="tfoot"></tfoot>
+    </table>
+
+    <div class="sign">
+      <table>
+        <thead><tr><th>MANAGER</th><th>BOSS</th></tr></thead>
+        <tbody><tr><td class="sigbox"></td><td class="sigbox"></td></tr></tbody>
+      </table>
+    </div>
+    <div class="footnote">ATM · ALL THAT MEAT WHOLESALE PTY LTD — ATM 매입일보</div>
+  </div>
+</div>
+
+<!-- ============ 업체 추가/편집 모달 ============ -->
+<div class="modal-back" id="vendorModal">
+  <div class="modal">
+    <h3 id="vendorModalTitle">업체 추가</h3>
+    <div class="form-row"><label>업체명 *</label><input id="vfName" placeholder="예: ALL THAT MEAT"></div>
+    <div class="form-row"><label>업체 연락처</label><input id="vfPhone" placeholder="예: 02-1234-5678"></div>
+    <div class="form-row"><label>담당자</label><input id="vfManager" placeholder="예: 홍길동"></div>
+    <div class="form-row"><label>담당자 연락처</label><input id="vfMgrPhone" placeholder="예: 010-0000-0000"></div>
+    <div class="form-row"><label>이메일 주소</label><input id="vfEmail" type="email" placeholder="예: name@example.com"></div>
+    <div class="modal-actions">
+      <button id="vfDelete" class="danger left" style="display:none;">정보 삭제</button>
+      <button id="vfCancel">취소</button>
+      <button id="vfSave" class="primary">저장</button>
+    </div>
+  </div>
+</div>
+
+<!-- ============ 메모 모달 ============ -->
+<div class="modal-back" id="memoModal">
+  <div class="modal">
+    <h3>메모 <span class="sub" id="memoSub"></span></h3>
+    <div class="form-row">
+      <textarea id="memoText" placeholder="메모를 입력하세요"></textarea>
+    </div>
+    <div class="modal-actions">
+      <button id="memoClear" class="danger left">메모 지우기</button>
+      <button id="memoCancel">취소</button>
+      <button id="memoSave" class="primary">저장</button>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ========== 기준 데이터 (2026-06-16, 업로드 이미지 기준) ========== */
+const SEED_DATE = "2026-06-16";
+const SEED = [
+  {name:"AWM",            unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"amg",            unpaid:24554.62,  purchase:null,    payment:12499.77, note:"353908", shade:false},
+  {name:"B&E",            unpaid:14770.47,  purchase:594.00,  payment:null,     note:"6814314", shade:false},
+  {name:"B&G",            unpaid:0.00,      purchase:978.20,  payment:null,     note:"16062026", shade:false},
+  {name:"BARCOO",         unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"BE CAMPBELL",    unpaid:14855.33,  purchase:409.60,  payment:5042.15,  note:"91435891", shade:false},
+  {name:"COWROCK",        unpaid:7948.35,   purchase:3062.82, payment:null,     note:"0456X / 04405", shade:false},
+  {name:"D R JOHNSTON",   unpaid:2111.31,   purchase:null,    payment:2234.99,  note:"", shade:false},
+  {name:"GMGP",           unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"GOTZINGER",      unpaid:3116.72,   purchase:null,    payment:null,     note:"", shade:false},
+  {name:"HWAGAE",         unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"JBS (PORK AUS)", unpaid:9754.10,   purchase:null,    payment:null,     note:"", shade:false},
+  {name:"KING RIVER",     unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"MAKAN",          unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"MEAT BOYS",      unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"MELRINA",        unpaid:960.63,    purchase:1505.10, payment:null,     note:"", shade:false},
+  {name:"MIDFIELD",       unpaid:2420.00,   purchase:null,    payment:null,     note:"", shade:false},
+  {name:"MUDEUNG(황가네)", unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"OAKDALE",        unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"ONE MEAT",       unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"PACIFIC",        unpaid:3620.27,   purchase:null,    payment:3650.27,  note:"", shade:false},
+  {name:"SANDALWOOD",     unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"SEVEN POINT",    unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"SIGNATURE",      unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"SMILE MEAT",     unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"STANBROKE",      unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"STONE AGE",      unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"SUNPORK",        unpaid:142090.35, purchase:null,    payment:50935.31, note:"", shade:false},
+  {name:"SUNSHINE MEATS", unpaid:3276.30,   purchase:null,    payment:3276.30, note:"", shade:false},
+  {name:"WARMOLL(JACK'S)",unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+  {name:"WILMEAT",        unpaid:2712.56,   purchase:null,    payment:2712.56,  note:"", shade:false},
+  {name:"YARABAH",        unpaid:0.00,      purchase:null,    payment:null,     note:"", shade:false},
+];
+
+/* ========== 상태 ========== */
+const STORE_KEY = "atm-maeip-ilbo-v2";   // 스키마 버전업
+let store = { days:{}, current:SEED_DATE, vendorInfo:{} };
+
+/* ========== 숫자/포맷 유틸 ========== */
+function round2(n){ return Math.round((Number(n)+Number.EPSILON)*100)/100; }
+function num(x){ if(x===null||x===undefined||x==="") return 0; const n=Number(x); return isNaN(n)?0:n; }
+function fmtMoney(n){           // 항상 천단위콤마 + 소수점 2자리
+  if(n===null||n===undefined||n==="") return "";
+  const v=Number(n); if(isNaN(v)) return "";
+  return v.toLocaleString("en-US",{minimumFractionDigits:2,maximumFractionDigits:2});
+}
+function parseMoney(s){
+  if(s===null||s===undefined) return null;
+  const c=String(s).replace(/,/g,"").trim();
+  if(c==="") return null;
+  const n=parseFloat(c);
+  return isNaN(n)?null:n;
+}
+
+/* ========== 업체 정렬: 영어(a,b…) 먼저, 한글(ㄱㄴ…) 다음 ========== */
+function isHangulFirst(name){
+  const c=(name||"").trim().charAt(0);
+  return /[㄰-㆏가-힣]/.test(c);
+}
+function vendorCompare(a,b){
+  const ka=isHangulFirst(a.name), kb=isHangulFirst(b.name);
+  if(ka!==kb) return ka?1:-1;                 // 영어 먼저
+  if(ka) return a.name.localeCompare(b.name,"ko");
+  return a.name.toLowerCase().localeCompare(b.name.toLowerCase(),"en");
+}
+
+/* ========== 날짜 유틸 ========== */
+function shiftDate(d,delta){
+  // 시간대 영향 없이 로컬 기준으로만 계산 (toISOString의 UTC 변환 회피)
+  const [y,m,day]=d.split("-").map(Number);
+  const dt=new Date(y, m-1, day);
+  dt.setDate(dt.getDate()+delta);
+  const z=n=>String(n).padStart(2,"0");
+  return `${dt.getFullYear()}-${z(dt.getMonth()+1)}-${z(dt.getDate())}`;
+}
+function formatDateKR(d){
+  const [y,m,day]=d.split("-");
+  return `${y}년 ${m}월 ${day}일`;
+}
+/* PDF로 저장 시 인쇄 다이얼로그가 document.title을 기본 파일명으로 사용 */
+function pdfFilenameForCurrent(){
+  const [y,m,day]=store.current.split("-");
+  return `ATM 매입일보 ${y}년 ${m}월${day}일`;
+}
+function todayStr(){
+  const t=new Date(); const z=n=>String(n).padStart(2,"0");
+  return `${t.getFullYear()}-${z(t.getMonth()+1)}-${z(t.getDate())}`;
+}
+/* 세션 임시 잠금 해제 (브라우저 새로고침 시 초기화) */
+const sessionUnlocks=new Set();
+
+/* 직전 영업일 = store.days에 데이터가 있는 가장 최근 과거 일자
+   (일요일·휴무일에는 데이터가 없으므로 자동으로 그 전 영업일을 가리킴) */
+function previousBusinessDate(){
+  const today=todayStr();
+  const dates=Object.keys(store.days||{}).filter(d=>d<today).sort();
+  return dates.length ? dates[dates.length-1] : null;
+}
+
+/* 일자별 잠금 상태:
+   - 'editable'   : 자유 편집
+   - 'unlockable' : 잠겨 있으나 잠금 해제 가능 (오늘 18시 이후/직전 영업일)
+   - 'frozen'     : 영구 잠금 (직전 영업일보다 더 과거)
+*/
+function lockState(d){
+  if(sessionUnlocks.has(d)) return 'editable';
+  const today=todayStr();
+  if(d>today) return 'editable';                                  // 미래
+  if(d===today){
+    if(new Date().getHours()>=18) return 'unlockable';            // 18시 이후
+    return 'editable';
+  }
+  // 과거
+  return d===previousBusinessDate() ? 'unlockable' : 'frozen';
+}
+function isLocked(d){ return lockState(d)!=='editable'; }
+function canUnlock(d){ return lockState(d)==='unlockable'; }
+
+/* ========== 저장(persist) ==========
+   브라우저 localStorage에 저장 → 파일 닫았다 다시 열어도 동일 브라우저에서 데이터 유지.
+   (window.storage는 Cowork 전용 API라 일반 브라우저에선 데이터가 안 남았음 → localStorage로 전환) */
+async function persist(){
+  try{ localStorage.setItem(STORE_KEY, JSON.stringify(store)); }
+  catch(e){ /* 시크릿 모드·용량 초과 등 — 세션 메모리로만 동작 */ }
+}
+async function loadStore(){
+  try{
+    const raw=localStorage.getItem(STORE_KEY);
+    if(raw){ store=JSON.parse(raw); return true; }
+    // 구버전 호환: 예전에 window.storage로 저장한 적이 있다면 가져오기
+    if(window.storage && typeof window.storage.get==="function"){
+      const r=await window.storage.get(STORE_KEY,false);
+      if(r&&r.value){ store=JSON.parse(r.value); localStorage.setItem(STORE_KEY, r.value); return true; }
+    }
+  }catch(e){}
+  return false;
+}
+
+function currentDay(){ return store.days[store.current] || []; }
+
+/* 모든 엔트리에 memos 객체 보장 */
+function ensureMemos(v){
+  if(!v.memos) v.memos={purchase:"",payment:"",note:""};
+  return v.memos;
+}
+
+/* ========== 렌더 ========== */
+function render(){
+  const day=currentDay().slice().sort(vendorCompare);
+  store.days[store.current]=day;                 // 정렬 상태 유지
+
+  document.getElementById("title").textContent="ATM 매입일보";
+  document.getElementById("dateTag").textContent=formatDateKR(store.current);
+  document.getElementById("dateInput").value=store.current;
+
+  const state=lockState(store.current);
+  const locked=state!=='editable';
+  const unlockedNow=sessionUnlocks.has(store.current);
+  document.body.classList.toggle("locked", locked);
+  document.body.classList.toggle("frozen", state==='frozen');
+  document.body.classList.toggle("unlocked-session", unlockedNow);
+  const lb=document.getElementById("lockBadge");
+  const ub=document.getElementById("unlockBtn");
+  const today=todayStr();
+  if(state==='frozen'){
+    lb.textContent="🔒 과거 일자 — 수정 영구 잠금 (직전 영업일까지만 가능)";
+    lb.style.display="";
+  } else if(state==='unlockable'){
+    const reason = (store.current<today) ? "🔒 직전 영업일 — 잠금 해제 후 수정 가능"
+                  : "🔒 18시 이후 — 수정 잠금";
+    lb.textContent=reason; lb.style.display="";
+  } else {
+    lb.style.display="none";
+  }
+  ub.textContent = unlockedNow
+    ? "✏️ 수정 모드 활성 — 클릭하여 다시 잠금"
+    : "🔓 잠금 해제 (수정 모드)";
+
+  const ro=locked?'readonly':'';
+  const tb=document.getElementById("tbody"); tb.innerHTML="";
+  day.forEach((v,idx)=>{
+    const memos=ensureMemos(v);
+    const bal=round2(num(v.unpaid)+num(v.purchase)-num(v.payment));
+    const tr=document.createElement("tr");
+    tr.dataset.idx=idx;
+    tr.innerHTML=`
+      <td class="${v.shade?'shade':''}">
+        <div class="cell-name">
+          <span class="vname" data-act="info" title="업체 정보 보기/수정">${escapeHtml(v.name)}</span>
+          <button class="del" title="업체 삭제" data-act="del">×</button>
+        </div>
+      </td>
+      <td><input class="fld num editable" ${ro} data-f="unpaid" inputmode="decimal" value="${fmtMoney(v.unpaid)}"></td>
+      <td>
+        <input class="fld num editable" ${ro} data-f="purchase" inputmode="decimal" value="${v.purchase===null?'':fmtMoney(v.purchase)}">
+        <button class="memo-btn ${memos.purchase?'has-memo':''}" data-memo="purchase" title="${memos.purchase?escapeAttr(memos.purchase):'메모 추가'}"></button>
+      </td>
+      <td>
+        <input class="fld num editable" ${ro} data-f="payment" inputmode="decimal" value="${v.payment===null?'':fmtMoney(v.payment)}">
+        <button class="memo-btn ${memos.payment?'has-memo':''}" data-memo="payment" title="${memos.payment?escapeAttr(memos.payment):'메모 추가'}"></button>
+      </td>
+      <td>
+        <input class="fld editable" ${ro} data-f="note" value="${escapeAttr(v.note||'')}">
+        <button class="memo-btn ${memos.note?'has-memo':''}" data-memo="note" title="${memos.note?escapeAttr(memos.note):'메모 추가'}"></button>
+      </td>
+      <td class="bal ${bal<0?'neg':''}">${fmtMoney(bal)}</td>`;
+    tb.appendChild(tr);
+  });
+  renderTotals();
+}
+
+function renderTotals(){
+  const day=currentDay();
+  let tu=0,tp=0,tpay=0,tb=0;
+  day.forEach(v=>{ tu+=num(v.unpaid); tp+=num(v.purchase); tpay+=num(v.payment);
+    tb+=round2(num(v.unpaid)+num(v.purchase)-num(v.payment)); });
+  tu=round2(tu); tp=round2(tp); tpay=round2(tpay); tb=round2(tb);
+  document.getElementById("tfoot").innerHTML=`
+    <tr class="total">
+      <td><div class="cell-name">TOTAL</div></td>
+      <td class="bal total-bal">${fmtMoney(tu)}</td>
+      <td class="bal total-bal">${fmtMoney(tp)}</td>
+      <td class="bal total-bal">${fmtMoney(tpay)}</td>
+      <td></td>
+      <td class="bal total-bal ${tb<0?'neg':''}">${fmtMoney(tb)}</td>
+    </tr>`;
+}
+
+function escapeHtml(s){return String(s).replace(/[&<>]/g,c=>({"&":"&amp;","<":"&lt;",">":"&gt;"}[c]));}
+function escapeAttr(s){return String(s).replace(/"/g,"&quot;").replace(/</g,"&lt;");}
+
+/* ========== 입력 처리 ========== */
+const tbody=document.getElementById("tbody");
+
+tbody.addEventListener("input",e=>{
+  if(isLocked(store.current)) return;            // 잠금 시 입력 무시
+  const inp=e.target.closest("input.fld"); if(!inp) return;
+  const tr=e.target.closest("tr"); const idx=+tr.dataset.idx;
+  const f=inp.dataset.f; const v=currentDay()[idx];
+  if(f==="note"){ v.note=inp.value; persist(); return; }
+  v[f]=parseMoney(inp.value);                       // 숫자 즉시 반영
+  // 해당 행 현미지급합계 즉시 갱신
+  const bal=round2(num(v.unpaid)+num(v.purchase)-num(v.payment));
+  const balCell=tr.querySelector(".bal");
+  balCell.textContent=fmtMoney(bal);
+  balCell.classList.toggle("neg",bal<0);
+  renderTotals(); persist();
+});
+
+tbody.addEventListener("blur",e=>{                   // 포커스 빠지면 콤마/소수점 자동 정리
+  const inp=e.target.closest("input.fld"); if(!inp) return;
+  const f=inp.dataset.f; if(f==="note") return;
+  const tr=e.target.closest("tr"); const v=currentDay()[+tr.dataset.idx];
+  if(f==="unpaid") inp.value=fmtMoney(v.unpaid);     // 미지급은 0.00까지 표기
+  else inp.value = v[f]===null ? "" : fmtMoney(v[f]);
+},true);
+
+tbody.addEventListener("click",e=>{
+  // 1) 메모 아이콘
+  const mb=e.target.closest('button[data-memo]');
+  if(mb){
+    const tr=e.target.closest("tr"); const idx=+tr.dataset.idx;
+    openMemo(idx, mb.dataset.memo);
+    return;
+  }
+  // 2) 업체 삭제
+  const b=e.target.closest('button[data-act="del"]');
+  if(b){
+    const tr=e.target.closest("tr"); const idx=+tr.dataset.idx;
+    const v=currentDay()[idx];
+    if(confirm(`'${v.name}' 업체를 이 날짜에서 삭제할까요?`)){
+      currentDay().splice(idx,1); persist(); render();
+    }
+    return;
+  }
+  // 3) 업체명 클릭 → 정보 보기/수정
+  const nm=e.target.closest('.vname[data-act="info"]');
+  if(nm){
+    const tr=e.target.closest("tr"); const idx=+tr.dataset.idx;
+    const v=currentDay()[idx];
+    openVendorModal({mode:"edit", name:v.name});
+    return;
+  }
+});
+
+/* ========== 버튼들 ========== */
+document.getElementById("dateInput").addEventListener("change",e=>{
+  const d=e.target.value; if(!d) return;
+  if(!store.days[d]){                                // 없는 날짜면 직전일에서 이월 생성
+    const prev=Object.keys(store.days).filter(x=>x<d).sort().pop();
+    store.days[d]= prev ? carryFrom(prev) : [];
+  }
+  store.current=d; persist(); render();
+});
+
+document.getElementById("prevDay").addEventListener("click",()=>{
+  const pd=shiftDate(store.current,-1);
+  if(store.days[pd]){ store.current=pd; persist(); render(); }
+  else alert("이전 날짜의 저장된 일보가 없습니다.");
+});
+
+document.getElementById("nextDay").addEventListener("click",()=>{
+  const nd=shiftDate(store.current,1);
+  if(!store.days[nd]){
+    store.days[nd]=carryFrom(store.current);          // 신규 생성 → 전체 이월
+  } else {
+    recarryUnpaid(store.current, nd);                 // 이미 있는 일자 → 미지급 잔액만 재이월
+  }
+  store.current=nd; persist(); render();
+});
+
+function carryFrom(srcDate){
+  return store.days[srcDate].map(v=>({
+    name:v.name, shade:v.shade,
+    unpaid: round2(num(v.unpaid)+num(v.purchase)-num(v.payment)), // 현미지급합계가 미지급합계로
+    purchase:null, payment:null, note:"",
+    memos:{purchase:"",payment:"",note:""}            // 메모는 이월하지 않음
+  }));
+}
+
+/* 이미 존재하는 다음날 일자에 대해 — 미지급합계(opening balance)만 다시 이월
+   매입·지급·비고·메모는 그대로 유지. src에만 있는 신규 업체는 추가. */
+function recarryUnpaid(srcDate, dstDate){
+  const src=store.days[srcDate]||[];
+  const dst=store.days[dstDate]||[];
+  const srcByName={};
+  src.forEach(v=>{ srcByName[v.name]=v; });
+  dst.forEach(v=>{
+    const s=srcByName[v.name];
+    if(s) v.unpaid=round2(num(s.unpaid)+num(s.purchase)-num(s.payment));
+  });
+  const dstNames=new Set(dst.map(v=>v.name));
+  src.forEach(v=>{
+    if(!dstNames.has(v.name)){
+      dst.push({
+        name:v.name, shade:v.shade,
+        unpaid:round2(num(v.unpaid)+num(v.purchase)-num(v.payment)),
+        purchase:null, payment:null, note:"",
+        memos:{purchase:"",payment:"",note:""}
+      });
+    }
+  });
+}
+
+/* ========== 업체 추가/편집 모달 ========== */
+const vendorModal=document.getElementById("vendorModal");
+const vfName=document.getElementById("vfName");
+const vfPhone=document.getElementById("vfPhone");
+const vfManager=document.getElementById("vfManager");
+const vfMgrPhone=document.getElementById("vfMgrPhone");
+const vfEmail=document.getElementById("vfEmail");
+const vfDelete=document.getElementById("vfDelete");
+let vendorModalCtx={mode:"add", name:""};
+
+function openVendorModal(ctx){
+  vendorModalCtx=ctx;
+  if(!store.vendorInfo) store.vendorInfo={};
+  if(ctx.mode==="edit"){
+    document.getElementById("vendorModalTitle").textContent="업체 정보 — "+ctx.name;
+    const info=store.vendorInfo[ctx.name]||{};
+    vfName.value=ctx.name; vfName.readOnly=true;
+    vfPhone.value=info.phone||"";
+    vfManager.value=info.manager||"";
+    vfMgrPhone.value=info.mgrPhone||"";
+    vfEmail.value=info.email||"";
+    vfDelete.style.display="";
+  }else{
+    document.getElementById("vendorModalTitle").textContent="업체 추가";
+    vfName.value=""; vfName.readOnly=false;
+    vfPhone.value=""; vfManager.value=""; vfMgrPhone.value=""; vfEmail.value="";
+    vfDelete.style.display="none";
+  }
+  vendorModal.classList.add("open");
+  setTimeout(()=>{ (ctx.mode==="add"?vfName:vfPhone).focus(); },50);
+}
+function closeVendorModal(){ vendorModal.classList.remove("open"); }
+
+document.getElementById("addVendor").addEventListener("click",()=>{
+  if(isLocked(store.current)){ alert("잠긴 일자에는 업체를 추가할 수 없습니다."); return; }
+  openVendorModal({mode:"add"});
+});
+document.getElementById("vfCancel").addEventListener("click",closeVendorModal);
+vendorModal.addEventListener("click",e=>{ if(e.target===vendorModal) closeVendorModal(); });
+
+document.getElementById("vfSave").addEventListener("click",()=>{
+  const name=(vfName.value||"").trim();
+  if(!name){ alert("업체명을 입력하세요."); vfName.focus(); return; }
+  const info={
+    phone:(vfPhone.value||"").trim(),
+    manager:(vfManager.value||"").trim(),
+    mgrPhone:(vfMgrPhone.value||"").trim(),
+    email:(vfEmail.value||"").trim(),
+  };
+  if(!store.vendorInfo) store.vendorInfo={};
+  if(vendorModalCtx.mode==="add"){
+    if(currentDay().some(v=>v.name.toLowerCase()===name.toLowerCase())){
+      alert("이미 있는 업체입니다."); return;
+    }
+    currentDay().push({name:name,unpaid:0,purchase:null,payment:null,note:"",shade:false,
+      memos:{purchase:"",payment:"",note:""}});
+    store.vendorInfo[name]=info;
+  }else{
+    store.vendorInfo[vendorModalCtx.name]=info;
+  }
+  closeVendorModal(); persist(); render();
+});
+
+vfDelete.addEventListener("click",()=>{
+  if(!confirm("이 업체의 연락처 정보를 삭제할까요? (일보의 거래내역은 유지됩니다)")) return;
+  if(store.vendorInfo) delete store.vendorInfo[vendorModalCtx.name];
+  closeVendorModal(); persist();
+});
+
+/* ========== 메모 모달 ========== */
+const memoModal=document.getElementById("memoModal");
+const memoText=document.getElementById("memoText");
+const memoSub=document.getElementById("memoSub");
+let memoCtx={idx:-1, field:""};
+const FIELD_LABEL={purchase:"매입금액", payment:"지급금액", note:"비고"};
+
+function openMemo(idx, field){
+  const v=currentDay()[idx]; ensureMemos(v);
+  memoCtx={idx, field};
+  memoSub.textContent=`${v.name} · ${FIELD_LABEL[field]||field}`;
+  memoText.value=v.memos[field]||"";
+  memoModal.classList.add("open");
+  setTimeout(()=>memoText.focus(),50);
+}
+function closeMemo(){ memoModal.classList.remove("open"); }
+
+document.getElementById("memoCancel").addEventListener("click",closeMemo);
+memoModal.addEventListener("click",e=>{ if(e.target===memoModal) closeMemo(); });
+
+document.getElementById("memoSave").addEventListener("click",()=>{
+  const v=currentDay()[memoCtx.idx]; if(!v) return closeMemo();
+  ensureMemos(v);
+  v.memos[memoCtx.field]=memoText.value.trim();
+  closeMemo(); persist(); render();
+});
+document.getElementById("memoClear").addEventListener("click",()=>{
+  const v=currentDay()[memoCtx.idx]; if(!v) return closeMemo();
+  ensureMemos(v);
+  v.memos[memoCtx.field]="";
+  closeMemo(); persist(); render();
+});
+
+/* ESC 키로 모달 닫기 */
+document.addEventListener("keydown",e=>{
+  if(e.key==="Escape"){
+    if(memoModal.classList.contains("open")) closeMemo();
+    if(vendorModal.classList.contains("open")) closeVendorModal();
+  }
+});
+
+/* ========== A4 한장 자동 맞춤 ========== */
+/* 거래처가 늘어나도 폰트·셀 패딩·제목·서명까지 단계적으로 축소해서 한 페이지에 들어가게 함 */
+const FIT_VARS=['--pdf-fs','--pdf-pad-v','--pdf-pad-h','--pdf-title','--pdf-title-mb','--pdf-sig-h'];
+function applyFitToPage(){
+  FIT_VARS.forEach(v=>document.documentElement.style.removeProperty(v));
+  document.body.classList.add('pdf-mode');
+  const sheet=document.querySelector('.sheet');
+  // A4 portrait: sheet 793px(=210mm) → PDF에서 190mm로 투영. 가용 높이 277mm = 약 1156px → 안전마진 두고 1140px
+  const TARGET=1140;
+  let fs=11.5, pv=5, ph=6, title=22, titleMb=12, sigH=40, safety=0;
+  const setAll=()=>{
+    document.documentElement.style.setProperty('--pdf-fs', fs+'px');
+    document.documentElement.style.setProperty('--pdf-pad-v', pv+'px');
+    document.documentElement.style.setProperty('--pdf-pad-h', ph+'px');
+    document.documentElement.style.setProperty('--pdf-title', title+'px');
+    document.documentElement.style.setProperty('--pdf-title-mb', titleMb+'px');
+    document.documentElement.style.setProperty('--pdf-sig-h', sigH+'px');
+  };
+  while(sheet.scrollHeight>TARGET && safety<60){
+    safety++;
+    // 단계별 우선순위: 폰트 → 패딩 → 제목/서명 → 더 작은 폰트/패딩
+    if(fs>9) fs-=0.5;
+    else if(pv>3) pv-=0.4;
+    else if(title>18){ title-=1; titleMb=Math.max(6, titleMb-1); sigH=Math.max(28, sigH-2); }
+    else if(fs>7.5) fs-=0.3;
+    else if(pv>1.5) pv-=0.25;
+    else if(title>14){ title-=0.5; sigH=Math.max(22, sigH-1); }
+    else if(fs>6) fs-=0.2;
+    else if(pv>0.5){ pv-=0.1; ph=Math.max(1.5, ph-0.1); }
+    else break;
+    setAll();
+    void sheet.offsetHeight;
+  }
+}
+function clearFitToPage(){
+  FIT_VARS.forEach(v=>document.documentElement.style.removeProperty(v));
+  document.body.classList.remove('pdf-mode');
+}
+
+/* 인쇄: 브라우저 인쇄 전후에 한장 맞춤 적용/해제
+   + document.title을 일자 포함 파일명으로 스왑 → 인쇄 다이얼로그의 기본 파일명에 반영 */
+let _origTitle="";
+window.addEventListener('beforeprint',()=>{
+  _origTitle=document.title;
+  document.title=pdfFilenameForCurrent();
+  applyFitToPage();
+});
+window.addEventListener('afterprint',()=>{
+  document.title=_origTitle;
+  clearFitToPage();
+});
+document.getElementById("printBtn").addEventListener("click",()=>window.print());
+
+/* ========== 백업 / 복원 ==========
+   localStorage는 PC·브라우저 단위라 사고 시 데이터 유실 위험.
+   주기적으로 JSON 백업 → 공유 폴더 보관 권장. */
+document.getElementById("backupBtn").addEventListener("click",()=>{
+  const today=todayStr();
+  const filename=`ATM_매입일보_백업_${today}.json`;
+  const payload=JSON.stringify(store, null, 2);
+  const blob=new Blob([payload], {type:"application/json;charset=utf-8"});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement("a");
+  a.href=url; a.download=filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url), 1000);
+});
+
+document.getElementById("restoreBtn").addEventListener("click",()=>{
+  const input=document.createElement("input");
+  input.type="file"; input.accept=".json,application/json";
+  input.addEventListener("change", async(e)=>{
+    const file=e.target.files && e.target.files[0];
+    if(!file) return;
+    if(!confirm(
+      `'${file.name}' 백업 파일로 현재 데이터를 덮어쓸까요?\n\n` +
+      `• 현재 입력돼 있는 모든 일자·거래처·메모가 백업 내용으로 교체됩니다.\n` +
+      `• 안전을 위해 먼저 💾 백업을 받아두는 것을 권장합니다.`
+    )) return;
+    try{
+      const text=await file.text();
+      const data=JSON.parse(text);
+      if(!data || !data.days || typeof data.days!=="object"){
+        throw new Error("올바른 ATM 매입일보 백업 파일이 아닙니다");
+      }
+      store=data;
+      // 누락 필드 보정
+      if(!store.vendorInfo) store.vendorInfo={};
+      Object.values(store.days).forEach(arr=>arr.forEach(ensureMemos));
+      if(!store.current || !store.days[store.current]){
+        store.current=Object.keys(store.days).sort().pop() || todayStr();
+      }
+      // 세션 잠금 해제 상태 초기화
+      sessionUnlocks.clear();
+      await persist();
+      render();
+      alert(`복원 완료\n📅 ${Object.keys(store.days).length}개 일자 · 🏢 ${currentDay().length}개 거래처`);
+    }catch(err){
+      alert("복원 실패: " + err.message);
+    }
+  });
+  input.click();
+});
+
+/* PDF 저장은 인쇄 다이얼로그의 "PDF로 저장" 옵션을 사용 → 단일 버튼으로 충분. */
+
+/* 잠금 해제 버튼 — 세션 동안만 임시로 풀어줌 (직전 영업일 또는 오늘만) */
+document.getElementById("unlockBtn").addEventListener("click",()=>{
+  const d=store.current;
+  if(sessionUnlocks.has(d)){
+    // 이미 풀린 상태 → 다시 잠그기
+    sessionUnlocks.delete(d);
+    render();
+    return;
+  }
+  if(!canUnlock(d)){
+    alert("이 일자는 잠금 해제할 수 없습니다.\n(직전 영업일까지만 수정 가능합니다)");
+    return;
+  }
+  const msg=`'${formatDateKR(d)}' 일자의 수정 잠금을 임시 해제할까요?\n\n` +
+            `• 이 세션 동안만 편집 가능합니다.\n` +
+            `• 브라우저를 새로고침하면 다시 잠깁니다.`;
+  if(!confirm(msg)) return;
+  sessionUnlocks.add(d);
+  render();
+});
+
+
+/* 18시 / 자정에 자동으로 다시 렌더링 → 잠금 상태 자동 적용 */
+function scheduleLockTick(){
+  const now=new Date();
+  const six=new Date(now); six.setHours(18,0,0,0);
+  const mid=new Date(now); mid.setHours(24,0,0,0);
+  let next = six>now ? six : mid;
+  const ms = Math.max(1000, next-now);
+  setTimeout(()=>{ render(); scheduleLockTick(); }, ms);
+}
+
+/* ========== 초기 구동 ========== */
+(async function init(){
+  const ok=await loadStore();
+  if(!ok || !store.days || Object.keys(store.days).length===0){
+    store={ days:{ [SEED_DATE]: SEED.map(v=>({...v, memos:{purchase:"",payment:"",note:""}})).sort(vendorCompare) }, current:SEED_DATE, vendorInfo:{} };
+    await persist();
+  }
+  if(!store.vendorInfo) store.vendorInfo={};
+  // 구 스키마 보정: 모든 엔트리에 memos 보장 + GOTZINGER·MELRINA 음영 제거
+  Object.values(store.days).forEach(arr=>arr.forEach(v=>{
+    ensureMemos(v);
+    if(v.name==="GOTZINGER" || v.name==="MELRINA") v.shade=false;
+  }));
+  // 오늘 일자가 없으면 직전 저장일에서 자동 이월(앱을 며칠 만에 열어도 오늘 편집 가능)
+  const _today=todayStr();
+  if(!store.days[_today]){
+    const _dates=Object.keys(store.days).filter(d=>d<_today).sort();
+    const _latest=_dates[_dates.length-1];
+    if(_latest) store.days[_today]=carryFrom(_latest);
+  }
+  if(store.days[_today]) store.current=_today;
+  else if(!store.current || !store.days[store.current])
+    store.current=Object.keys(store.days).sort().pop();
+  await persist();
+  render();
+  scheduleLockTick();
+})();
+</script>
+</body>
+</html>

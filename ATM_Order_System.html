@@ -4826,6 +4826,7 @@ function viewOffice() {
     <h2 class="page-title">📋 사무실 — 인보이스 발행
       <button class="btn sm" style="float:right; background:var(--info);" onclick="location.hash='#history'">📊 주문 이력 / CSV →</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:var(--brand);" onclick="location.hash='#inventory'">📦 재고현황 →</button>
+      <button class="btn sm" style="float:right; margin-right:6px; background:#1d4ed8; color:#fff;" onclick="openPurchaseJournal()" title="매입일보 새 창에서 열기">📗 매입일보 →</button>
     </h2>
     ${_backupBanner}
     <div class="card">
@@ -4933,6 +4934,19 @@ function viewOffice() {
   `;
   setTimeout(() => { if (typeof renderDailyReport === 'function') renderDailyReport(); }, 0);
 }
+// ⭐ (2026-07-08) 매입일보 새 창 열기 — 별도 HTML 파일(ATM_Purchase_Journal.html) 로드.
+//   같은 디렉토리 기준 상대경로 → GitHub Pages / 로컬 파일 / PWA 모두 동작.
+window.openPurchaseJournal = function() {
+  const url = 'ATM_Purchase_Journal.html';
+  const win = window.open(url, 'atm_purchase_journal', 'noopener,noreferrer');
+  if (!win) {
+    // 팝업 차단 → 안내 후 강제 이동 옵션 제공
+    if (confirm('팝업이 차단되었습니다.\n같은 창에서 매입일보를 열까요?')) {
+      location.href = url;
+    }
+  }
+};
+
 window.togglePaymentPanel = function() {
   const el = document.getElementById('inlinePaymentPanel');
   if (!el) return;
