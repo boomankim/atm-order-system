@@ -8045,15 +8045,18 @@ async function exportOrderPDFs(silent = false, onProgress = null) {
       const custName = cust.name.replace(/[\/:*?"<>|]/g, '_');
       const pdfFilename = `주문서_${dateCompact}_${o.orderNo}.pdf`;
       if (dirHandle) {
+        // ⭐ (2026-07-08) blob 로 직접 폴더 핸들 쓰기 — "Save As" 대화창 방지.
+        //   실패 시 조용히 카운트만 실패로 (doc.save 폴백 제거).
         try {
-          const buf = doc.output('arraybuffer');
-          // (선택한 거래처 백업 폴더) > ATM 주문서 > {거래처} > PDF
-          await writeToFolderPath(dirHandle, ['ATM 주문서', custName], pdfFilename, buf);
+          const pdfBlob = doc.output('blob');
+          await writeToFolderPath(dirHandle, ['ATM 주문서', custName], pdfFilename, pdfBlob);
         } catch(e) {
-          console.warn('주문서 폴더 저장 실패, 다운로드 대체:', e);
-          doc.save(pdfFilename);
+          console.warn('주문서 폴더 저장 실패:', pdfFilename, e);
+          failed++;
+          continue;
         }
       } else {
+        // 폴더 미지정 시에만 다운로드 (사장님 정책)
         doc.save(pdfFilename);
       }
       saved++;
@@ -8120,15 +8123,18 @@ async function exportInvoicePDFs(silent = false, onProgress = null) {
       const custName = cust.name.replace(/[\/:*?"<>|]/g, '_');
       const pdfFilename = `${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`;
       if (dirHandle) {
+        // ⭐ (2026-07-08) blob 로 직접 폴더 핸들 쓰기 — "Save As" 대화창 방지.
+        //   실패 시 조용히 카운트만 실패로 (doc.save 폴백 제거).
         try {
-          const buf = doc.output('arraybuffer');
-          // (선택한 거래처 백업 폴더) > ATM Invoice > {거래처} > PDF
-          await writeToFolderPath(dirHandle, ['ATM Invoice', custName], pdfFilename, buf);
+          const pdfBlob = doc.output('blob');
+          await writeToFolderPath(dirHandle, ['ATM Invoice', custName], pdfFilename, pdfBlob);
         } catch(e) {
-          console.warn('PDF 폴더 저장 실패, 다운로드 대체:', e);
-          doc.save(pdfFilename);
+          console.warn('인보이스 PDF 폴더 저장 실패:', pdfFilename, e);
+          failed++;
+          continue;
         }
       } else {
+        // 폴더 미지정 시에만 다운로드 (사장님 정책)
         doc.save(pdfFilename);
       }
       saved++;
