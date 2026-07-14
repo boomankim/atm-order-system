@@ -4,6 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ATM 매입일보</title>
+<!-- ⭐ (2026-07-08) PDF 저장용 라이브러리 -->
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
 <style>
   :root{
     --line:#1f2937; --line2:#9ca3af; --head:#eef2f7; --accent:#1d4ed8;
@@ -211,13 +214,18 @@
   <div class="grp">
     <button id="addVendor" class="ghost">＋ 업체 추가</button>
     <button id="unlockBtn" class="unlock-btn" style="display:none;">🔓 잠금 해제 (수정 모드)</button>
-    <button id="printBtn">🖨 PDF로 저장 / 인쇄</button>
+  </div>
+  <div class="grp">
+    <button id="setFolderBtn" title="PDF 저장 폴더 지정 (한 번만)">📁 폴더 지정</button>
+    <button id="savePdfBtn" class="primary" title="지정한 폴더에 자동 저장 (년-월 하위폴더)">💾 PDF 저장</button>
+    <button id="printBtn" title="브라우저 인쇄 다이얼로그">🖨 인쇄</button>
   </div>
   <div class="grp">
     <button id="backupBtn" title="모든 거래처·일자 데이터를 JSON 파일로 내보내기">💾 백업</button>
     <button id="restoreBtn" title="백업 JSON 파일에서 데이터 복원">📥 복원</button>
   </div>
 </div>
+<div id="folderInfo" style="padding:6px 14px 0; font-size:11px; color:#6b7280;"></div>
 <div class="hint" id="hint">「다음날 ▶」을 누르면 오늘의 <b>현미지급합계</b>가 다음날 <b>미지급합계</b>로 자동 이월됩니다. · 매입금액·지급금액·비고만 입력하면 현미지급합계는 자동 계산됩니다. · 매입금액·지급금액·비고 셀 우상단의 작은 ▾ 표시를 클릭하면 메모를 남길 수 있어요. · 업체명을 클릭하면 연락처 정보를 확인/수정할 수 있어요.</div>
 
 <div class="wrap">
@@ -501,6 +509,8 @@ function render(){
     tb.appendChild(tr);
   });
   renderTotals();
+  // ⭐ (2026-07-08) 날짜 바뀔 때마다 폴더 정보 미리보기 파일명 갱신
+  if(typeof pjRefreshFolderInfo === 'function') pjRefreshFolderInfo();
 }
 
 function renderTotals(){
@@ -798,6 +808,163 @@ window.addEventListener('afterprint',()=>{
   clearFitToPage();
 });
 document.getElementById("printBtn").addEventListener("click",()=>window.print());
+
+/* ========================================================================
+ * ⭐ (2026-07-08) 폴더 지정 + PDF 자동 저장 (오더 시스템과 동일 방식)
+ * - IndexedDB에 폴더 핸들 저장 → 파일 닫아도 유지
+ * - 자동 년-월 하위폴더 생성 (예: 2026-07/ATM_매입일보_2026-07-14.pdf)
+ * - File System Access API 미지원 브라우저(Safari 등) → 다운로드로 폴백
+ * ======================================================================== */
+function pjIdbOpen(){
+  return new Promise((res,rej)=>{
+    const r=indexedDB.open('atm_purchase_journal_meta',1);
+    r.onupgradeneeded=e=>e.target.result.createObjectStore('kv');
+    r.onsuccess=e=>res(e.target.result);
+    r.onerror=()=>rej(r.error);
+  });
+}
+async function pjIdbGet(key){
+  const db=await pjIdbOpen();
+  return new Promise((res,rej)=>{
+    const r=db.transaction('kv','readonly').objectStore('kv').get(key);
+    r.onsuccess=()=>res(r.result);
+    r.onerror=()=>rej(r.error);
+  });
+}
+async function pjIdbSet(key,value){
+  const db=await pjIdbOpen();
+  return new Promise((res,rej)=>{
+    const r=db.transaction('kv','readwrite').objectStore('kv').put(value,key);
+    r.onsuccess=()=>res();
+    r.onerror=()=>rej(r.error);
+  });
+}
+
+let _pjDirHandle=null;
+async function pjGetDirHandle(){
+  if(_pjDirHandle){
+    try{
+      const perm=await _pjDirHandle.queryPermission({mode:'readwrite'});
+      if(perm==='granted') return _pjDirHandle;
+      const req=await _pjDirHandle.requestPermission({mode:'readwrite'});
+      if(req==='granted') return _pjDirHandle;
+    }catch(e){}
+  }
+  try{
+    const h=await pjIdbGet('pjDirHandle');
+    if(h){
+      const perm=await h.queryPermission({mode:'readwrite'});
+      if(perm==='granted'){ _pjDirHandle=h; return h; }
+      const req=await h.requestPermission({mode:'readwrite'});
+      if(req==='granted'){ _pjDirHandle=h; return h; }
+    }
+  }catch(e){}
+  return null;
+}
+async function pjRefreshFolderInfo(){
+  const el=document.getElementById('folderInfo');
+  if(!el) return;
+  const h=await pjGetDirHandle();
+  const [y,m]=store.current.split('-');
+  const ym=`${y}-${m}`;
+  if(h){
+    el.innerHTML=`📁 PDF 저장 폴더: <b style="color:#1d4ed8;">${h.name}/${ym}/</b>ATM_매입일보_${store.current}.pdf`;
+  }else{
+    el.innerHTML=`<span style="color:#c2410c;">⚠️ PDF 저장 폴더 미설정</span> — "📁 폴더 지정" 버튼으로 한 번만 지정하면 이후 자동 저장됩니다`;
+  }
+}
+
+document.getElementById('setFolderBtn').addEventListener('click',async()=>{
+  if(!window.showDirectoryPicker){
+    alert('이 브라우저는 폴더 지정을 지원하지 않습니다.\n(Safari 등)\n💾 PDF 저장 시 다운로드로 대체됩니다.');
+    return;
+  }
+  try{
+    const h=await window.showDirectoryPicker({mode:'readwrite'});
+    _pjDirHandle=h;
+    await pjIdbSet('pjDirHandle',h);
+    await pjRefreshFolderInfo();
+    alert('✅ PDF 저장 폴더 설정 완료!\n\n📁 '+h.name+'\n\n이후 💾 PDF 저장 클릭 시\n이 폴더 안에 "년-월" 하위폴더가 자동 생성되고\n그 안에 PDF가 저장됩니다.');
+  }catch(e){
+    if(e.name!=='AbortError') alert('폴더 선택 실패: '+e.message);
+  }
+});
+
+async function pjWriteToFolder(rootHandle,segments,filename,data){
+  let dir=rootHandle;
+  for(let i=0;i<segments.length;i++){
+    const seg=(segments[i]||'').toString().trim();
+    if(!seg) continue;
+    if(dir.name===seg) continue;
+    dir=await dir.getDirectoryHandle(seg,{create:true});
+  }
+  const fh=await dir.getFileHandle(filename,{create:true});
+  const w=await fh.createWritable();
+  await w.write(data);
+  await w.close();
+}
+
+document.getElementById('savePdfBtn').addEventListener('click',async()=>{
+  if(typeof window.jspdf==='undefined' || typeof window.html2canvas==='undefined'){
+    alert('PDF 라이브러리 로딩 중입니다. 잠시 후 다시 시도해주세요.');
+    return;
+  }
+  const dateISO=store.current;
+  const [y,m]=dateISO.split('-');
+  const ym=`${y}-${m}`;
+  const filename=`ATM_매입일보_${dateISO}.pdf`;
+  const btn=document.getElementById('savePdfBtn');
+  const _origLabel=btn.textContent;
+  btn.textContent='📄 생성 중...';
+  btn.disabled=true;
+  applyFitToPage();
+  await new Promise(r=>setTimeout(r,120));
+  try{
+    const target=document.querySelector('.sheet');
+    const canvas=await html2canvas(target,{scale:2,useCORS:true,backgroundColor:'#ffffff',logging:false});
+    const imgData=canvas.toDataURL('image/jpeg',0.95);
+    const {jsPDF}=window.jspdf;
+    const doc=new jsPDF({unit:'mm',format:'a4',orientation:'portrait'});
+    const pageW=210,pageH=297;
+    const imgH=canvas.height*pageW/canvas.width;
+    if(imgH<=pageH){
+      doc.addImage(imgData,'JPEG',0,0,pageW,imgH);
+    }else{
+      let yOff=0;
+      while(yOff<imgH){
+        if(yOff>0) doc.addPage();
+        doc.addImage(imgData,'JPEG',0,-yOff,pageW,imgH);
+        yOff+=pageH;
+      }
+    }
+    const dirHandle=await pjGetDirHandle();
+    if(dirHandle){
+      try{
+        const buf=doc.output('arraybuffer');
+        await pjWriteToFolder(dirHandle,[ym],filename,buf);
+        alert(`✅ 매입일보 저장 완료!\n\n📁 ${dirHandle.name}/${ym}/${filename}`);
+      }catch(e){
+        console.warn('폴더 쓰기 실패, 다운로드로 대체:',e);
+        doc.save(filename);
+        alert(`💾 매입일보 다운로드 완료 (폴더 쓰기 실패)\n\n다시 시도하려면 📁 폴더 지정 다시 눌러주세요.`);
+      }
+    }else{
+      doc.save(filename);
+      setTimeout(()=>alert('💾 매입일보 다운로드 완료!\n\n📁 매번 같은 폴더에 자동 저장하려면\n"📁 폴더 지정" 버튼을 한 번 눌러서\n저장 폴더를 지정해 주세요.\n\n이후부터는 💾 PDF 저장 클릭만으로\n자동으로 "년-월" 하위폴더가 만들어지고\n그 안에 PDF가 저장됩니다.'),300);
+    }
+  }catch(e){
+    console.error('매입일보 PDF 저장 실패:',e);
+    alert('❌ PDF 생성 실패: '+e.message);
+  }finally{
+    clearFitToPage();
+    btn.textContent=_origLabel;
+    btn.disabled=false;
+    pjRefreshFolderInfo();
+  }
+});
+
+// 초기 폴더 정보 표시
+pjRefreshFolderInfo();
 
 /* ========== 백업 / 복원 ==========
    localStorage는 PC·브라우저 단위라 사고 시 데이터 유실 위험.
