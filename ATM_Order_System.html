@@ -1526,6 +1526,7 @@ function viewAdmin(params) {
         <button class="btn ${tab==='favorites'?'':'secondary'}" onclick="location.hash='#admin?tab=favorites'">거래처별 즐겨찾기</button>
         <button class="btn ${tab==='orders'?'':'secondary'}" onclick="location.hash='#admin?tab=orders'">🗑️ 거래내역 (${DB.orders.length})</button>
         <button class="btn ${tab==='company'?'':'secondary'}" onclick="location.hash='#admin?tab=company'">회사 정보</button>
+        <button class="btn ${tab==='pricing'?'':'secondary'}" onclick="location.hash='#admin?tab=pricing'">💰 단가 비교</button>
         <button class="btn ${tab==='security'?'':'secondary'}" onclick="location.hash='#admin?tab=security'">🔑 보안</button>
       </div>
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
@@ -1544,9 +1545,204 @@ function viewAdmin(params) {
   else if (tab === 'favorites') renderFavoritesAdmin(params);
   else if (tab === 'orders') renderOrdersAdmin(params);
   else if (tab === 'company') renderCompanyAdmin();
+  else if (tab === 'pricing') renderPricingAdmin();
   else if (tab === 'security') renderSecurityAdmin();
   else if (tab === 'backup') renderBackupAdmin();
 }
+
+// ============================================================================
+// ⭐ (2026-07-08) 인보이스 준비 화면 인라인 툴팁 (Feature 2B)
+// ----------------------------------------------------------------------------
+// 💡 아이콘 클릭 → 팝오버로 다른 거래처의 같은 품목 단가 표시.
+// ============================================================================
+window.showPriceCompareTooltip = function(evt, productId) {
+  if (evt) { evt.stopPropagation(); evt.preventDefault(); }
+  // 기존 팝오버 제거
+  const old = document.getElementById('priceComparePopover');
+  if (old) old.remove();
+  const p = DB.products.find(x => x.id === productId);
+  if (!p) return;
+  const rows = getCustomerPricesForProduct(productId);
+  const pop = document.createElement('div');
+  pop.id = 'priceComparePopover';
+  pop.style.cssText = 'position:absolute; z-index:9999; background:#fff; border:1px solid var(--brand); border-radius:6px; box-shadow:0 4px 16px rgba(0,0,0,0.2); padding:10px; min-width:340px; max-width:420px; font-size:12px;';
+  let html = '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:6px; padding-bottom:6px; border-bottom:1px solid var(--line);">'
+    + '<b style="color:var(--brand-dark);">💡 ' + p.name + '</b>'
+    + '<button type="button" onclick="document.getElementById(\'priceComparePopover\').remove()" style="background:none;border:none;cursor:pointer;font-size:14px;color:var(--muted);">×</button>'
+    + '</div>';
+  if (rows.length === 0) {
+    html += '<div style="color:var(--muted); padding:6px 0;">거래처 학습 단가 없음</div>';
+  } else {
+    const prices = rows.map(r => r.price);
+    const avg = prices.reduce((s,x)=>s+x,0) / prices.length;
+    html += '<div style="max-height:280px; overflow-y:auto;">';
+    html += '<table style="width:100%; font-size:11px; border-collapse:collapse;">';
+    html += '<thead><tr style="border-bottom:1px solid var(--line); color:var(--muted);">'
+      + '<th style="text-align:left; padding:4px;">거래처</th>'
+      + '<th style="text-align:left; padding:4px;">요청</th>'
+      + '<th style="text-align:right; padding:4px;">단가</th>'
+      + '<th style="text-align:right; padding:4px;">마지막</th>'
+      + '</tr></thead><tbody>';
+    rows.forEach(r => {
+      html += '<tr style="border-bottom:1px dashed var(--line);">'
+        + '<td style="padding:4px;"><b>' + r.custName + '</b></td>'
+        + '<td style="padding:4px; color:var(--muted); font-size:10px;">' + (r.notes || '—') + '</td>'
+        + '<td style="padding:4px; text-align:right; font-weight:700;">$' + fmtMoney(r.price) + '</td>'
+        + '<td style="padding:4px; text-align:right; color:var(--muted); font-size:10px;">' + (r.lastUsedDate || '—') + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div>';
+    html += '<div style="margin-top:6px; padding-top:6px; border-top:1px solid var(--line); font-size:11px; color:var(--muted);">'
+      + '평균 <b>$' + fmtMoney(avg) + '</b> · ' + rows.length + '개 거래처'
+      + '</div>';
+  }
+  pop.innerHTML = html;
+  document.body.appendChild(pop);
+  // 클릭 위치 근처에 배치
+  const rect = (evt.currentTarget || evt.target).getBoundingClientRect();
+  const scrollY = window.scrollY || document.documentElement.scrollTop;
+  const scrollX = window.scrollX || document.documentElement.scrollLeft;
+  let top = rect.bottom + scrollY + 4;
+  let left = rect.left + scrollX;
+  // 오른쪽 넘치면 왼쪽으로 이동
+  const popW = 360;
+  if (left + popW > window.innerWidth + scrollX) left = window.innerWidth + scrollX - popW - 8;
+  if (left < 8) left = 8;
+  pop.style.top = top + 'px';
+  pop.style.left = left + 'px';
+  // 바깥 클릭 시 닫기
+  setTimeout(() => {
+    const closer = (e) => {
+      if (!pop.contains(e.target)) { pop.remove(); document.removeEventListener('click', closer); }
+    };
+    document.addEventListener('click', closer);
+  }, 100);
+};
+
+// ============================================================================
+// ⭐ (2026-07-08) 공통 유틸 — 특정 품목에 대한 거래처별 단가 목록
+// ----------------------------------------------------------------------------
+// 반환: [{ custId, custName, notes, price, lastUsedDate, lastInvoiceNo }]
+// 정렬: 단가 내림차순, 동가는 최신 사용일 순
+// ============================================================================
+function getCustomerPricesForProduct(productId) {
+  if (!productId) return [];
+  const rows = [];
+  DB.customers.forEach(c => {
+    if (c.active === false) return;
+    const cp = c.customPrices && c.customPrices[productId];
+    if (cp == null) return;
+    // Legacy: number → {'': price}
+    const entry = (typeof cp === 'number') ? { '': cp } : cp;
+    if (!entry || typeof entry !== 'object') return;
+    Object.keys(entry).forEach(notes => {
+      const price = entry[notes];
+      if (price == null || price <= 0) return;
+      rows.push({
+        custId: c.id,
+        custName: c.name,
+        notes: notes || '',
+        price: price,
+        lastUsedDate: '',
+        lastInvoiceNo: ''
+      });
+    });
+  });
+  // 마지막 사용 인보이스 조회 — DB.orders 뒤에서 앞으로 스캔
+  const invSort = [...DB.orders]
+    .filter(o => o.status === 'invoiced' || o.status === 'delivered')
+    .sort((a,b) => (b.invoicedAt||b.orderDate||'').localeCompare(a.invoicedAt||a.orderDate||''));
+  rows.forEach(r => {
+    for (const o of invSort) {
+      if (o.customerId !== r.custId) continue;
+      const items = getInvoiceItems(o);
+      const hit = items.find(it => it && it.productId === productId && (r.notes ? (it.notes||'') === r.notes : true));
+      if (hit) {
+        r.lastUsedDate = toLocalISODate(o.invoicedAt || o.orderDate || '');
+        r.lastInvoiceNo = o.invoiceNo || o.orderNo || '';
+        break;
+      }
+    }
+  });
+  rows.sort((a,b) => b.price - a.price || b.lastUsedDate.localeCompare(a.lastUsedDate));
+  return rows;
+}
+
+// ============================================================================
+// ⭐ (2026-07-08) 관리자: 품목별 단가 비교 (Feature 2A)
+// ============================================================================
+function renderPricingAdmin() {
+  const body = document.getElementById('adminBody');
+  body.innerHTML = `
+    <div class="card">
+      <h3>💰 품목별 거래처 단가 비교</h3>
+      <div class="notice" style="border-left-color:var(--info); background:#F0F5FB; font-size:12px;">
+        각 거래처에 학습된 단가를 품목별로 비교합니다. 협상·견적 참고용.
+        <br>정렬: 단가 높은 순. 요청사항(진공포장 등)별로 별도 라인.
+      </div>
+      <div style="margin:12px 0;">
+        <input type="text" id="pricingSearch" placeholder="🔍 품목명 검색 (예: 척롤, 삼겹살, wagyu)"
+          oninput="renderPricingResults(this.value)"
+          style="width:100%; padding:10px 12px; border:1px solid var(--line); border-radius:6px; font-size:14px; box-sizing:border-box;">
+      </div>
+      <div id="pricingResults"><div class="empty" style="padding:20px;"><div class="icon">🔍</div>품목명을 입력하면 거래처별 단가가 표시됩니다.</div></div>
+    </div>
+  `;
+}
+
+window.renderPricingResults = function(q) {
+  const div = document.getElementById('pricingResults');
+  if (!div) return;
+  const query = _wmNormalize(q || '');
+  if (!query || query.length < 1) {
+    div.innerHTML = '<div class="empty" style="padding:20px;"><div class="icon">🔍</div>품목명을 입력하면 거래처별 단가가 표시됩니다.</div>';
+    return;
+  }
+  const matched = DB.products.filter(p => p.active !== false && _wmNormalize(p.name).indexOf(query) >= 0);
+  if (matched.length === 0) {
+    div.innerHTML = '<div class="empty" style="padding:20px;">검색 결과 없음</div>';
+    return;
+  }
+  let html = '';
+  matched.slice(0, 30).forEach(p => {
+    const rows = getCustomerPricesForProduct(p.id);
+    if (rows.length === 0) {
+      html += '<div style="margin-bottom:14px; padding:8px 12px; background:#F5F5F5; border-radius:6px;">'
+        + '<b>' + p.name + '</b> <small style="color:var(--muted);">(' + p.cut + ')</small>'
+        + ' — <span style="color:var(--muted); font-size:12px;">거래처 학습 단가 없음</span></div>';
+      return;
+    }
+    const prices = rows.map(r => r.price);
+    const avg = prices.reduce((s,x)=>s+x,0) / prices.length;
+    const max = Math.max(...prices);
+    const min = Math.min(...prices);
+    html += '<div style="margin-bottom:20px;">';
+    html += '<div style="padding:8px 12px; background:#FAF6F1; border-left:3px solid var(--brand); font-weight:700;">'
+      + '▼ ' + p.name + ' <small style="color:var(--muted); font-weight:400;">(' + p.cut + ')</small></div>';
+    html += '<table class="t" style="font-size:12px;">'
+      + '<thead><tr><th>거래처</th><th>요청사항</th><th class="num">단가 ($)</th><th>마지막 사용 인보이스</th></tr></thead>'
+      + '<tbody>';
+    rows.forEach(r => {
+      const noteTxt = r.notes ? r.notes : '<span style="color:var(--muted);">(기본)</span>';
+      const invTxt = r.lastInvoiceNo ? ('INV' + r.lastInvoiceNo + ' · ' + r.lastUsedDate) : '<span style="color:var(--muted);">이력 없음</span>';
+      html += '<tr>'
+        + '<td><b>' + r.custName + '</b></td>'
+        + '<td>' + noteTxt + '</td>'
+        + '<td class="num" style="font-weight:700;">$' + fmtMoney(r.price) + '</td>'
+        + '<td style="font-size:11px; color:var(--muted);">' + invTxt + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table>';
+    html += '<div style="padding:6px 12px; background:#F8F8F8; font-size:11px; color:var(--muted); border-radius:0 0 4px 4px;">'
+      + '평균 <b>$' + fmtMoney(avg) + '</b> · 최고 <b>$' + fmtMoney(max) + '</b> · 최저 <b>$' + fmtMoney(min) + '</b> · ' + rows.length + '건'
+      + '</div>';
+    html += '</div>';
+  });
+  if (matched.length > 30) {
+    html += '<div class="notice" style="font-size:12px;">검색 결과 ' + matched.length + '건 중 상위 30건만 표시. 검색어를 더 구체적으로 입력해주세요.</div>';
+  }
+  div.innerHTML = html;
+};
 
 // =========================================================================
 //  ADMIN: 거래내역 삭제 — 거래처별 주문 수동 정리
@@ -4922,8 +5118,10 @@ function viewOffice() {
               ${renderCustomerSearchSelect({ selectId: 'ipCustomer', placeholder: '— 선택하세요 —', onChange: 'renderPaymentHistoryList(this.value)' })}
             </div>
             <div class="field"><label>입금일</label><input type="date" id="ipDate" value="${today}"></div>
-            <div class="field"><label>금액 ($)</label><input type="number" id="ipAmount" min="0" step="0.01" placeholder="0.00" onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"></div>
+            <div class="field"><label>금액 ($)</label><input type="number" id="ipAmount" min="0" step="0.01" placeholder="0.00" oninput="schedulePaymentMatchSearch(this.value)" onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"></div>
           </div>
+          <!-- ⭐ (2026-07-08) 금액 입력 시 자동으로 거래처 매칭 후보 표시 -->
+          <div id="paymentMatchBox" style="margin:8px 0;"></div>
           <div class="grid-3">
             <div class="field"><label>입금 방법</label>
               <select id="ipMethod"><option value="cash">현금</option><option value="cheque">체크</option><option value="bank">은행이체</option></select>
@@ -5564,6 +5762,162 @@ window.saveDailyReportPDF = async function() {
     document.body.removeChild(container);
   }
 };
+// ============================================================================
+// ⭐ (2026-07-08) 입금 금액 → 거래처/인보이스 자동 매칭
+// ----------------------------------------------------------------------------
+// 트리거: ipAmount input → 500ms debounce → 검색
+// 우선순위 (근사치 없음):
+//   1) 정확 일치: 인보이스 순미결제액 === 입금액
+//   2) 부분납: 인보이스 순미결제액 > 입금액
+//   3) 다건 합산: 같은 거래처 여러 인보이스 합계 === 입금액 (최대 3건)
+// ============================================================================
+let _paymentMatchTimer = null;
+window.schedulePaymentMatchSearch = function(val) {
+  if (_paymentMatchTimer) clearTimeout(_paymentMatchTimer);
+  _paymentMatchTimer = setTimeout(() => renderPaymentMatches(val), 500);
+};
+
+// 특정 거래처의 배송완료 인보이스별 순미결제액 계산 (FIFO 반영)
+function _computeUnpaidByInvoice(cid) {
+  const invoices = DB.orders
+    .filter(o => o.status === 'delivered' && o.customerId === cid)
+    .map(o => ({
+      id: o.id,
+      invNo: o.invoiceNo || o.orderNo || '-',
+      dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
+      gross: computeTotals(o).grand
+    }))
+    .filter(x => x.dateISO)
+    .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
+
+  // 크레딧 차감
+  const creditByInv = {};
+  (DB.creditNotes || []).forEach(cn => {
+    if (!cn || cn.customerId !== cid) return;
+    creditByInv[cn.orderId] = (creditByInv[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+  });
+  // FIFO 입금 배분
+  let pool = (DB.payments || [])
+    .filter(p => p && p.customerId === cid)
+    .reduce((s,p) => s + p.amount, 0);
+  const result = [];
+  for (const inv of invoices) {
+    const net = Math.max(0, inv.gross - (creditByInv[inv.id] || 0));
+    const applied = Math.min(pool, net);
+    pool -= applied;
+    const unpaid = net - applied;
+    if (unpaid > 0.001) {
+      result.push({ orderId: inv.id, invNo: inv.invNo, dateISO: inv.dateISO, unpaid: unpaid });
+    }
+  }
+  return result;
+}
+
+window.renderPaymentMatches = function(inputVal) {
+  const box = document.getElementById('paymentMatchBox');
+  if (!box) return;
+  const amt = parseFloat(inputVal);
+  if (!amt || amt <= 0) { box.innerHTML = ''; return; }
+
+  const EPS = 0.005; // 소수점 반올림용
+  const exactMatches = [];   // { cid, invNo, orderId, dateISO, unpaid }
+  const partialMatches = []; // 부분납 후보 (미결제 > 입금액)
+  const sumMatches = [];     // { cid, custName, invoices: [{invNo, unpaid}], total }
+
+  DB.customers.filter(c => c.active !== false).forEach(c => {
+    const list = _computeUnpaidByInvoice(c.id);
+    if (list.length === 0) return;
+
+    // 1) 정확 일치
+    list.forEach(inv => {
+      if (Math.abs(inv.unpaid - amt) < EPS) {
+        exactMatches.push({ cid: c.id, custName: c.name, ...inv });
+      } else if (inv.unpaid > amt + EPS) {
+        partialMatches.push({ cid: c.id, custName: c.name, ...inv });
+      }
+    });
+
+    // 3) 다건 합산 (같은 거래처 최대 3건)
+    if (list.length >= 2) {
+      for (let i = 0; i < list.length && i < 5; i++) {
+        for (let j = i + 1; j < list.length && j < 5; j++) {
+          if (Math.abs(list[i].unpaid + list[j].unpaid - amt) < EPS) {
+            sumMatches.push({ cid: c.id, custName: c.name, invoices: [list[i], list[j]], total: list[i].unpaid + list[j].unpaid });
+            continue;
+          }
+          for (let k = j + 1; k < list.length && k < 5; k++) {
+            if (Math.abs(list[i].unpaid + list[j].unpaid + list[k].unpaid - amt) < EPS) {
+              sumMatches.push({ cid: c.id, custName: c.name, invoices: [list[i], list[j], list[k]], total: list[i].unpaid + list[j].unpaid + list[k].unpaid });
+            }
+          }
+        }
+      }
+    }
+  });
+
+  // 부분납은 미결제 큰 순 상위 5개만
+  partialMatches.sort((a,b) => b.unpaid - a.unpaid);
+  const partialTop = partialMatches.slice(0, 5);
+
+  const totalHits = exactMatches.length + partialTop.length + sumMatches.length;
+  if (totalHits === 0) {
+    box.innerHTML = '<div style="padding:8px 12px; background:#F8F8F8; border:1px dashed var(--line); border-radius:6px; font-size:12px; color:var(--muted);">🔍 $' + fmtMoney(amt) + ' 매칭 후보 없음 — 거래처를 직접 선택하세요.</div>';
+    return;
+  }
+
+  const _mkExactRow = (m) => `<div style="padding:6px 10px; background:#E8F5E9; border-left:3px solid var(--ok); border-radius:4px; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; font-size:12px; cursor:pointer;" onclick="applyPaymentMatch('${m.cid}','${m.invNo}')">
+    <div><b style="color:var(--brand-dark);">${m.custName}</b> · INV${m.invNo} · ${m.dateISO}</div>
+    <div><b>$${fmtMoney(m.unpaid)}</b> <span style="color:var(--ok); font-size:10px;">정확</span> <span style="color:var(--brand); font-size:10px;">클릭 → 선택</span></div>
+  </div>`;
+  const _mkPartialRow = (m) => `<div style="padding:6px 10px; background:#FFF7E0; border-left:3px solid var(--warn); border-radius:4px; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; font-size:12px; cursor:pointer;" onclick="applyPaymentMatch('${m.cid}','${m.invNo}')">
+    <div><b style="color:var(--brand-dark);">${m.custName}</b> · INV${m.invNo} · ${m.dateISO}</div>
+    <div>미결 <b>$${fmtMoney(m.unpaid)}</b> <span style="color:var(--warn); font-size:10px;">부분납</span> <span style="color:var(--brand); font-size:10px;">클릭 → 선택</span></div>
+  </div>`;
+  const _mkSumRow = (m) => {
+    const nos = m.invoices.map(x => 'INV' + x.invNo).join(' + ');
+    const ref = m.invoices.map(x => x.invNo).join(',');
+    return `<div style="padding:6px 10px; background:#EDE7F6; border-left:3px solid #5E35B1; border-radius:4px; margin-bottom:4px; display:flex; justify-content:space-between; align-items:center; font-size:12px; cursor:pointer;" onclick="applyPaymentMatch('${m.cid}','${ref}')">
+      <div><b style="color:var(--brand-dark);">${m.custName}</b> · ${nos}</div>
+      <div>합계 <b>$${fmtMoney(m.total)}</b> <span style="color:#5E35B1; font-size:10px;">${m.invoices.length}건 합산</span> <span style="color:var(--brand); font-size:10px;">클릭 → 선택</span></div>
+    </div>`;
+  };
+
+  let html = '<div style="padding:8px 12px; background:#FAF6F1; border:1px solid var(--line); border-radius:6px;">';
+  html += '<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">🔍 <b>$' + fmtMoney(amt) + '</b> 매칭 후보 ' + totalHits + '건 — 클릭 시 거래처·참조번호 자동 채움</div>';
+  if (exactMatches.length > 0) {
+    html += '<div style="font-size:10px; color:var(--ok); font-weight:700; margin:4px 0 2px;">✓ 정확 일치</div>';
+    exactMatches.forEach(m => html += _mkExactRow(m));
+  }
+  if (sumMatches.length > 0) {
+    html += '<div style="font-size:10px; color:#5E35B1; font-weight:700; margin:4px 0 2px;">▲ 다건 합산</div>';
+    sumMatches.forEach(m => html += _mkSumRow(m));
+  }
+  if (partialTop.length > 0) {
+    html += '<div style="font-size:10px; color:var(--warn); font-weight:700; margin:4px 0 2px;">△ 부분납 후보 (미결제 큰 순 상위 5)</div>';
+    partialTop.forEach(m => html += _mkPartialRow(m));
+  }
+  html += '</div>';
+  box.innerHTML = html;
+};
+
+window.applyPaymentMatch = function(cid, invRef) {
+  const cSel = document.getElementById('ipCustomer');
+  const cSearch = document.getElementById('ipCustomer_search');
+  if (cSel) {
+    cSel.value = cid;
+    // 검색창도 클리어 (필터 걸린 상태면 해제)
+    if (cSearch) { cSearch.value = ''; if (typeof filterCustomerSelect === 'function') filterCustomerSelect('ipCustomer', ''); cSel.value = cid; }
+    // onchange 이벤트 수동 발생 (이력 목록 갱신)
+    if (typeof renderPaymentHistoryList === 'function') renderPaymentHistoryList(cid);
+  }
+  const refEl = document.getElementById('ipRef');
+  if (refEl && !refEl.value) refEl.value = 'INV ' + invRef;
+  const box = document.getElementById('paymentMatchBox');
+  if (box) box.innerHTML = '<div style="padding:6px 10px; background:#E8F5E9; border-radius:4px; font-size:12px; color:var(--ok);">✓ 거래처 선택됨 — 저장 버튼 클릭</div>';
+  const amtEl = document.getElementById('ipAmount');
+  if (amtEl) amtEl.focus();
+};
+
 window.saveInlinePayment = function() {
   const cid = document.getElementById('ipCustomer').value;
   const date = document.getElementById('ipDate').value;
@@ -6392,14 +6746,16 @@ function renderPrepTbody(o) {
       +   ' oninput="livePrepWeightUpdate(' + i + ',this.value)"'
       +   ' onblur="if(this.value)this.value=parseFloat(this.value).toFixed(2)"'
       +   ' onchange="updatePrepWeight(window._prepOid,' + i + ',this.value)">';
+    // ⭐ (2026-07-08) 💡 아이콘 — 클릭 시 이 품목의 다른 거래처 단가 팝오버
+    var infoBtn = isCancelled ? '' : ' <button type="button" onclick="showPriceCompareTooltip(event,\'' + it.productId + '\')" title="다른 거래처 단가 보기" style="background:none;border:none;cursor:pointer;font-size:13px;padding:2px 4px;vertical-align:middle;">💡</button>';
     var pCell = isCancelled
       ? '<span style="color:#999;">0.00</span>'
       : '<input type="number" step="0.01" value="' + lineP.toFixed(2) + '"'
-      +   ' style="width:90px;padding:6px;border:2px solid var(--warn);border-radius:4px;text-align:right;font-weight:600;"'
+      +   ' style="width:78px;padding:6px;border:2px solid var(--warn);border-radius:4px;text-align:right;font-weight:600;"'
       +   ' onfocus="this.select()"'
       +   ' oninput="livePrepPriceUpdate(' + i + ',this.value)"'
       +   ' onblur="this.value=parseFloat(this.value||0).toFixed(2)"'
-      +   ' onchange="updatePrepPrice(window._prepOid,' + i + ',this.value)">' + priceDiff;
+      +   ' onchange="updatePrepPrice(window._prepOid,' + i + ',this.value)">' + infoBtn + priceDiff;
     var amtCell = isCancelled ? '<span style="color:#999;">$0.00</span>' : '$' + amt;
     html += '<tr style="' + rowBg + '">'
       + '<td>' + badge + '<b style="' + nameStyle + '">' + pName + '</b>' + cancelNote + addNote + itemNote + warehouseMemoLine + '</td>'
