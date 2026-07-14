@@ -1285,7 +1285,7 @@ function viewHome() {
     </div>
 
     <div class="card">
-      <h3>최근 주문 / Recent Orders</h3>
+      <h3>🚚 오늘 배송 예정 / Today's Deliveries</h3>
       <div id="recentOrders"></div>
     </div>
 
@@ -4286,9 +4286,10 @@ function renderCart() {
       //   뱃지에 표시되는 텍스트: 짧은 영문(box/pack/kg) — 박스/팩 혼동 방지
       //   드롭다운 열림 시: 한글+영문 병기(박스/box, 팩/pack, 작업중량/kg) — 선택 시 명확성 확보
       const qtyStep = item.unit === '작업중량' ? 0.1 : 1;
-      // 작업육 분류 → [박스, 작업중량], 그 외 → [박스, 팩]
-      const isProcMeat = (p.cut === '작업육') || (p.name && p.name.includes('작업'));
-      const allowedUnits = isProcMeat ? ['박스','작업중량'] : ['박스','팩'];
+      // ⭐ (2026-07-08) 카테고리 필터 제거 — 모든 품목에 3가지 단위 모두 제공.
+      //   기존: 작업육 → [박스,작업중량], 그 외 → [박스,팩]
+      //   변경: 항상 [박스, 팩, 작업중량]
+      const allowedUnits = ['박스','팩','작업중량'];
       const qtyDisp = (item.quantity == null || item.quantity === '' || isNaN(item.quantity)) ? '' : item.quantity;
       const unitShort = { '박스':'box', '팩':'pack', '작업중량':'kg' };
       const unitLong  = { '박스':'박스/box', '팩':'팩/pack', '작업중량':'작업중량/kg' };
@@ -4681,6 +4682,7 @@ function viewWeigh(params) {
               <td class="num">
                 <input type="number" step="0.01" value="${it.actualWeightKg != null ? it.actualWeightKg.toFixed(2) : ''}"
                   style="width:110px; padding:8px; border:2px solid var(--warn); border-radius:5px; font-size:16px; text-align:right;"
+                  onfocus="this.select()"
                   onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"
                   onchange="updateWeighing('${order.id}', ${i}, this.value)">
               </td>
@@ -4784,7 +4786,13 @@ function renderOfficeBackupBanner() {
     const lastD = new Date(lastDate + 'T00:00:00');
     const daysAgo = Math.max(1, Math.round((nowD.getTime() - lastD.getTime()) / (24*60*60*1000)));
     return `
-      <div id="atmBackupBanner" style="margin:0 0 12px 0; padding:12px 16px; background:#FFF7E0; border:2px solid #B8860B; border-radius:8px; display:flex; align-items:center; gap:12px; flex-wrap:wrap;">
+      <style id="atmBackupBannerAnim">
+        @keyframes atmBackupPulse {
+          0%,100% { background:#FFF7E0; box-shadow:0 0 0 0 rgba(184,134,11,0); }
+          50%     { background:#FFEBB5; box-shadow:0 0 0 4px rgba(184,134,11,0.15); }
+        }
+      </style>
+      <div id="atmBackupBanner" style="margin:0 0 12px 0; padding:12px 16px; background:#FFF7E0; border:2px solid #B8860B; border-radius:8px; display:flex; align-items:center; gap:12px; flex-wrap:wrap; animation: atmBackupPulse 2s ease-in-out infinite;">
         <div style="flex:1; font-size:13px; color:#5C3A00;">
           💡 <b>전체 백업 권장</b> — 마지막 백업: ${lastDate} (${daysAgo}일 전)
         </div>
@@ -6375,10 +6383,12 @@ function renderPrepTbody(o) {
     var nameStyle = isCancelled ? 'text-decoration:line-through;color:#999;' : '';
     var btnTitle  = isCancelled ? '취소 복원 (클릭)' : '취소 처리';
     var btnIcon   = isCancelled ? '↩️' : '❌';
+    // ⭐ (2026-07-08) onfocus=this.select() — 클릭 즉시 전체선택 → 바로 타이핑으로 덮어쓰기
     var wCell = isCancelled
       ? '<span style="color:#999;">0.00</span>'
       : '<input type="number" step="0.01" value="' + wDisplay + '"'
       +   ' style="width:90px;padding:6px;border:1px solid var(--line);border-radius:4px;text-align:right;"'
+      +   ' onfocus="this.select()"'
       +   ' oninput="livePrepWeightUpdate(' + i + ',this.value)"'
       +   ' onblur="if(this.value)this.value=parseFloat(this.value).toFixed(2)"'
       +   ' onchange="updatePrepWeight(window._prepOid,' + i + ',this.value)">';
@@ -6386,6 +6396,7 @@ function renderPrepTbody(o) {
       ? '<span style="color:#999;">0.00</span>'
       : '<input type="number" step="0.01" value="' + lineP.toFixed(2) + '"'
       +   ' style="width:90px;padding:6px;border:2px solid var(--warn);border-radius:4px;text-align:right;font-weight:600;"'
+      +   ' onfocus="this.select()"'
       +   ' oninput="livePrepPriceUpdate(' + i + ',this.value)"'
       +   ' onblur="this.value=parseFloat(this.value||0).toFixed(2)"'
       +   ' onchange="updatePrepPrice(window._prepOid,' + i + ',this.value)">' + priceDiff;
@@ -6968,7 +6979,21 @@ function markDelivered(id) {
   // Phase 2 동시성: 이 주문의 status/deliveredAt 만 부분 업데이트
   saveEntityFields('orders', id, { status: o.status, deliveredAt: o.deliveredAt });
   const cust = DB.customers.find(c => c.id === o.customerId);
-  alert('✅ 배송완료 처리됨.\n\n📊 ' + (cust ? cust.name : '해당 거래처') + ' → 오늘 매출일보에 자동 반영되었습니다.'); route();
+  // ⭐ (2026-07-08) 배송완료 즉시 재고 자동 차감 — 매출일보처럼 실시간 반영.
+  //   매칭 실패한 작업육은 재고 화면 "매칭 실패 리스트"에 자동 표시.
+  let invResult = null;
+  try {
+    if (typeof window.inventoryAutoApplyOneOrder === 'function') {
+      invResult = window.inventoryAutoApplyOneOrder(id);
+    }
+  } catch(e) { console.warn('auto inventory deduct failed:', e); }
+  let msg = '✅ 배송완료 처리됨.\n\n📊 ' + (cust ? cust.name : '해당 거래처') + ' → 오늘 매출일보에 자동 반영되었습니다.';
+  if (invResult && invResult.ok && !invResult.skipped) {
+    msg += '\n📦 재고 자동 차감: ' + (invResult.deductedProducts || 0) + '개 원료 품목';
+    if (invResult.workedMeat > 0) msg += ' (작업육 매칭 ' + invResult.workedMeat + '건 포함)';
+  }
+  alert(msg);
+  route();
 }
 function sendInvoice(id) {
   const o = DB.orders.find(x => x.id === id);
@@ -9748,6 +9773,107 @@ function _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag) {
 }
 
 // 전체 일괄 차감: 오늘 배송완료 + 아직 미차감 주문 전부 적용
+// ⭐ (2026-07-08) 단일 주문 자동 재고 차감 — 배송완료 즉시 호출용.
+//   - 재고 부족 허용 (마이너스 허용, 사용자 정책)
+//   - 작업육 자동 매칭 성공만 원료 재고 차감
+//   - 매칭 실패 작업육은 재고 화면 "매칭 실패 리스트"에 자동 남음
+//   - deductedOrders 마킹으로 이후 일괄 차감에서 중복 방지
+//   - 조용히 실행 (confirm 없음)
+window.inventoryAutoApplyOneOrder = function(orderId) {
+  try {
+    if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{}, workedMeatDeductions:{} };
+    if (!DB.inventory.deductedOrders) DB.inventory.deductedOrders = {};
+    if (!DB.inventory.workedMeatDeductions) DB.inventory.workedMeatDeductions = {};
+    if (typeof inventoryRolloverIfNeeded === 'function') inventoryRolloverIfNeeded();
+    const inv = DB.inventory;
+    if (inv.deductedOrders[orderId]) return { ok:true, skipped:true }; // 이미 차감됨
+    const o = DB.orders.find(x => x.id === orderId);
+    if (!o) return { ok:false };
+    if (o.status !== 'delivered') return { ok:false };
+    const invItems = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
+    const perOrderMappings = [];
+    const byProductBox = {}, byProductPack = {}, byProductKg = {};
+
+    invItems.forEach((it, idx) => {
+      if (!it.productId) return;
+      const p = DB.products.find(x => x.id === it.productId);
+      if (!p) return;
+      let targetPid = it.productId;
+      let workedPid = null;
+      if (p.cut === '작업육') {
+        const m = matchWorkedMeatToRaw(p, it.notes);
+        if (m.auto && m.candidate) {
+          workedPid = p.id;
+          targetPid = m.candidate.id;
+        } else {
+          return; // 매칭 실패는 실패 리스트로만 처리
+        }
+      } else if (!INVENTORY_CATEGORIES.includes(p.cut)) {
+        return;
+      }
+      const tp = DB.products.find(x => x.id === targetPid);
+      if (!tp || !INVENTORY_CATEGORIES.includes(tp.cut)) return;
+
+      let addedKg = 0, addedPack = 0, addedBox = 0;
+      if (it.unit === '작업중량') {
+        addedKg = +(it.actualWeightKg != null ? it.actualWeightKg : it.quantity) || 0;
+        byProductKg[targetPid] = (byProductKg[targetPid] || 0) + addedKg;
+      } else if (it.unit === '팩') {
+        addedPack = +(it.quantity) || 0;
+        byProductPack[targetPid] = (byProductPack[targetPid] || 0) + addedPack;
+      } else {
+        addedBox = +(it.quantity) || 0;
+        byProductBox[targetPid] = (byProductBox[targetPid] || 0) + addedBox;
+      }
+      if (workedPid) {
+        perOrderMappings.push({
+          workedPid, rawPid: targetPid, itemIdx: idx,
+          kg: addedKg, pack: addedPack, box: addedBox,
+          at: new Date().toISOString()
+        });
+      }
+    });
+
+    // 실제 차감 (마이너스 재고 허용)
+    const allPids = new Set([
+      ...Object.keys(byProductBox),
+      ...Object.keys(byProductPack),
+      ...Object.keys(byProductKg)
+    ]);
+    let deductedProducts = 0;
+    allPids.forEach(pid => {
+      const p = DB.products.find(x => x.id === pid);
+      if (!p) return;
+      const e = inventoryEnsureProduct(pid);
+      const boxOut = byProductBox[pid] || 0;
+      const packOut = byProductPack[pid] || 0;
+      const kgOut = byProductKg[pid] || 0;
+      const packBox = inventoryPackToBox(packOut, p.cut);
+      const kgBox = inventoryBoxConvert(kgOut, p.cut);
+      const total = boxOut + packBox + kgBox;
+      if (total > 0) {
+        e.deductedToday = (e.deductedToday || 0) + total;
+        e.stock = (e.stock || 0) - total;  // 마이너스 허용
+        deductedProducts++;
+      }
+    });
+
+    // 감사 추적
+    if (perOrderMappings.length > 0) {
+      if (!inv.workedMeatDeductions[orderId]) inv.workedMeatDeductions[orderId] = [];
+      perOrderMappings.forEach(m => inv.workedMeatDeductions[orderId].push(m));
+    }
+
+    // 차감 마킹
+    inv.deductedOrders[orderId] = new Date().toISOString();
+    saveDB();
+    return { ok:true, deductedProducts, workedMeat: perOrderMappings.length };
+  } catch(e) {
+    console.warn('inventoryAutoApplyOneOrder error:', e);
+    return { ok:false, error: e.message };
+  }
+};
+
 window.inventoryApplyAllToday = function() {
   inventoryRolloverIfNeeded();
   const today = todayLocalISO();
