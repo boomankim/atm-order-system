@@ -501,12 +501,17 @@ function cleanupCustomPriceKeys() {
     Object.keys(c.customPrices).forEach(pid => {
       const entry = c.customPrices[pid];
       if (typeof entry !== 'object' || entry === null) return;
-      if (entry[''] == null) return;
-      // "" → _default 이관 (충돌 시 기존 _default 값 유지)
-      if (entry['_default'] == null) entry['_default'] = entry[''];
-      delete entry[''];
-      cleaned++;
-      touched = true;
+      // ⭐ (2026-07-09) "" 뿐 아니라 ., #, $, /, [, ] 포함 키 전부 이관 대상
+      Object.keys(entry).forEach(oldKey => {
+        if (!_isCustomPriceKeyInvalid(oldKey)) return;
+        const newKey = _customPriceKey(oldKey);
+        if (newKey === oldKey) return; // 안전장치
+        // 충돌 시 기존 newKey 값 유지 (사용자 최신 편집 우선)
+        if (entry[newKey] == null) entry[newKey] = entry[oldKey];
+        delete entry[oldKey];
+        cleaned++;
+        touched = true;
+      });
     });
     if (touched) custsAffected++;
   });
@@ -724,17 +729,20 @@ function saveEntityField(entityType, entityId, field) {
   if (!Array.isArray(list)) return;
   const idx = list.findIndex(x => x && x.id === entityId);
   if (idx < 0) return;
-  // ⭐ (2026-07-09) customPrices 저장 시 "" 키 안전 sanitize (Firebase 거부 방지)
+  // ⭐ (2026-07-09) customPrices 저장 시 Firebase 금지 문자(""·.·#·$·/·[·]) 자동 sanitize
   if (entityType === 'customers' && field === 'customPrices') {
     const cp = list[idx][field];
     if (cp && typeof cp === 'object') {
       Object.keys(cp).forEach(pid => {
         const e = cp[pid];
         if (typeof e !== 'object' || e === null) return;
-        if (e[''] != null) {
-          if (e['_default'] == null) e['_default'] = e[''];
-          delete e[''];
-        }
+        Object.keys(e).forEach(k => {
+          if (!_isCustomPriceKeyInvalid(k)) return;
+          const nk = _customPriceKey(k);
+          if (nk === k) return;
+          if (e[nk] == null) e[nk] = e[k];
+          delete e[k];
+        });
       });
     }
   }
@@ -6088,12 +6096,20 @@ console.log('%c💡 단가 진단 도구:', 'color:#5C0F0F; font-weight:700;');
 console.log('  window.debugCustomerPrices("강남")     — 거래처 저장된 단가 목록');
 console.log('  window.debugRecentInvoiceLearn("강남")  — 최근 인보이스 학습 여부');
 
-// ⭐ (2026-07-09) Firebase Realtime DB는 빈 문자열 키 ""를 허용 안 함.
-//   요청사항 없는 경우 "" 대신 "_default" 를 저장 키로 사용. 조회 시 레거시 "" 도 폴백 지원.
-//   이 함수 하나로 저장·조회·삭제 로직 전체가 안전해짐.
+// ⭐ (2026-07-09) Firebase Realtime DB 키 제약 대응
+//   금지: "" (빈 문자열), ".", "#", "$", "/", "[", "]"
+//   요청사항이 위 문자 포함 시(예: "1.3mm") 자동 인코딩. 조회 시에도 동일 인코딩으로 매칭됨.
+//   원본 텍스트는 o.items[i].notes 에 그대로 남아있으니 표시엔 영향 없음.
 function _customPriceKey(notes) {
   const n = (notes == null ? '' : String(notes)).trim();
-  return n === '' ? '_default' : n;
+  if (n === '') return '_default';
+  return n.replace(/[.#$/\[\]]/g, function(c) {
+    return { '.':'~d~', '#':'~h~', '$':'~s~', '/':'~sl~', '[':'~lb~', ']':'~rb~' }[c];
+  });
+}
+// 주어진 키가 Firebase에 저장 불가한지 판정 (청소 마이그레이션용)
+function _isCustomPriceKeyInvalid(k) {
+  return k === '' || /[.#$/\[\]]/.test(k);
 }
 function customerCustomPrice(cust, productId, notes) {
   if (!cust || !cust.customPrices || !productId) return null;
@@ -6124,11 +6140,14 @@ function setCustomerCustomPrice(cust, productId, notes, price) {
     entry = {};
     cust.customPrices[productId] = entry;
   }
-  // ⭐ 레거시 "" 키가 있으면 _default 로 통일 (한 번 저장 시 자동 마이그레이션)
-  if (entry[''] != null && entry['_default'] == null) {
-    entry['_default'] = entry[''];
-  }
-  if (entry[''] != null) delete entry['']; // Firebase 저장 불가 키 제거
+  // ⭐ 레거시 잘못된 키(빈문자열, ., #, $, /, [, ]) 자동 이관
+  Object.keys(entry).forEach(k => {
+    if (!_isCustomPriceKeyInvalid(k)) return;
+    const nk = _customPriceKey(k);
+    if (nk === k) return;
+    if (entry[nk] == null) entry[nk] = entry[k];
+    delete entry[k];
+  });
   entry[_customPriceKey(notes)] = price;
 }
 function clearCustomerCustomPrice(cust, productId, notes) {
