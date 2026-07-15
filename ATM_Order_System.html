@@ -1638,10 +1638,12 @@ function getCustomerPricesForProduct(productId) {
     Object.keys(entry).forEach(notes => {
       const price = entry[notes];
       if (price == null || price <= 0) return;
+      // ⭐ (2026-07-09) _default 키는 화면 표시상 요청사항 없음으로 처리
+      const displayNotes = (notes === '_default' || notes === '') ? '' : notes;
       rows.push({
         custId: c.id,
         custName: c.name,
-        notes: notes || '',
+        notes: displayNotes,
         price: price,
         lastUsedDate: '',
         lastInvoiceNo: ''
@@ -2779,7 +2781,9 @@ function renderCustomPriceSection(custId) {
     } else if (typeof v === 'object' && v !== null) {
       Object.keys(v).forEach(nk => {
         if (typeof v[nk] === 'number') {
-          entries.push({ pid, notes: nk, price: v[nk], product });
+          // ⭐ (2026-07-09) 저장 키 "_default" 는 UI/저장 로직상 "요청사항 없음" 으로 처리
+          const displayNotes = (nk === '_default' || nk === '') ? '' : nk;
+          entries.push({ pid, notes: displayNotes, price: v[nk], product });
         }
       });
     }
@@ -6034,6 +6038,13 @@ console.log('%c💡 단가 진단 도구:', 'color:#5C0F0F; font-weight:700;');
 console.log('  window.debugCustomerPrices("강남")     — 거래처 저장된 단가 목록');
 console.log('  window.debugRecentInvoiceLearn("강남")  — 최근 인보이스 학습 여부');
 
+// ⭐ (2026-07-09) Firebase Realtime DB는 빈 문자열 키 ""를 허용 안 함.
+//   요청사항 없는 경우 "" 대신 "_default" 를 저장 키로 사용. 조회 시 레거시 "" 도 폴백 지원.
+//   이 함수 하나로 저장·조회·삭제 로직 전체가 안전해짐.
+function _customPriceKey(notes) {
+  const n = (notes == null ? '' : String(notes)).trim();
+  return n === '' ? '_default' : n;
+}
 function customerCustomPrice(cust, productId, notes) {
   if (!cust || !cust.customPrices || !productId) return null;
   const entry = cust.customPrices[productId];
@@ -6041,9 +6052,12 @@ function customerCustomPrice(cust, productId, notes) {
   // Legacy: number → default for any notes
   if (typeof entry === 'number') return entry;
   if (typeof entry !== 'object') return null;
-  const n = normalizeFavNotes(notes);
-  if (entry[n] != null) return entry[n];
-  // Fallback: empty-notes (default for product)
+  const k = _customPriceKey(notes);
+  if (entry[k] != null) return entry[k];
+  // ⭐ 레거시 폴백: 옛 "" 키에 저장된 값도 인식 (구버전 데이터 마이그레이션 없이 호환)
+  if (k === '_default' && entry[''] != null) return entry[''];
+  // 다른 요청사항용도 기본가 폴백
+  if (entry['_default'] != null) return entry['_default'];
   if (entry[''] != null) return entry[''];
   return null;
 }
@@ -6053,21 +6067,28 @@ function setCustomerCustomPrice(cust, productId, notes, price) {
   let entry = cust.customPrices[productId];
   // Migrate legacy number → object
   if (typeof entry === 'number') {
-    entry = { '': entry };
+    entry = { '_default': entry };
     cust.customPrices[productId] = entry;
   }
   if (typeof entry !== 'object' || entry === null) {
     entry = {};
     cust.customPrices[productId] = entry;
   }
-  entry[normalizeFavNotes(notes)] = price;
+  // ⭐ 레거시 "" 키가 있으면 _default 로 통일 (한 번 저장 시 자동 마이그레이션)
+  if (entry[''] != null && entry['_default'] == null) {
+    entry['_default'] = entry[''];
+  }
+  if (entry[''] != null) delete entry['']; // Firebase 저장 불가 키 제거
+  entry[_customPriceKey(notes)] = price;
 }
 function clearCustomerCustomPrice(cust, productId, notes) {
   if (!cust || !cust.customPrices || !productId) return;
   const entry = cust.customPrices[productId];
   if (entry == null) return;
   if (typeof entry === 'object') {
-    delete entry[normalizeFavNotes(notes)];
+    delete entry[_customPriceKey(notes)];
+    // 레거시 "" 키도 함께 삭제
+    if (_customPriceKey(notes) === '_default') delete entry[''];
     if (Object.keys(entry).length === 0) delete cust.customPrices[productId];
   } else {
     // Legacy number — drop entirely (legacy didn't track notes)
