@@ -487,6 +487,42 @@ function updateFavoritePairNotes(cust, productId, oldNotes, newNotes) {
   return true;
 }
 // 마이그레이션: favoriteProductIds (string[]) → favoritePairs ({productId,notes}[])
+// ⭐ (2026-07-09) Firebase 저장 실패의 근본 원인 청소.
+//   과거에 setCustomerCustomPrice가 요청사항 없는 케이스에 "" 키를 사용해
+//   customPrices.p093 = { "": 45 } 형태로 저장되어 왔음.
+//   Firebase는 "" 키를 거부하기 때문에 모든 저장이 실패했고, 결과적으로 하루 지나면 단가가 사라짐.
+//   이 함수는 앱 초기화 시 모든 customPrices 안의 "" 키를 "_default"로 이관하고 삭제한다.
+function cleanupCustomPriceKeys() {
+  if (!Array.isArray(DB.customers)) return;
+  let cleaned = 0, custsAffected = 0;
+  DB.customers.forEach((c, idx) => {
+    if (!c || !c.customPrices || typeof c.customPrices !== 'object') return;
+    let touched = false;
+    Object.keys(c.customPrices).forEach(pid => {
+      const entry = c.customPrices[pid];
+      if (typeof entry !== 'object' || entry === null) return;
+      if (entry[''] == null) return;
+      // "" → _default 이관 (충돌 시 기존 _default 값 유지)
+      if (entry['_default'] == null) entry['_default'] = entry[''];
+      delete entry[''];
+      cleaned++;
+      touched = true;
+    });
+    if (touched) custsAffected++;
+  });
+  if (cleaned > 0) {
+    console.info('[cleanup] customPrices "" 키 → _default 이관:', cleaned, '건 (' + custsAffected + '개 거래처)');
+    try { saveLocalDB(); } catch(e){}
+    // Firebase 저장 — 이번엔 "" 키가 없으므로 성공해야 함
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      _lastSaveTime = Date.now();
+      DB_REF.child('customers').set(DB.customers)
+        .then(() => console.info('✅ [cleanup] Firebase 반영 완료 — 이제 단가 저장이 안정적으로 유지됩니다'))
+        .catch(e => console.warn('[cleanup] Firebase 반영 실패:', e));
+    }
+  }
+}
+
 function migrateFavoritePairs() {
   if (!Array.isArray(DB.customers)) return;
   let changed = 0;
@@ -688,6 +724,20 @@ function saveEntityField(entityType, entityId, field) {
   if (!Array.isArray(list)) return;
   const idx = list.findIndex(x => x && x.id === entityId);
   if (idx < 0) return;
+  // ⭐ (2026-07-09) customPrices 저장 시 "" 키 안전 sanitize (Firebase 거부 방지)
+  if (entityType === 'customers' && field === 'customPrices') {
+    const cp = list[idx][field];
+    if (cp && typeof cp === 'object') {
+      Object.keys(cp).forEach(pid => {
+        const e = cp[pid];
+        if (typeof e !== 'object' || e === null) return;
+        if (e[''] != null) {
+          if (e['_default'] == null) e['_default'] = e[''];
+          delete e[''];
+        }
+      });
+    }
+  }
   saveLocalDB();
   if (DB_REF) {
     _lastSaveTime = Date.now();
@@ -10846,6 +10896,7 @@ function initApp(data) {
   if (!DB.workedMeatMap) DB.workedMeatMap = {};   // ⭐ (2026-07-07) 작업육 → 원료 매핑 학습
   migrateProducts();
   migrateFavoritePairs();
+  cleanupCustomPriceKeys();   // ⭐ (2026-07-09) "" 키 자동 청소 — Firebase 저장 실패 원인 근절
   route();
   // 자동 백업: 1) 앱 열림 트리거 (태블릿/핸드폰용), 2) 30분마다 스케줄 트리거 (PC용)
   setTimeout(() => checkAutoBackup({ onOpen: true }), 3000); // 3초 후 — 폴더 권한·DB 로드 안정화 대기
