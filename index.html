@@ -1,11 +1,94 @@
 <!DOCTYPE html>
-<html>
+<html lang="ko">
 <head>
-  <meta charset="UTF-8">
-  <meta http-equiv="refresh" content="0; url=ATM_Order_System.html">
-  <title>ALL THAT MEAT — Order System</title>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>ATM Order System — 이동 중…</title>
+<!-- ⭐ (2026-07-22) 리다이렉트 페이지 —
+     https://boomankim.github.io/atm-order-system/ 로 접속 시 정식 URL로 자동 이동.
+     짧은 URL로 카톡 공유해도 정상 접속되도록 하는 안내판 역할. -->
+<meta http-equiv="refresh" content="0; url=./ATM_Order_System.html">
+<link rel="canonical" href="./ATM_Order_System.html">
+<!-- 인라인 SVG favicon -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%235C0F0F'/%3E%3Ctext x='50' y='68' font-size='60' text-anchor='middle' font-family='Arial,sans-serif' font-weight='bold' fill='%23FFF'%3EA%3C/text%3E%3C/svg%3E">
+<style>
+  body {
+    margin: 0;
+    font-family: 'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue',Arial,sans-serif;
+    background: #FAF6F1;
+    color: #2A1A1A;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 100vh;
+    padding: 20px;
+    box-sizing: border-box;
+  }
+  .box {
+    text-align: center;
+    max-width: 480px;
+  }
+  .logo {
+    font-size: 48px;
+    font-weight: 800;
+    color: #5C0F0F;
+    letter-spacing: 1px;
+    margin-bottom: 8px;
+  }
+  .sub {
+    font-size: 15px;
+    color: #6B5B5B;
+    margin-bottom: 24px;
+  }
+  .spinner {
+    width: 36px;
+    height: 36px;
+    border: 3px solid #E5DCD3;
+    border-top-color: #5C0F0F;
+    border-radius: 50%;
+    animation: spin 0.9s linear infinite;
+    margin: 0 auto 16px;
+  }
+  @keyframes spin { to { transform: rotate(360deg); } }
+  .link {
+    display: inline-block;
+    margin-top: 12px;
+    padding: 10px 20px;
+    background: #5C0F0F;
+    color: #fff;
+    text-decoration: none;
+    border-radius: 6px;
+    font-weight: 600;
+    font-size: 14px;
+  }
+  .link:hover { background: #8B1A1A; }
+  .note {
+    margin-top: 20px;
+    padding: 10px 14px;
+    background: #FFF7E0;
+    border-left: 3px solid #B8860B;
+    font-size: 12px;
+    color: #5C3A00;
+    text-align: left;
+    border-radius: 4px;
+  }
+</style>
 </head>
 <body>
-  <script>window.location.replace('ATM_Order_System.html');</script>
+  <div class="box">
+    <div class="logo">🥩 ALL THAT MEAT</div>
+    <div class="sub">ATM Order System</div>
+    <div class="spinner"></div>
+    <div>주문 시스템으로 이동 중…</div>
+    <a class="link" href="./ATM_Order_System.html">자동 이동이 안 되면 여기 클릭</a>
+    <div class="note">
+      💡 <b>즐겨찾기 등록 권장</b><br>
+      다음번 접속을 위해 이 페이지가 아닌 이동 후 페이지를 북마크에 저장하세요.
+    </div>
+  </div>
+  <script>
+    // meta refresh가 안 통하는 환경 대비 JS 리다이렉트도 함께
+    location.replace('./ATM_Order_System.html');
+  </script>
 </body>
 </html>

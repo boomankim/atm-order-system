@@ -18,6 +18,8 @@
 <link rel="apple-touch-icon" sizes="180x180" href="apple-touch-icon.png">
 
 <!-- Favicons -->
+<!-- ⭐ (2026-07-22) 인라인 SVG favicon — 별도 파일 요청 없이 즉시 표시, 404 오류 방지 -->
+<link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Crect width='100' height='100' rx='18' fill='%235C0F0F'/%3E%3Ctext x='50' y='68' font-size='60' text-anchor='middle' font-family='Arial,sans-serif' font-weight='bold' fill='%23FFF'%3EA%3C/text%3E%3C/svg%3E">
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
 <link rel="shortcut icon" href="favicon-64.png">
@@ -11177,23 +11179,65 @@ if (FIREBASE_READY && DB_REF) {
     if (_isAdminRoute()) return;  // admin 작업 중에는 배너 숨김
     const bar = document.createElement('div');
     bar.id = 'atmUpdateBanner';
+    // ⭐ (2026-07-22) 배너 더 크고 강조 + 자동 카운트다운 (15초 후 자동 리로드)
     bar.style.cssText =
       'position:fixed; top:0; left:0; right:0; z-index:99999;' +
-      'background:#1976D2; color:#fff; padding:10px 14px;' +
-      'font-size:13px; font-weight:600; text-align:center;' +
-      'box-shadow:0 2px 8px rgba(0,0,0,0.2); font-family:inherit;' +
-      'display:flex; align-items:center; justify-content:center; gap:12px;';
+      'background:linear-gradient(90deg,#1976D2,#42A5F5); color:#fff; padding:14px 18px;' +
+      'font-size:14px; font-weight:700; text-align:center;' +
+      'box-shadow:0 4px 12px rgba(0,0,0,0.25); font-family:inherit;' +
+      'display:flex; align-items:center; justify-content:center; gap:16px;' +
+      'animation: atmUpdatePulse 1.5s ease-in-out infinite;';
+    // 애니메이션 스타일 삽입
+    if (!document.getElementById('atmUpdateAnim')) {
+      const st = document.createElement('style');
+      st.id = 'atmUpdateAnim';
+      st.textContent = '@keyframes atmUpdatePulse{0%,100%{filter:brightness(1)}50%{filter:brightness(1.15)}}';
+      document.head.appendChild(st);
+    }
+    let secondsLeft = 15;
     bar.innerHTML =
-      '<span style="cursor:pointer; flex:1;">🔄 새 버전 있음 — 탭하여 새로고침</span>' +
+      '<span style="flex:1; cursor:pointer;">🔄 <b>새 버전 있음</b> — <span id="atmUpdateCountdown">' + secondsLeft + '</span>초 후 자동 새로고침 · 지금 탭하면 즉시</span>' +
+      '<button id="atmUpdateNow" style="background:#fff; color:#1976D2; border:none; border-radius:5px; padding:6px 14px; font-size:13px; font-weight:700; cursor:pointer;">🚀 지금</button>' +
       '<button id="atmUpdateDismiss" style="background:rgba(255,255,255,0.2); color:#fff;' +
-      'border:none; border-radius:4px; padding:4px 10px; font-size:12px; cursor:pointer;">나중에</button>';
-    bar.querySelector('span').addEventListener('click', () => location.reload());
+      'border:none; border-radius:4px; padding:6px 12px; font-size:12px; cursor:pointer;">나중에</button>';
+
+    // 새 SW 즉시 활성화 → controllerchange 이벤트로 리로드
+    const doReload = () => {
+      // 대기 중인 SW가 있으면 SKIP_WAITING 메시지 → 새 SW가 즉시 활성화
+      navigator.serviceWorker.getRegistration().then(reg => {
+        if (reg && reg.waiting) reg.waiting.postMessage('SKIP_WAITING');
+        // controllerchange 이벤트가 안 오더라도 500ms 후 강제 리로드
+        setTimeout(() => location.reload(), 500);
+      }).catch(() => location.reload());
+    };
+    bar.querySelector('span').addEventListener('click', doReload);
+    bar.querySelector('#atmUpdateNow').addEventListener('click', doReload);
     bar.querySelector('#atmUpdateDismiss').addEventListener('click', e => {
       e.stopPropagation();
+      if (window._atmUpdateTimer) clearInterval(window._atmUpdateTimer);
       bar.remove();
     });
+    // 카운트다운 타이머 — 15초 후 자동 리로드
+    window._atmUpdateTimer = setInterval(() => {
+      secondsLeft--;
+      const cd = document.getElementById('atmUpdateCountdown');
+      if (cd) cd.textContent = secondsLeft;
+      if (secondsLeft <= 0) {
+        clearInterval(window._atmUpdateTimer);
+        doReload();
+      }
+    }, 1000);
     document.body.appendChild(bar);
   }
+
+  // ⭐ (2026-07-22) SW 컨트롤러 변경 시 페이지 자동 리로드 (원활한 업데이트)
+  let _swReloaded = false;
+  navigator.serviceWorker.addEventListener('controllerchange', () => {
+    if (_swReloaded) return;
+    _swReloaded = true;
+    console.info('[PWA] 새 Service Worker 활성화 감지 — 자동 새로고침');
+    window.location.reload();
+  });
 
   // 해시 변경 시: admin 벗어났고 업데이트 대기 중이면 배너 재시도
   window.addEventListener('hashchange', () => {
