@@ -10811,8 +10811,11 @@ window.inventoryResetAllToZero = async function() {
   if (typeof ADMIN_UNLOCKED === 'undefined' || !ADMIN_UNLOCKED) {
     return alert('관리자 권한 필요');
   }
-  if (!window.DB || !DB.inventory) {
+  if (typeof DB === 'undefined' || !DB) {
     return alert('DB 로딩 안됨. 잠시 후 다시 시도하세요.');
+  }
+  if (!DB.inventory) {
+    DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{}, workedMeatDeductions:{} };
   }
   const productCount = (DB.products || []).length;
   const msg =
