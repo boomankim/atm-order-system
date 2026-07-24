@@ -9864,6 +9864,7 @@ function viewInventory() {
       <button class="btn sm success" style="float:right; margin-right:6px;" onclick="saveInventoryPDF()">💾 PDF 저장</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:var(--info);" onclick="printInventoryReport()">🖨️ 인쇄</button>
       <button class="btn sm secondary" style="float:right; margin-right:6px;" onclick="setInventoryFolder()">📁 폴더 변경</button>
+      ${ADMIN_UNLOCKED ? `<button class="btn sm" style="float:right; margin-right:6px; background:#C0392B; color:#fff;" onclick="inventoryResetAllToZero()" title="테스트 데이터 정리용: 모든 품목 재고 0, 이력 마커 청소">🧹 재고 초기화 (Admin)</button>` : ''}
     </h2>
     <div id="invFolderInfo" style="font-size:11px; color:var(--muted); margin: -6px 0 12px 0;"></div>
 
@@ -10801,6 +10802,63 @@ window.printInventoryReport = function() {
   w.document.close();
   w.focus();
   setTimeout(() => { try { w.print(); } catch(e) { console.warn(e); } }, 400);
+};
+
+// ⭐ (2026-07-24) 관리자 전용: 재고 전체 0 초기화 + 이력 마커 청소
+//   테스트 데이터 정리용. 주문/인보이스/거래처/품목 마스터는 건드리지 않음.
+//   실수 방지: "초기화" 문자열 정확히 타이핑해야 실행.
+window.inventoryResetAllToZero = async function() {
+  if (typeof ADMIN_UNLOCKED === 'undefined' || !ADMIN_UNLOCKED) {
+    return alert('관리자 권한 필요');
+  }
+  if (!window.DB || !DB.inventory) {
+    return alert('DB 로딩 안됨. 잠시 후 다시 시도하세요.');
+  }
+  const productCount = (DB.products || []).length;
+  const msg =
+    '⚠️ 모든 품목 재고를 0으로 초기화합니다.\n\n' +
+    '• 대상 품목: ' + productCount + '개\n' +
+    '• 함께 청소: 재고 차감 이력 마커, 작업육 매핑 마커\n\n' +
+    '보존: 주문 · 인보이스 · 입금 · 거래처 · 품목 마스터\n\n' +
+    '되돌릴 수 없습니다. 실행하려면 아래 입력창에 "초기화" 를 정확히 입력하세요.';
+  const typed = prompt(msg, '');
+  if (typed === null) return;
+  if (typed.trim() !== '초기화') {
+    return alert('입력이 일치하지 않아 취소되었습니다.');
+  }
+  // 백업 파일 자동 생성 (안전장치)
+  try {
+    const backup = JSON.stringify(DB.inventory, null, 2);
+    const blob = new Blob([backup], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = 'inventory_backup_' + new Date().toISOString().replace(/[:.]/g,'-') + '.json';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { document.body.removeChild(a); URL.revokeObjectURL(url); }, 1000);
+  } catch(e) { console.warn('백업 파일 생성 실패:', e); }
+
+  // 실제 초기화
+  const newByProduct = {};
+  (DB.products || []).forEach(function(p){
+    newByProduct[p.id] = { stock: 0, prev: 0, receivedToday: 0, deductedToday: 0 };
+  });
+  DB.inventory.byProduct = newByProduct;
+  DB.inventory.deductedOrders = {};
+  DB.inventory.workedMeatDeductions = {};
+  DB.inventory.lastResetDate = todayLocalISO();
+
+  try {
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      await DB_REF.child('inventory').set(DB.inventory);
+    }
+    try { localStorage.setItem('atm_db_v1', JSON.stringify(DB)); } catch(_){}
+    alert('✅ 재고 초기화 완료.\n\n백업 파일이 다운로드 폴더에 저장되었습니다 (inventory_backup_*.json).\n페이지를 새로고침합니다.');
+    location.reload();
+  } catch(e) {
+    alert('❌ Firebase 저장 실패: ' + (e && e.message ? e.message : e) + '\n\n로컬은 반영되었지만 서버 반영이 실패했습니다.');
+  }
 };
 
 window.saveInventoryPDF = async function() {
