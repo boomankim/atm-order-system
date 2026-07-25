@@ -6875,9 +6875,11 @@ function renderHistoryResults() {
                   <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
                   <td>${o.invoiceNo || '-'}</td>
                   <td class="act">
-                    <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
                     ${(o.status==='invoiced' || o.status==='delivered')
-                      ? `<button class="btn sm" style="background:#B8860B;color:#fff;margin-left:4px;" onclick="event.stopPropagation(); openInvoicePDF('${o.id}')" title="인보이스 PDF 새 창에서 열기">📄 PDF</button>`
+                      ? `<button class="btn sm" style="background:#B8860B;color:#fff;" onclick="location.hash='#invoice?id=${o.id}'" title="인보이스 열기 (편집 가능하면 수정 버튼 표시)">📋 인보이스</button>`
+                      : `<button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>`}
+                    ${(o.status==='invoiced' || o.status==='delivered')
+                      ? `<button class="btn sm secondary" style="margin-left:4px;" onclick="event.stopPropagation(); openInvoicePDF('${o.id}')" title="인보이스 PDF 새 창에서 열기">📄 PDF</button>`
                       : ''}
                   </td>
                 </tr>`;
