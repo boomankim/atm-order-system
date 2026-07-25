@@ -6671,6 +6671,15 @@ function initHistoryFilter() {
 }
 function viewHistory(params) {
   if (!HISTORY_FILTER) initHistoryFilter();
+  // ⭐ (2026-07-26) 이력 화면 진입 시 이전 세션의 거래처 필터 자동 해제 —
+  //   HISTORY_FILTER 가 JS 메모리에 남아있어 다른 거래처 주문이 안 나오는 버그 방지.
+  //   존재하지 않는 거래처 ID면 강제로 비움.
+  if (HISTORY_FILTER.customerId) {
+    const stillExists = DB.customers.some(function(c){ return c.id === HISTORY_FILTER.customerId; });
+    if (!stillExists) HISTORY_FILTER.customerId = '';
+  }
+  // 화면 진입할 때마다 거래처 필터 초기화 (사용자 요청: 기본값 = 전체)
+  HISTORY_FILTER.customerId = '';
   const app = document.getElementById('app');
   app.innerHTML = `
     <h2 class="page-title">📊 주문 이력
@@ -6723,6 +6732,7 @@ function viewHistory(params) {
         </div>
         <div class="field" style="display:flex; align-items:flex-end; gap:8px;">
           <button class="btn" style="flex:1;" onclick="applyHistory()">🔍 조회</button>
+          <button class="btn secondary" onclick="resetHistoryFilter()" title="모든 필터 기본값으로 초기화">🔄 초기화</button>
         </div>
       </div>
     </div>
@@ -6731,6 +6741,12 @@ function viewHistory(params) {
   `;
   renderHistoryResults();
 }
+
+// ⭐ (2026-07-26) 필터 전체 초기화 — 사용자가 명시적으로 리셋
+window.resetHistoryFilter = function() {
+  initHistoryFilter();
+  viewHistory();  // 화면 재렌더 → 입력창 초기값으로
+};
 
 function setHistQuickRange(range) {
   if (!range) return;
@@ -6757,6 +6773,11 @@ function setHistQuickRange(range) {
 function applyHistory() {
   HISTORY_FILTER.dateFrom = val('histFrom');
   HISTORY_FILTER.dateTo = val('histTo');
+  // ⭐ (2026-07-26) 자동완성 검색창이 비어있으면 select 값도 강제 리셋 → 필터 해제
+  const searchBox = document.getElementById('histCust_search');
+  const searchText = (searchBox && searchBox.value || '').trim();
+  const selEl = document.getElementById('histCust');
+  if (!searchText && selEl) selEl.value = '';
   HISTORY_FILTER.customerId = val('histCust');
   HISTORY_FILTER.status = val('histStatus');
   renderHistoryResults();
@@ -11334,11 +11355,47 @@ async function autoSaveInvoice(orderId) {
   const dirHandle = await getBackupDirHandle();
 
   // 1. JSON 백업
+  //   ⭐ (2026-07-26) InvalidStateError (핸들 만료) 명시적 처리:
+  //   - 스테일 핸들 자동 폐기 + 사용자에게 폴더 재선택 유도
+  //   - 알림 반복 방지 (같은 세션에서 한 번만)
   try {
     const json = JSON.stringify(DB, null, 2);
     const jsonFilename = `ATM_backup_${ts}.json`;
     if (dirHandle) {
-      await writeToFolderPath(dirHandle, ['_백업(JSON)', dateStr], jsonFilename, json);
+      try {
+        await writeToFolderPath(dirHandle, ['_백업(JSON)', dateStr], jsonFilename, json);
+      } catch(writeErr) {
+        // 폴더 핸들이 무효화됨 (사용자가 폴더 삭제·이동, 브라우저 재시작, 권한 취소 등)
+        const isStaleHandle =
+          (writeErr && writeErr.name === 'InvalidStateError') ||
+          (writeErr && writeErr.name === 'NotAllowedError') ||
+          (writeErr && writeErr.name === 'NotFoundError');
+        if (isStaleHandle) {
+          console.warn('백업 폴더 핸들 만료 — 재선택 필요:', writeErr.name);
+          _backupDirHandle = null;
+          try { await idbSet('backupDirHandle', null); } catch(_){}
+          if (!window._backupHandleAlertShown) {
+            window._backupHandleAlertShown = true;
+            setTimeout(function(){
+              const go = confirm(
+                '⚠️ 백업 폴더 접근이 만료되었습니다.\n\n' +
+                '(폴더가 이동·삭제되었거나 브라우저 권한이 초기화됨)\n\n' +
+                '지금 백업 폴더를 다시 선택하시겠습니까?\n' +
+                '(취소 시 이번 백업은 다운로드 폴더로 대신 저장됩니다)'
+              );
+              if (go && typeof setBackupFolder === 'function') setBackupFolder();
+            }, 300);
+          }
+          // 다운로드로 fallback
+          const blob = new Blob([json], {type:'application/json'});
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url; a.download = jsonFilename; a.click();
+          URL.revokeObjectURL(url);
+        } else {
+          throw writeErr;   // 다른 종류의 에러는 상위 catch로
+        }
+      }
     } else {
       const blob = new Blob([json], {type:'application/json'});
       const url = URL.createObjectURL(blob);
