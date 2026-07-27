@@ -143,8 +143,9 @@
   table.t tbody tr:nth-child(even) { background: #FBF8F4; }
   table.t tbody tr:hover { background: #F5E8DD; }
   table.t td { padding: 8px; vertical-align: middle; }
-  table.t td.num { text-align: right; }
-  table.t th.num { text-align: right; }
+  /* ⭐ (2026-07-27) 숫자 컬럼 줄바꿈 방지 — 인쇄 시 소수점 마지막 자리가 다음 줄로 넘어가는 문제 해결 */
+  table.t td.num { text-align: right; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  table.t th.num { text-align: right; white-space: nowrap; }
   table.t td.act { text-align: right; white-space: nowrap; }
 
   /* Pills / Status */
@@ -4519,6 +4520,43 @@ function submitEntry() {
 // =========================================================================
 let CART = []; // per-session order draft
 
+// ⭐ (2026-07-27) 장바구니 자동 저장·복원 — 다른 화면 갔다 와도 CART 유지.
+//   조건: 같은 거래처(custId), 24시간 이내, 같은 브라우저.
+//   주문 제출 성공 시 자동 삭제. 다른 거래처로 바꾸면 이전 것 폐기.
+const CART_DRAFT_KEY = 'atm_cart_draft_v1';
+const CART_DRAFT_TTL_MS = 24 * 60 * 60 * 1000;
+function saveCartDraft(custId, extras) {
+  try {
+    if (!custId) return;
+    const draft = {
+      custId: custId,
+      cart: CART,
+      deliveryNotes: (extras && typeof extras.deliveryNotes === 'string') ? extras.deliveryNotes : (function(){
+        const el = document.getElementById('deliveryNotes');
+        return el ? el.value : '';
+      })(),
+      savedAt: Date.now()
+    };
+    localStorage.setItem(CART_DRAFT_KEY, JSON.stringify(draft));
+  } catch(e) { console.warn('cart draft save failed:', e); }
+}
+function loadCartDraft(custId) {
+  try {
+    const raw = localStorage.getItem(CART_DRAFT_KEY);
+    if (!raw) return null;
+    const d = JSON.parse(raw);
+    if (!d || !d.custId || d.custId !== custId) return null;
+    if (!d.savedAt || (Date.now() - d.savedAt) > CART_DRAFT_TTL_MS) {
+      localStorage.removeItem(CART_DRAFT_KEY);
+      return null;
+    }
+    return d;
+  } catch(e) { return null; }
+}
+function clearCartDraft() {
+  try { localStorage.removeItem(CART_DRAFT_KEY); } catch(_){}
+}
+
 function viewOrder(params) {
   const custId = params.get('c');
   const cust = DB.customers.find(c => c.id === custId);
@@ -4553,7 +4591,12 @@ function viewOrder(params) {
     return;
   }
 
-  CART = []; // reset on entry
+  // ⭐ (2026-07-27) 진입 시 CART 초기화 → 저장된 draft 있으면 복원
+  CART = [];
+  const _restored = loadCartDraft(custId);
+  if (_restored && Array.isArray(_restored.cart)) {
+    CART = _restored.cart;
+  }
   const todayStr = todayLocalISO();
   const todayDisplay = new Date().toLocaleDateString('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'short'});
   app.innerHTML = `
@@ -4566,7 +4609,8 @@ function viewOrder(params) {
     <div class="card" style="padding:10px 18px; margin-bottom:10px; max-width:360px;">
       <div class="field" style="margin-bottom:0;">
         <label>요청 사항 / Special Requests</label>
-        <textarea id="deliveryNotes" placeholder="예: 오전 10시 이전 / Before 10am" style="height:48px; font-size:13px;"></textarea>
+        <textarea id="deliveryNotes" placeholder="예: 오전 10시 이전 / Before 10am" style="height:48px; font-size:13px;"
+          oninput="saveCartDraft('${custId}')">${(_restored && _restored.deliveryNotes) ? String(_restored.deliveryNotes).replace(/</g,'&lt;').replace(/"/g,'&quot;') : ''}</textarea>
       </div>
     </div>
 
@@ -4685,6 +4729,17 @@ function addToCart(prodId, notes) {
     notes: (notes == null ? '' : String(notes))
   });
   renderCart();
+  // ⭐ 장바구니 자동 저장 — 관리자 화면 갔다 와도 유지
+  _autoSaveCurrentCartDraft();
+}
+
+// URL 에서 현재 거래처 ID 추출 → CART draft 저장
+function _autoSaveCurrentCartDraft() {
+  try {
+    const hash = location.hash || '';
+    const m = hash.match(/[?&]c=([^&]+)/);
+    if (m && m[1]) saveCartDraft(decodeURIComponent(m[1]));
+  } catch(_){}
 }
 
 // Staff: toggle a product into/out of the current customer's favourites from the catalogue
@@ -4735,7 +4790,7 @@ function renderCart() {
         <div class="cart-item">
           <div class="top">
             <div><span class="name">${p.name}</span><span class="brand-tag">(${p.brand})</span></div>
-            <button class="del" onclick="CART.splice(${idx},1); renderCart();">×</button>
+            <button class="del" onclick="CART.splice(${idx},1); renderCart(); _autoSaveCurrentCartDraft();">×</button>
           </div>
           <div style="display:flex; gap:8px; align-items:flex-end; margin-top:8px;">
             <div style="flex:0 0 140px;">
@@ -4743,7 +4798,7 @@ function renderCart() {
               <div style="display:flex; align-items:stretch; border:1px solid var(--line); border-radius:5px; background:#fff; overflow:hidden;">
                 <input type="number" min="0" step="${qtyStep}" value="${qtyDisp}" placeholder=""
                   style="flex:1; min-width:0; padding:6px 6px; font-size:14px; text-align:right; border:none; outline:none; background:transparent;"
-                  onchange="CART[${idx}].quantity=(this.value===''?null:parseFloat(this.value)); renderCart();"
+                  onchange="CART[${idx}].quantity=(this.value===''?null:parseFloat(this.value)); renderCart(); _autoSaveCurrentCartDraft();"
                   onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)">
                 <div style="position:relative; display:flex; align-items:center; padding:0 22px 0 10px; background:#F2EEE8; color:#5C0F0F; font-size:12px; font-weight:700; border-left:1px solid var(--line); user-select:none; cursor:pointer;">
                   <span>${badgeText}</span>
@@ -4751,7 +4806,7 @@ function renderCart() {
                   <select
                     aria-label="단위 선택"
                     style="position:absolute; inset:0; opacity:0; cursor:pointer; font-size:16px;"
-                    onchange="CART[${idx}].unit=this.value; renderCart();">
+                    onchange="CART[${idx}].unit=this.value; renderCart(); _autoSaveCurrentCartDraft();">
                     ${allowedUnits.map(u => `<option value="${u}"${item.unit===u?' selected':''}>${unitLong[u]}</option>`).join('')}
                   </select>
                 </div>
@@ -4761,7 +4816,7 @@ function renderCart() {
               <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">품목 요청사항 (예: 3mm 슬라이스, 진공포장)</label>
               <input placeholder="다음 주문에 기억됩니다" value="${(item.notes||'').replace(/"/g,'&quot;')}"
                 style="width:100%; padding:6px 8px; font-size:13px;"
-                onchange="CART[${idx}].notes=this.value;">
+                onchange="CART[${idx}].notes=this.value; _autoSaveCurrentCartDraft();">
             </div>
           </div>
         </div>
@@ -5020,7 +5075,7 @@ async function submitOrder(custId) {
       okBtn.style.opacity = '1';
       okBtn.style.cursor = 'pointer';
       okBtn.classList.add('success');
-      okBtn.onclick = function(){ closeModal(); CART = []; location.hash = '#orderDetail?id=' + order.id; };
+      okBtn.onclick = function(){ closeModal(); CART = []; clearCartDraft(); location.hash = '#orderDetail?id=' + order.id; };
     }
   } else {
     // 서버 전송이 확인되지 않음 → 중복 방지를 위해 방금 추가한 주문을 로컬에서 제거하고, 장바구니는 유지해 재시도 가능하게 둔다.
@@ -5045,8 +5100,13 @@ async function submitOrder(custId) {
 // =========================================================================
 function viewWarehouse() {
   const app = document.getElementById('app');
+  // ⭐ (2026-07-27) 대기 주문 정렬 — 거래처명 가나다/알파벳 순 (한글·영문 자연 정렬)
+  const _custNameOf = function(o) {
+    const c = (DB.customers||[]).find(x => x.id === o.customerId);
+    return (c && c.name) || '';
+  };
   const pending = (DB.orders||[]).filter(o => o.status === 'new' || o.status === 'weighing')
-    .sort((a,b) => (a.orderDate||'').localeCompare(b.orderDate||''));
+    .sort((a,b) => _custNameOf(a).localeCompare(_custNameOf(b), 'ko-KR'));
   app.innerHTML = `
     <h2 class="page-title">⚖️ 작업장 — 계근 입력
       <span class="sub">박스/팩 챙기고 실제 중량 입력</span></h2>
@@ -5809,8 +5869,9 @@ window.printDailyReport = function() {
   table.pt th { background: #5C0F0F; color: #fff; padding: 3px 3px; text-align: left; font-weight: 600; font-size: 8px; }
   table.pt td { padding: 2.5px 3px; border-bottom: 1px solid #e2e2e2; vertical-align: top; word-break: break-word; }
   table.pt td.cust { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; word-break: keep-all; font-size: 7.5px; }
-  table.pt .num { text-align: right; font-variant-numeric: tabular-nums; }
-  table.pt th.num { text-align: right; }
+  /* ⭐ (2026-07-27) 매출일보 인쇄 숫자 줄바꿈 방지 */
+  table.pt .num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  table.pt th.num { text-align: right; white-space: nowrap; }
   .footer { margin-top: 6px; font-size: 7.5px; color: #888; text-align: right; padding-top: 4px; border-top: 1px solid #eee; }
   .sign { margin-top: 12px; display: flex; justify-content: flex-end; gap: 30px; font-size: 9px; }
   .sign .box { border-top: 1px solid #333; padding-top: 3px; min-width: 100px; text-align: center; }
@@ -7108,10 +7169,23 @@ function viewInvoicePrep(params) {
       ✏️ <b>인보이스 수정 모드</b> — Invoice #${o.invoiceNo || '-'} 발행됨. 저장 시 <u>원본 덮어쓰기</u> + PDF 재생성.
       다음 전체 백업 후엔 편집 불가.
     </div>` : '';
+  // ⭐ (2026-07-27) 사무실 메모 (officeNote) — 인보이스 발행 시 거래처명 위에 표시.
+  //   입력 없으면 인쇄·PDF에서 완전 숨김. 거래처의 요청사항(deliveryNotes)과는 독립 필드.
+  const _officeNoteRaw = (o.officeNote || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+
   app.innerHTML = `
     <h2 class="page-title">📋 ${_isEditMode ? '인보이스 수정' : '인보이스 준비'} — ${o.orderNo}
       <span class="sub">${cust?cust.name:''}</span></h2>
     ${_editBanner}
+
+    <div class="card" style="border-left:4px solid var(--brand); background:#FFFCF5;">
+      <label style="font-weight:700; font-size:12px; color:var(--brand); letter-spacing:0.5px;">🏢 사무실 메모 / OFFICE NOTE
+        <span style="font-weight:400; color:var(--muted); font-size:11px; margin-left:6px;">— 인쇄 시 거래처명 위에 크게 표시 · 비워두면 안 뜸</span>
+      </label>
+      <textarea id="prepOfficeNote" placeholder="예: 명절 휴무 안내 · Purchase Order #12345 · 부분 배송"
+        oninput="updatePrepOfficeNote('${o.id}', this.value)"
+        style="width:100%; margin-top:6px; padding:8px 10px; border:1px solid var(--line); border-radius:5px; font-size:14px; font-family:inherit; min-height:44px; box-sizing:border-box;">${_officeNoteRaw}</textarea>
+    </div>
 
     <div class="card">
       <div class="grid-3" style="font-size:13px;">
@@ -7418,6 +7492,17 @@ function updatePrepPrice(orderId, idx, val) {
 }
 // 사무실: 인보이스 준비 단계에서 품목 요청사항(notes) 수정.
 // 이 주문 라인 + 해당 거래처의 자주 주문 짝(같은 품목+이전 요청사항) 동기화.
+// ⭐ (2026-07-27) 사무실 메모(officeNote) 저장 — 인보이스 준비 화면 입력 시 실시간 저장.
+//   Firebase 부분 업데이트 (saveEntityField) 사용 → 동시 편집 충돌 없음.
+window.updatePrepOfficeNote = function(orderId, newVal) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  if (!o) return;
+  var val = (newVal == null) ? '' : String(newVal);
+  if ((o.officeNote || '') === val) return;
+  o.officeNote = val;
+  saveEntityField('orders', o.id, 'officeNote');
+};
+
 function updatePrepItemNotes(orderId, idx, newVal) {
   var o = DB.orders.find(function(x){ return x.id === orderId; });
   if (!o) return;
@@ -8738,6 +8823,12 @@ function buildInvoiceHTML(o, cust, totals) {
       </div>
 
       <div style="border-top:2px solid #5C0F0F; margin-bottom:10px;"></div>
+
+      ${o.officeNote ? `
+      <div style="margin:0 0 10px 0; padding:8px 12px; background:#FFFCF0; border:2px solid #5C0F0F; border-radius:4px;">
+        <div style="font-size:9px; color:#888; text-transform:uppercase; margin-bottom:3px; font-weight:700;">Notice / 공지</div>
+        <div style="font-weight:700; font-size:14px; color:#5C0F0F; line-height:1.4;">${String(o.officeNote).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div>
+      </div>` : ''}
 
       <div style="display:flex; justify-content:space-between; margin-bottom:12px;">
         <div>
