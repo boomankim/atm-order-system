@@ -10868,12 +10868,11 @@ function _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag) {
   const kgBox = inventoryBoxConvert(addedKg, rawP.cut);
   const totalDeduct = addedBox + packBox + kgBox;
   if (totalDeduct <= 0) return { ok:false, error: '차감할 중량 없음 (중량 미입력)' };
-  // 재고 부족 검사 (정책: 부족 시 차감 안 함 + 수동 확인)
+  // ⭐ (2026-07-28) 정책 변경 — 재고 부족 시에도 마이너스 차감 허용 (자동차감과 동일)
+  //   재고가 부족한 경우 stock 이 음수가 됨. 재고 화면에서 (괄호) 표기로 시각화됨.
+  //   부만님 요청: 실제 출고는 되었지만 원료 등록이 늦었을 수 있으므로 차감 진행.
   const invE = inventoryEnsureProduct(rawPid);
-  if ((invE.stock || 0) < totalDeduct) {
-    return { ok:false, error: '재고 부족 (필요: ' + totalDeduct + ', 재고: ' + (invE.stock || 0) + ')' };
-  }
-  // 실제 차감
+  const willBeNegative = (invE.stock || 0) < totalDeduct;
   invE.deductedToday = (invE.deductedToday || 0) + totalDeduct;
   invE.stock = (invE.stock || 0) - totalDeduct;
   // 감사 추적 저장
@@ -10887,7 +10886,8 @@ function _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag) {
   });
   // 학습 저장 (선택 시)
   if (rememberFlag && workedP) learnWorkedMeatMapping(workedP.id, rawPid);
-  return { ok:true, msg: rawP.name + ' -' + totalDeduct + '박스' };
+  const negNote = willBeNegative ? ' ⚠️ 재고 마이너스 (' + invE.stock + ')' : '';
+  return { ok:true, msg: rawP.name + ' -' + totalDeduct + '박스' + negNote };
 }
 
 // 전체 일괄 차감: 오늘 배송완료 + 아직 미차감 주문 전부 적용
