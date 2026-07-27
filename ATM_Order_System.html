@@ -6641,6 +6641,8 @@ function companyAddrLine() {
 }
 function computeTotals(order) {
   // Only weighed items contribute to totals — no fake estimates for 박스/팩.
+  // ⭐ (2026-07-27) 각 라인 금액을 소수점 2자리로 반올림 후 합산 → 인보이스 표시값과 정확히 일치.
+  //   예전엔 raw 합산 후 반올림 → $0.01 오차 발생 (예: 808.47 vs 표시 808.48).
   let subtotal = 0, totalKg = 0, unweighedCount = 0;
   const cust = DB.customers.find(c => c.id === order.customerId);
   getInvoiceItems(order).forEach(it => {
@@ -6648,7 +6650,8 @@ function computeTotals(order) {
     const p = DB.products.find(x => x.id === it.productId);
     if (it.actualWeightKg == null) { unweighedCount++; return; }
     totalKg += it.actualWeightKg;
-    subtotal += it.actualWeightKg * lineUnitPrice(it, p, cust);
+    const lineAmount = Math.round(it.actualWeightKg * lineUnitPrice(it, p, cust) * 100) / 100;
+    subtotal += lineAmount;
   });
   // Treat priceKg as GST-inclusive (common AU wholesale convention)
   const gst = subtotal * (DB.company.gstRate / (1 + DB.company.gstRate));
@@ -11481,23 +11484,39 @@ if (FIREBASE_READY && DB_REF) {
       || document.getElementById('modalBg') !== null;
   }
 
-  // Phase 2-D: 충돌 인지도 향상 — 다른 기기 업데이트 시 항상 배너 표시
+  // ⭐ (2026-07-27) 동기화 알림 — 우상단 작은 알약(pill) 형태로 변경.
+  //   본 내용을 가리지 않도록 top:60px, right:12px 에 배치 (nav 아래 우측 구석).
+  //   isSensitive: 빨간 경고 (사용자 직접 닫기) · else: 파란 정보 (4초 자동 사라짐)
   function showSyncBanner(isSensitive) {
     let banner = document.getElementById('sync-banner');
     if (banner) banner.remove();
     banner = document.createElement('div');
     banner.id = 'sync-banner';
+    const baseStyle =
+      'position:fixed; top:60px; right:12px; ' +
+      'padding:7px 14px; border-radius:20px; ' +
+      'font-size:12px; font-weight:600; ' +
+      'z-index:9999; cursor:pointer; ' +
+      'box-shadow:0 3px 10px rgba(0,0,0,0.25); ' +
+      'max-width:340px; ' +
+      'animation: syncPillIn 0.25s ease-out;';
     if (isSensitive) {
-      // 입력 중이면 빨간 경고 (자동 새로고침 안 함, 사용자가 직접 새로고침)
-      banner.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#C0392B;color:#fff;text-align:center;padding:10px 14px;font-size:13px;font-weight:600;z-index:9999;box-shadow:0 2px 8px rgba(0,0,0,0.2);cursor:pointer;';
-      banner.innerHTML = '⚠️ 다른 사용자가 데이터를 업데이트했습니다 — 입력 중이면 저장 후 새로고침 (클릭하여 닫기)';
+      banner.style.cssText = baseStyle + 'background:#C0392B; color:#fff; border:1.5px solid #7A1A0A;';
+      banner.innerHTML = '⚠️ 다른 사용자 업데이트 · 저장 후 새로고침 <span style="opacity:0.7; margin-left:6px;">✕</span>';
       banner.onclick = () => banner.remove();
-      // 입력 중에는 자동으로 안 사라짐 — 사용자가 인지 후 닫아야 함
+      // 입력 중엔 자동으로 안 사라짐 — 클릭해서 닫기
     } else {
-      // 일반 화면은 짧은 파란 정보 배너
-      banner.style.cssText = 'position:fixed;top:52px;left:0;right:0;background:#2E5C8A;color:#fff;text-align:center;padding:6px;font-size:12px;z-index:9999;';
-      banner.innerHTML = '🔄 다른 기기에서 데이터가 업데이트되었습니다.';
+      banner.style.cssText = baseStyle + 'background:#2E5C8A; color:#fff; border:1.5px solid #1A3A5A;';
+      banner.innerHTML = '🔄 데이터 업데이트됨';
+      banner.onclick = () => banner.remove();
       setTimeout(() => { banner && banner.remove(); }, 4000);
+    }
+    // 애니메이션 CSS 1회만 주입
+    if (!document.getElementById('sync-pill-anim')) {
+      const st = document.createElement('style');
+      st.id = 'sync-pill-anim';
+      st.textContent = '@keyframes syncPillIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }';
+      document.head.appendChild(st);
     }
     document.body.appendChild(banner);
   }
