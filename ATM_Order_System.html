@@ -9967,6 +9967,46 @@ const RAW_CATEGORIES = ['소고기','와규','돼지고기','오리','양고기'
 // 혼합 원료 키워드 — 자동 매칭 제외
 const MIXED_MEAT_KEYWORDS = ['샤브','불고기','민스','mince','shabu','slice'];
 
+// ⭐ (2026-07-27) 첫 2단어 매칭 규칙
+// -------------------------------------------------------------------------
+// 규칙: [축종][부위][처리방법] 구조. 축종+부위 일치 시 우선 매칭.
+//   - 축종: 정확히 일치 (앵거스≠소, 와규≠소, 오리≠소 등)
+//   - 부위: 두번째 단어. 단, "불고기"·"야끼니꾸"는 요리방식으로 스킵 → 세번째 단어를 부위로 사용
+//   - 예1: "돼지 머리 작업" → [돼지, 머리]
+//   - 예2: "돼지 전지 슬라이스" → [돼지, 전지]
+//   - 예3: "소 불고기 너클 슬라이스 2mm" → [소, 너클] (불고기 스킵)
+// -------------------------------------------------------------------------
+const _WM_ANIMALS = ['소','앵거스','와규','돼지','오리','양고기','양'];
+const _WM_COOKING_SKIP = ['불고기','야끼니꾸','야끼','불백'];
+
+function _wmFirstTwoTokens(name) {
+  if (!name) return null;
+  // 공백 단위로 자르되 앞뒤 공백 제거
+  const tokens = String(name).trim().split(/\s+/).filter(function(t){ return t.length > 0; });
+  if (tokens.length < 2) return null;
+  const 축종 = tokens[0];
+  // 축종이 유효한 축종 목록에 없으면 매칭 규칙 대상 아님 → null
+  if (!_WM_ANIMALS.some(function(a){ return 축종 === a || 축종.indexOf(a) === 0; })) {
+    return null;
+  }
+  // 두번째 단어가 요리방식이면 세번째로 이동
+  let idx = 1;
+  while (idx < tokens.length && _WM_COOKING_SKIP.some(function(k){ return tokens[idx] === k; })) {
+    idx++;
+  }
+  if (idx >= tokens.length) return null;
+  const 부위 = tokens[idx];
+  return { 축종: 축종, 부위: 부위 };
+}
+
+// 첫 2단어(축종+부위) 정확 일치 여부
+function _wmFirstTwoMatch(workedName, rawName) {
+  const w = _wmFirstTwoTokens(workedName);
+  const r = _wmFirstTwoTokens(rawName);
+  if (!w || !r) return false;
+  return w.축종 === r.축종 && w.부위 === r.부위;
+}
+
 // 한글/영문 정규화 (공백·부호 제거·소문자)
 function _wmNormalize(s) {
   return String(s || '').toLowerCase()
@@ -10054,6 +10094,12 @@ function getRawMaterialCandidates(workedProduct, notes, topN) {
     // ① 학습 매핑 — 최우선
     if (learnedRawPid && p.id === learnedRawPid) score += 200;
 
+    // ⭐ (2026-07-27) 첫 2단어 매칭 (축종+부위 정확 일치) — 강력한 우선순위
+    //   워크된 "돼지 머리 작업" + 원료 "돼지 머리 PORK HEAD" → +150
+    //   축종 불일치(앵거스↔소) 시 매칭 안 됨. 요리방식(불고기·야끼니꾸)은 스킵.
+    const firstTwoMatched = _wmFirstTwoMatch(workedName, p.name);
+    if (firstTwoMatched) score += 150;
+
     // ② notes 완전 매칭 (원료명이 notes를 포함)
     if (notesN && rawNameN.indexOf(notesN) >= 0 && notesN.length >= 2) score += 100;
 
@@ -10099,10 +10145,22 @@ function getRawMaterialCandidates(workedProduct, notes, topN) {
 }
 
 // 최적 매칭 (자동 확정 여부 판정) — 스코어 90+ 이면 자동
+// ⭐ (2026-07-27) 첫 2단어(축종+부위) 매칭 후보가 2개 이상이면 자동 확정 안 함 →
+//   사용자가 드롭다운에서 선택. 상단 후보들은 이미 +150 부스트로 우선 노출됨.
 function matchWorkedMeatToRaw(workedProduct, notes) {
-  const cands = getRawMaterialCandidates(workedProduct, notes, 1);
+  const cands = getRawMaterialCandidates(workedProduct, notes, 10);
   if (cands.length === 0) return { auto: false, candidate: null, score: 0 };
   const best = cands[0];
+  // 첫 2단어 매칭 후보 수 계산
+  const workedName = (workedProduct && workedProduct.name) || '';
+  const firstTwoCands = cands.filter(function(c){
+    return _wmFirstTwoMatch(workedName, c.product && c.product.name);
+  });
+  // 첫 2단어 매칭이 여러 개 → 자동 확정 X (사용자 선택)
+  if (firstTwoCands.length >= 2) {
+    return { auto: false, candidate: best.product, score: best.score, stock: best.stock,
+             multipleMatches: firstTwoCands.length };
+  }
   return { auto: best.score >= 90, candidate: best.product, score: best.score, stock: best.stock };
 }
 
@@ -10652,13 +10710,15 @@ function renderUnmatchedWorkedMeatList() {
       const uid = item.orderId + '__' + item.itemIdx;
       const kgTxt = item.kg > 0 ? item.kg.toFixed(2) + ' kg' : (item.quantity + ' ' + item.unit);
       // optgroup 생성 — 허용 카테고리 순서로만
+      // ⭐ (2026-07-27) 첫 2단어 매칭 후보는 옵션명 앞에 ⭐ 표시 → 사용자 시각적 우선 인지
       const optgroupsHtml = allowedCats.map(cat => {
         const arr = byCat[cat];
         if (!arr || arr.length === 0) return '';
         const opts = arr.map(c => {
           const stockTxt = c.stock > 0 ? ' (재고 ' + c.stock + ')' : ' (재고 0)';
           const sel = (c.product.id === bestPid) ? ' selected' : '';
-          return '<option value="' + c.product.id + '"' + sel + '>' + c.product.name + stockTxt + '</option>';
+          const star = _wmFirstTwoMatch(item.workedName, c.product.name) ? '⭐ ' : '';
+          return '<option value="' + c.product.id + '"' + sel + '>' + star + c.product.name + stockTxt + '</option>';
         }).join('');
         return '<optgroup label="▼ ' + cat + '">' + opts + '</optgroup>';
       }).join('');
