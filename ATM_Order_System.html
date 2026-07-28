@@ -4961,6 +4961,10 @@ window.handleTomorrowDelivery = function(custId) {
 };
 
 async function submitOrder(custId) {
+  // ⭐ (2026-07-28) 방어 1/3: 거래처 미지정 상태 주문 생성 차단 (orphan 예방)
+  if (!custId || String(custId).trim() === '') {
+    return alert('⚠️ 거래처가 지정되지 않았습니다.\n주문 링크를 다시 확인하거나 관리자에게 문의하세요.');
+  }
   if (CART.length === 0) return alert('주문 품목을 추가해주세요.');
 
   // Phase 2 동시성: 트랜잭션으로 orderSeq 를 안전하게 증가시켜 주문번호 중복 방지
@@ -7632,6 +7636,11 @@ window.applyCustomerPricesToPrep = function(orderId) {
 async function updateIssuedInvoice(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  // ⭐ (2026-07-28) 방어 3/3: orphan 인보이스 수정 차단
+  if (!o.customerId || !o.orderNo) {
+    alert('⚠️ 이 인보이스는 데이터가 불완전합니다 (거래처/주문번호 없음).\n수정 대신 관리자 → 🔧 진단 에서 정리하세요.');
+    return;
+  }
   // 저장 시점에 다시 잠금 재검사 — 다른 기기에서 그 사이 백업/크레딧 발행 가능성
   if (!isInvoiceEditable(o)) {
     alert('편집 불가: ' + (invoiceEditLockReason(o) || '조건 불충족') + '\n\n다른 기기에서 백업 또는 크레딧 발행이 있었을 수 있습니다.');
@@ -7674,6 +7683,19 @@ window.updateIssuedInvoice = updateIssuedInvoice;
 async function issueInvoice(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  // ⭐ (2026-07-28) 방어 2/3: customerId/orderNo 없으면 발행 차단 (orphan 인보이스 원천 봉쇄)
+  if (!o.customerId || !o.orderNo) {
+    alert('⚠️ 주문 데이터 불완전 — 인보이스 발행 불가\n\n' +
+          '거래처 ID: ' + (o.customerId || '(없음)') + '\n' +
+          '주문번호: ' + (o.orderNo || '(없음)') + '\n\n' +
+          '관리자 → 🔧 진단 탭에서 이 주문을 확인·삭제하세요.');
+    return;
+  }
+  // 거래처가 실제로 DB에 존재하는지 최종 확인
+  if (!DB.customers.some(c => c.id === o.customerId)) {
+    alert('⚠️ 거래처 ID(' + o.customerId + ')가 마스터에 없습니다.\n인보이스 발행 불가. 진단 도구로 정리 필요.');
+    return;
+  }
   const t = computeTotals(o);
   if (t.unweighedCount > 0) {
     if (!confirm(`${t.unweighedCount}건의 품목이 계근되지 않았습니다.\n그래도 인보이스를 발행하시겠습니까?`)) return;
@@ -10733,6 +10755,109 @@ function inventoryRenderOutgoing() {
   }).join('') + renderUnmatchedWorkedMeatList();
 }
 
+// ⭐ (2026-07-28) 부위별 합산 그룹 UI — 매칭 실패 작업육을 축종+부위로 묶어 일괄 차감
+//   예: A거래처 돼지 돈목뼈 5kg + B거래처 5kg + C거래처 3kg + D거래처 3kg = 총 16kg → 1박스 차감
+//   박스 환산은 반올림 (Math.round)
+function renderUnmatchedSummaryGroups(list) {
+  if (!list || list.length === 0) return '';
+  // 첫 2단어 (축종+부위) 로 그룹화
+  const groups = {};
+  list.forEach(function(item) {
+    const t = _wmFirstTwoTokens(item.workedName || '');
+    const key = t ? (t.축종 + ' ' + t.부위) : ('_기타_' + (item.workedName || ''));
+    if (!groups[key]) groups[key] = { label: t ? (t.축종 + ' ' + t.부위) : (item.workedName || '기타'), items: [], totalKg: 0, custs: new Set() };
+    groups[key].items.push(item);
+    groups[key].totalKg += (item.kg || 0);
+    if (item.custName) groups[key].custs.add(item.custName);
+  });
+  const groupKeys = Object.keys(groups).sort(function(a,b){
+    return groups[b].totalKg - groups[a].totalKg;   // 총 kg 큰 순
+  });
+  if (groupKeys.length === 0) return '';
+  let html = '<div style="margin-bottom:14px; padding:12px 14px; background:#E3F2FD; border-left:4px solid #1976D2; border-radius:6px;">';
+  html += '<div style="font-weight:700; color:#0D47A1; margin-bottom:8px; font-size:13px;">📊 부위별 합산 (매칭 실패) — 원료 선택 후 일괄 차감</div>';
+  html += '<table class="t" style="font-size:12px;">';
+  html += '<thead><tr>';
+  html += '<th style="width:22%;">부위</th>';
+  html += '<th class="num" style="width:12%;">총 중량</th>';
+  html += '<th class="num" style="width:8%;">거래처</th>';
+  html += '<th style="width:38%;">원료 선택</th>';
+  html += '<th class="num" style="width:8%;">환산 박스</th>';
+  html += '<th class="act">일괄 차감</th>';
+  html += '</tr></thead><tbody>';
+  groupKeys.forEach(function(gk, gi) {
+    const g = groups[gk];
+    // 대표 아이템으로 후보 계산 (같은 축종+부위는 매칭 후보 동일)
+    const rep = g.items[0];
+    const workedProduct = DB.products.find(function(p){ return p.id === rep.workedPid; });
+    const allCands = workedProduct ? getRawMaterialCandidates(workedProduct, rep.notes, 200) : [];
+    const bestPid = allCands.length > 0 ? allCands[0].product.id : '';
+    if (allCands.length === 0) return;
+    // 옵션 HTML
+    const allowedCats = _wmAllowedCategories(rep.workedName || (workedProduct && workedProduct.name), rep.notes);
+    const byCat = {};
+    allowedCats.forEach(function(cat){ byCat[cat] = []; });
+    allCands.forEach(function(c){ const cat = c.product.cut; if (byCat[cat]) byCat[cat].push(c); });
+    const optgroupsHtml = allowedCats.map(function(cat){
+      const arr = byCat[cat];
+      if (!arr || arr.length === 0) return '';
+      const opts = arr.map(function(c){
+        const stockTxt = c.stock > 0 ? ' (재고 ' + c.stock + ')' : ' (재고 0)';
+        const s = (c.product.id === bestPid) ? ' selected' : '';
+        const korM = _wmFirstTwoMatchDetail(rep.workedName, c.product.name).match;
+        const enM  = _wmFirstTwoMatchEnDetail(rep.workedName, c.product.name).match;
+        let mark = '';
+        if (korM && enM) mark = '⭐⭐ ';
+        else if (korM || enM) mark = '⭐ ';
+        if ((korM || enM) && _wmIsFrozen(c.product.name)) mark += '❄️ ';
+        return '<option value="' + c.product.id + '"' + s + '>' + mark + c.product.name + stockTxt + '</option>';
+      }).join('');
+      return '<optgroup label="▼ ' + cat + '">' + opts + '</optgroup>';
+    }).join('');
+    // 박스 환산 (반올림) — 대표 원료의 카테고리 기준 kg→box 변환
+    const bestCand = allCands[0];
+    const kgToBoxRatio = bestCand ? inventoryBoxConvert(g.totalKg, bestCand.product.cut) : g.totalKg;
+    const boxRounded = Math.max(1, Math.round(kgToBoxRatio));
+    html += '<tr>';
+    html += '<td style="font-size:12px;"><b>' + g.label + '</b><br><small style="color:var(--muted);">' + g.items.length + '개 라인</small></td>';
+    html += '<td class="num"><b>' + g.totalKg.toFixed(2) + ' kg</b></td>';
+    html += '<td class="num">' + g.custs.size + '</td>';
+    html += '<td><select id="wm_grp_sel_' + gi + '" style="width:100%; padding:4px 6px; font-size:12px;">' + optgroupsHtml + '</select></td>';
+    html += '<td class="num"><b style="color:var(--brand);">' + boxRounded + ' 박스</b><br><small style="color:var(--muted);">' + kgToBoxRatio.toFixed(2) + '박스 반올림</small></td>';
+    html += '<td class="act"><button class="btn sm success" style="font-size:11px;" onclick="applyGroupBatchDeduction(' + gi + ',' + boxRounded + ')">🔻 일괄 차감</button></td>';
+    html += '</tr>';
+    // hidden data (그룹 items 정보 저장용)
+    html += '<tr style="display:none;"><td colspan="6"><script>window._wmGrp' + gi + '=' + JSON.stringify(g.items.map(function(it){ return {orderId:it.orderId, itemIdx:it.itemIdx}; })) + ';</script></td></tr>';
+  });
+  html += '</tbody></table>';
+  html += '<div style="font-size:11px; color:#546E7A; margin-top:6px;">💡 개별 처리는 아래 리스트에서. 여기서 일괄 차감 시 그룹의 모든 라인이 선택한 원료로 처리됩니다.</div>';
+  html += '</div>';
+  return html;
+}
+
+// 그룹 일괄 차감 실행
+window.applyGroupBatchDeduction = function(gi, boxToDeduct) {
+  const items = window['_wmGrp' + gi];
+  const sel = document.getElementById('wm_grp_sel_' + gi);
+  if (!items || !sel || !sel.value) { alert('원료를 선택해주세요.'); return; }
+  const rawPid = sel.value;
+  const rawP = DB.products.find(function(p){ return p.id === rawPid; });
+  if (!rawP) { alert('원료 없음'); return; }
+  if (!confirm('부위 그룹 ' + items.length + '건을 [' + rawP.name + '] 로 일괄 차감합니다.\n(총 ' + boxToDeduct + ' 박스)\n계속?')) return;
+  // 각 라인 순차 차감
+  let ok = 0, fail = 0;
+  items.forEach(function(pair) {
+    const r = _wmDeductOne(pair.orderId, pair.itemIdx, rawPid, false);
+    if (r && r.ok) ok++;
+    else fail++;
+  });
+  try { saveLocalDB(); } catch(_){}
+  try { if (typeof DB_REF !== 'undefined' && DB_REF) DB_REF.child('inventory').set(DB.inventory); } catch(_){}
+  alert('✅ 일괄 차감 완료 — 성공 ' + ok + '건 / 실패 ' + fail + '건');
+  if (typeof renderInventory === 'function') renderInventory();
+  else location.reload();
+};
+
 // ⭐ (2026-07-07) 매칭 실패 작업육 리스트 렌더러 — 재고 화면 하단 표시
 function renderUnmatchedWorkedMeatList() {
   const list = inventoryComputeUnmatchedWorkedMeat();
@@ -10749,6 +10874,8 @@ function renderUnmatchedWorkedMeatList() {
   html += '<b style="color:#C05500;">⚠️ 자동 매칭 실패 작업육 (수동 처리 필요) — ' + list.length + '건</b>';
   html += '<div style="font-size:11px; color:#7A4A0A; margin-top:4px;">품목명·요청사항으로 원료 자동 유추 실패. 아래에서 원료를 선택하고 차감하세요. [기억] 체크 시 다음번 자동 매칭됨.</div>';
   html += '</div>';
+  // ⭐ (2026-07-28) 상단 부위별 합산 카드 (옵션 A)
+  html += renderUnmatchedSummaryGroups(list);
   custNames.forEach(custName => {
     const items = byCust[custName];
     html += '<div style="margin-bottom:14px;">';
