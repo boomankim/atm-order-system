@@ -10759,6 +10759,7 @@ function viewInventory() {
         <button class="btn" id="invStocktakeToggleBtn" onclick="inventoryToggleStocktake()">📋 품목 리스트 펼치기</button>
         <button class="btn warn" id="invStocktakeApplyBtn" onclick="inventoryApplyStocktakeBulk()" style="display:none;">✅ 일괄 실사 적용</button>
         <button class="btn sm secondary" id="invStocktakeClearBtn" onclick="inventoryClearStocktakeInputs()" style="display:none;">🧹 입력값 초기화</button>
+        <button class="btn sm" style="background:var(--info);" onclick="printStocktakeSheet()" title="실사용 인쇄 (카테고리별 페이지 · 실사 수량·합계 기입란)">🖨️ 실사 인쇄</button>
       </div>
       <div id="invStocktakeWrap" style="display:none;"></div>
     </div>
@@ -10768,6 +10769,119 @@ function viewInventory() {
   // 월 실사 품목 리스트는 토글 버튼 클릭 시에만 렌더링 (lazy)
   inventoryRefreshFolderInfo();
 }
+
+// ⭐ (2026-07-29) 월 실사용 인쇄 시트 — 카테고리별 페이지, 시스템 재고 미표시
+//   컬럼: 품목 | 브랜드 | 실사 수량 (아주 넓음) | 합계 (넓음)
+//   실사 수량은 여러 저장고/위치별로 나눠 적을 수 있게 매우 넉넉하게. 합계는 최종 합.
+window.printStocktakeSheet = function() {
+  const dateISO = todayLocalISO();
+  const dateDMY = formatDateDMY(dateISO);
+  const company = (DB.company && DB.company.name) || 'ALL THAT MEAT WHOLESALE PTY LTD';
+  const cats = INVENTORY_CATEGORIES;   // 시스템 분류 순서
+  // 카테고리별 활성 품목 (시스템 등록 순서 유지)
+  const byCat = {};
+  cats.forEach(c => { byCat[c] = []; });
+  DB.products.forEach(p => {
+    if (!p || p.active === false) return;
+    if (!cats.includes(p.cut)) return;
+    byCat[p.cut].push(p);
+  });
+  const activeCats = cats.filter(c => byCat[c].length > 0);
+  const totalPages = activeCats.length;
+  function esc(s) {
+    return String(s == null ? '' : s)
+      .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  }
+  function catPageHTML(cat, pageNum) {
+    const items = byCat[cat];
+    // 각 행 높이 계산: A4 세로에서 표 영역 유효 높이 ~ 240mm, 헤더/여백 뺀 후 나눔
+    // 항목 많으면 자동으로 다음 페이지로 (page-break-inside: avoid on tr)
+    const rows = items.map(p => `
+      <tr>
+        <td class="c-name"><b>${esc(p.name)}</b></td>
+        <td class="c-brand">${esc(p.brand || '-')}</td>
+        <td class="c-count"></td>
+        <td class="c-sum"></td>
+      </tr>
+    `).join('');
+    return `
+      <div class="page">
+        <div class="hdr">
+          <div>
+            <div class="title">월 재고 실사 · ${esc(cat)}</div>
+            <div class="sub">${esc(company)}</div>
+          </div>
+          <div class="right">
+            <div class="date">${dateDMY}</div>
+            <div class="pgnum">페이지 ${pageNum} / ${totalPages}</div>
+          </div>
+        </div>
+        <table class="pt">
+          <colgroup>
+            <col style="width:32%;">
+            <col style="width:12%;">
+            <col style="width:40%;">
+            <col style="width:16%;">
+          </colgroup>
+          <thead>
+            <tr>
+              <th class="c-name">품목</th>
+              <th class="c-brand">브랜드</th>
+              <th class="c-count">실사 수량 (기입)</th>
+              <th class="c-sum">합계</th>
+            </tr>
+          </thead>
+          <tbody>${rows}</tbody>
+        </table>
+        <div class="footer">${esc(cat)} · ${items.length}개 품목 · ATM Order Management System</div>
+      </div>
+    `;
+  }
+  const html = '<!DOCTYPE html>' +
+    '<html lang="ko"><head><meta charset="utf-8">' +
+    '<title>ATM_월재고실사_' + dateISO + '</title>' +
+    '<style>' +
+    '  @page { size: A4 portrait; margin: 12mm 10mm; }' +
+    '  * { box-sizing: border-box; }' +
+    '  html, body { margin: 0; padding: 0; }' +
+    '  body { font-family: -apple-system, "Malgun Gothic", "맑은 고딕", sans-serif; color: #222; }' +
+    '  .page { page-break-after: always; padding: 0; }' +
+    '  .page:last-child { page-break-after: auto; }' +
+    '  .hdr { display: flex; justify-content: space-between; align-items: flex-end;' +
+    '         border-bottom: 2px solid #5C0F0F; padding-bottom: 5px; margin-bottom: 8px; }' +
+    '  .title { font-size: 16px; font-weight: 700; color: #5C0F0F; }' +
+    '  .sub { font-size: 10px; color: #666; margin-top: 2px; }' +
+    '  .right { text-align: right; font-size: 10px; color: #666; }' +
+    '  .date { font-size: 13px; font-weight: 700; color: #5C0F0F; }' +
+    '  table.pt { width: 100%; border-collapse: collapse; table-layout: fixed; font-size: 12px; }' +
+    '  table.pt th, table.pt td { border: 1px solid #999; padding: 4px 8px; }' +
+    '  table.pt th { background: #FAF0E8; color: #5C0F0F; font-weight: 700; text-align: left;' +
+    '                font-size: 12px; }' +
+    '  table.pt th.c-count, table.pt th.c-sum { text-align: center; }' +
+    '  table.pt tr { page-break-inside: avoid; }' +
+    '  table.pt td.c-name { font-weight: 600; }' +
+    '  table.pt td.c-brand { color: #666; font-size: 11px; }' +
+    '  /* ⭐ 실사 수량 칸: 아주 넉넉하게 (높이·폭 모두) */' +
+    '  table.pt tbody tr { height: 42px; }' +
+    '  table.pt td.c-count { background: #FFFEF5; }' +
+    '  table.pt td.c-sum   { background: #F5FAFF; }' +
+    '  .footer { margin-top: 6px; font-size: 9px; color: #888; text-align: right;' +
+    '            padding-top: 4px; border-top: 1px solid #eee; }' +
+    '  @media print {' +
+    '    body { -webkit-print-color-adjust: exact; print-color-adjust: exact; }' +
+    '  }' +
+    '</style>' +
+    '</head><body>' +
+    activeCats.map((c, i) => catPageHTML(c, i + 1)).join('') +
+    '</body></html>';
+  const w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('팝업이 차단되었습니다. 브라우저의 팝업 차단을 해제해주세요.'); return; }
+  w.document.open();
+  w.document.write(html);
+  w.document.close();
+  w.focus();
+  setTimeout(() => { try { w.print(); } catch(e) { console.warn(e); } }, 400);
+};
 
 window.inventoryToggleStocktake = function() {
   const wrap = document.getElementById('invStocktakeWrap');
@@ -11163,27 +11277,34 @@ function _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag) {
   const packBox = inventoryPackToBox(addedPack, rawP.cut);
   const kgBox = inventoryBoxConvert(addedKg, rawP.cut);
   const totalDeduct = addedBox + packBox + kgBox;
-  if (totalDeduct <= 0) return { ok:false, error: '차감할 중량 없음 (중량 미입력)' };
-  // ⭐ (2026-07-28) 정책 변경 — 재고 부족 시에도 마이너스 차감 허용 (자동차감과 동일)
-  //   재고가 부족한 경우 stock 이 음수가 됨. 재고 화면에서 (괄호) 표기로 시각화됨.
-  //   부만님 요청: 실제 출고는 되었지만 원료 등록이 늦었을 수 있으므로 차감 진행.
+  // ⭐ (2026-07-29) 중량이 있으면 0박스라도 매칭 확정 처리 (라인 리스트에서 사라짐)
+  //   예: 돼지 목뼈 실중량 2.5kg → 3kg 미만 구간 = 0박스. 재고는 안 건드리지만 처리 완료 기록.
+  //   중량 자체가 아예 0인 경우만 실패 반환.
+  if (addedKg <= 0 && addedPack <= 0 && addedBox <= 0) {
+    return { ok:false, error: '중량 미입력 (계근 필요)' };
+  }
+  // ⭐ (2026-07-28) 재고 부족 시에도 마이너스 차감 허용 (자동차감과 동일)
   const invE = inventoryEnsureProduct(rawPid);
-  const willBeNegative = (invE.stock || 0) < totalDeduct;
-  invE.deductedToday = (invE.deductedToday || 0) + totalDeduct;
-  invE.stock = (invE.stock || 0) - totalDeduct;
-  // 감사 추적 저장
+  const willBeNegative = totalDeduct > 0 && (invE.stock || 0) < totalDeduct;
+  if (totalDeduct > 0) {
+    invE.deductedToday = (invE.deductedToday || 0) + totalDeduct;
+    invE.stock = (invE.stock || 0) - totalDeduct;
+  }
+  // 감사 추적 저장 (0박스도 기록 → 리스트에서 사라짐)
   if (!DB.inventory.workedMeatDeductions) DB.inventory.workedMeatDeductions = {};
   if (!DB.inventory.workedMeatDeductions[orderId]) DB.inventory.workedMeatDeductions[orderId] = [];
   DB.inventory.workedMeatDeductions[orderId].push({
     workedPid: workedP ? workedP.id : it.productId,
     rawPid, itemIdx,
     kg: addedKg, pack: addedPack, box: addedBox,
+    boxDeducted: totalDeduct,
     manual: true, at: new Date().toISOString()
   });
   // 학습 저장 (선택 시)
   if (rememberFlag && workedP) learnWorkedMeatMapping(workedP.id, rawPid);
   const negNote = willBeNegative ? ' ⚠️ 재고 마이너스 (' + invE.stock + ')' : '';
-  return { ok:true, msg: rawP.name + ' -' + totalDeduct + '박스' + negNote };
+  const zeroNote = totalDeduct === 0 ? ' (0박스 — 구간 미달, 처리만 완료)' : '';
+  return { ok:true, msg: rawP.name + (totalDeduct > 0 ? ' -' + totalDeduct + '박스' : '') + negNote + zeroNote };
 }
 
 // 전체 일괄 차감: 오늘 배송완료 + 아직 미차감 주문 전부 적용
