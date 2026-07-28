@@ -5837,7 +5837,7 @@ window.printDailyReport = function() {
       <tbody>
         ${colRows.map(r => `<tr>
           <td class="cust"><b>${r.c.name}</b></td>
-          <td style="font-size:7px;">${termsLabel(r.c.terms)}</td>
+          <td style="font-size:7px;">${termsLabel(r.c.terms).replace('현금/Cash','cash')}</td>
           <td class="num">${fmtMoney(r.priorBalance)}</td>
           <td class="num"${r.todaySales > 0.001 ? ' style="color:#5C0F0F;"' : ' style="color:#bbb;"'}>${r.todaySales > 0.001 ? fmtMoney(r.todaySales) : '–'}</td>
           <td class="num"${r.todayPaid > 0.001 ? ' style="color:#2E7D32;"' : ' style="color:#bbb;"'}>${r.todayPaid > 0.001 ? fmtMoney(r.todayPaid) : '–'}</td>
@@ -5991,7 +5991,7 @@ function buildDailyReportPDFHTML(rows, totals, dateISO) {
       <tbody>
         ${colRows.map(r => `<tr>
           <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;word-break:keep-all;font-size:8px;"><b>${r.c.name}</b></td>
-          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;font-size:8px;">${termsLabel(r.c.terms)}</td>
+          <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;font-size:8px;">${termsLabel(r.c.terms).replace('현금/Cash','cash')}</td>
           <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;">${fmtMoney(r.priorBalance)}</td>
           <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;${r.todaySales > 0.001 ? 'color:#5C0F0F;' : 'color:#bbb;'}">${r.todaySales > 0.001 ? fmtMoney(r.todaySales) : '–'}</td>
           <td style="padding:3px 4px;border-bottom:1px solid #e2e2e2;text-align:right;${r.todayPaid > 0.001 ? 'color:#2E7D32;' : 'color:#bbb;'}">${r.todayPaid > 0.001 ? fmtMoney(r.todayPaid) : '–'}</td>
@@ -11687,54 +11687,63 @@ if (FIREBASE_READY && DB_REF) {
       <div style="margin-top:8px; font-size:13px;">실시간 연결 중... / Connecting...</div>
     </div>`;
 
-  // Phase 2-D: 어떤 화면에서 입력 중이면 자동 새로고침으로 입력값이 사라지는 걸 방지
-  // ⭐ (2026-07-26) 사무실/스테이트먼트 추가 + 사용자 활동 감지 (A+C)
+  // ⭐ (2026-07-28) 정책 변경 — 모든 화면에서 자동 재렌더 완전 비활성화.
+  //   이유: 화면별 개별 관리 시 놓치는 화면(#inventory/#warehouse 등) 있어 스크롤·클릭 위치 튀는 문제.
+  //   대신: 우상단 알림 pill만 표시. 사용자가 클릭하면 새로고침 → 최신 반영.
+  //   편집 중(input focus or 최근 활동)일 때만 DB 메모리도 갱신 skip (편집값 보호).
   function isSensitiveEntryScreen() {
-    const hash = location.hash || '';
-    return _isOrderEntry
-      || hash.indexOf('#weigh') === 0
-      || hash.indexOf('#invoicePrep') === 0
-      || hash.indexOf('#payment') === 0
-      || hash.indexOf('#admin') === 0
-      || hash.indexOf('#office') === 0        // ⭐ A: 사무실 페이지 (미수금 입력)
-      || hash.indexOf('#statement') === 0     // ⭐ A: 스테이트먼트
-      || hash.indexOf('#history') === 0       // ⭐ A: 주문 이력 (편집 가능)
-      || _hasRecentUserActivity()             // ⭐ C: 최근 사용자 활동 (드래그/타이핑 중)
-      || document.getElementById('modalBg') !== null;
+    // 모든 화면 sensitive 취급 → 자동 재렌더 안 함
+    return true;
+  }
+  // 편집 중 판정: input/textarea 포커스 or 최근 활동
+  function _isUserEditing() {
+    const ae = document.activeElement;
+    if (ae && (ae.tagName === 'INPUT' || ae.tagName === 'TEXTAREA' || ae.isContentEditable)) return true;
+    if (_hasRecentUserActivity()) return true;
+    if (document.getElementById('modalBg') !== null) return true;
+    return false;
   }
 
-  // ⭐ (2026-07-27) 동기화 알림 — 우상단 작은 알약(pill) 형태로 변경.
-  //   본 내용을 가리지 않도록 top:60px, right:12px 에 배치 (nav 아래 우측 구석).
-  //   isSensitive: 빨간 경고 (사용자 직접 닫기) · else: 파란 정보 (4초 자동 사라짐)
-  function showSyncBanner(isSensitive) {
+  // ⭐ (2026-07-28) 알림 pill — 클릭 시 자동 새로고침
+  //   isEditing=true (편집 중): 빨간 pill, 클릭 시 "저장 안 한 내용 있을 수 있음" 확인 후 새로고침
+  //   isEditing=false (읽기 중): 파란 pill, 클릭 즉시 새로고침. 4초 후 자동 사라짐
+  function showSyncBanner(isEditing) {
     let banner = document.getElementById('sync-banner');
     if (banner) banner.remove();
     banner = document.createElement('div');
     banner.id = 'sync-banner';
     const baseStyle =
       'position:fixed; top:60px; right:12px; ' +
-      'padding:7px 14px; border-radius:20px; ' +
+      'padding:8px 14px; border-radius:20px; ' +
       'font-size:12px; font-weight:600; ' +
       'z-index:9999; cursor:pointer; ' +
       'box-shadow:0 3px 10px rgba(0,0,0,0.25); ' +
-      'max-width:340px; ' +
-      'animation: syncPillIn 0.25s ease-out;';
-    if (isSensitive) {
+      'max-width:360px; ' +
+      'animation: syncPillIn 0.25s ease-out; ' +
+      'user-select:none;';
+    if (isEditing) {
       banner.style.cssText = baseStyle + 'background:#C0392B; color:#fff; border:1.5px solid #7A1A0A;';
-      banner.innerHTML = '⚠️ 다른 사용자 업데이트 · 저장 후 새로고침 <span style="opacity:0.7; margin-left:6px;">✕</span>';
-      banner.onclick = () => banner.remove();
-      // 입력 중엔 자동으로 안 사라짐 — 클릭해서 닫기
+      banner.innerHTML = '⚠️ 다른 사용자 업데이트 — <u>클릭하여 새로고침</u>';
+      banner.onclick = function() {
+        if (confirm('저장 안 한 내용이 있을 수 있습니다.\n\n지금 새로고침할까요?\n(입력한 값이 저장되지 않았다면 사라집니다)')) {
+          location.reload();
+        }
+      };
+      // 편집 중엔 자동으로 안 사라짐 — 사용자가 클릭할 때까지 대기
     } else {
       banner.style.cssText = baseStyle + 'background:#2E5C8A; color:#fff; border:1.5px solid #1A3A5A;';
-      banner.innerHTML = '🔄 데이터 업데이트됨';
-      banner.onclick = () => banner.remove();
-      setTimeout(() => { banner && banner.remove(); }, 4000);
+      banner.innerHTML = '🔄 데이터 업데이트됨 — <u>클릭하여 새로고침</u>';
+      banner.onclick = function() { location.reload(); };
+      setTimeout(function() {
+        const b = document.getElementById('sync-banner');
+        if (b) b.remove();
+      }, 6000);   // 4→6초로 여유 (클릭할 시간 확보)
     }
     // 애니메이션 CSS 1회만 주입
     if (!document.getElementById('sync-pill-anim')) {
       const st = document.createElement('style');
       st.id = 'sync-pill-anim';
-      st.textContent = '@keyframes syncPillIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } }';
+      st.textContent = '@keyframes syncPillIn { from { opacity:0; transform:translateY(-8px); } to { opacity:1; transform:translateY(0); } } #sync-banner:hover { filter: brightness(1.1); }';
       document.head.appendChild(st);
     }
     document.body.appendChild(banner);
@@ -11760,43 +11769,18 @@ if (FIREBASE_READY && DB_REF) {
     }
   });
 
-  // ⭐ (2026-07-26) B: 스크롤 위치 자동 보존 + C: 활동 시 defer
-  let _pendingRerenderTimer = null;
+  // ⭐ (2026-07-28) 완전 자동 재렌더 비활성화 정책
+  //   - 자동 재렌더 X → 스크롤·클릭 위치 절대 안 튐
+  //   - 편집 중: DB 메모리 갱신 안 함 (편집값 보호) + 빨간 pill
+  //   - 읽기 중: DB 메모리 조용히 갱신 + 파란 pill (다음 클릭 시 최신 반영)
+  //   - pill 클릭 시 자동 새로고침 (편집 중이면 확인 팝업)
   function _handleRemoteUpdate(data) {
-    const sensitive = isSensitiveEntryScreen();
-    if (sensitive) {
-      // 입력 중이거나 편집 화면 — DB 메모리 덮어쓰기 안 함, 배너로만 알림
-      showSyncBanner(true);
-      // 활동만으로 sensitive가 된 경우 → 조용해지면 다시 시도
-      if (_hasRecentUserActivity()) {
-        if (_pendingRerenderTimer) clearTimeout(_pendingRerenderTimer);
-        _pendingRerenderTimer = setTimeout(function(){
-          _pendingRerenderTimer = null;
-          _handleRemoteUpdate(data);
-        }, ACTIVITY_QUIET_MS + 200);
-      }
-      return;
-    }
-    // 안전 — 데이터 반영 + 재렌더 (스크롤 위치 유지)
-    if (data) {
+    const editing = _isUserEditing();
+    if (!editing && data) {
       DB = data;
       saveLocalDB();
     }
-    showSyncBanner(false);
-    const savedY = window.scrollY || 0;
-    const savedFocus = document.activeElement && document.activeElement.id;
-    window._preserveScrollOnce = true;    // route()에게 최상단 스크롤 건너뛰라고 알림
-    route();
-    // 재렌더 후 스크롤 복원 (RAF 로 레이아웃 완료 대기)
-    requestAnimationFrame(function(){
-      requestAnimationFrame(function(){
-        try { window.scrollTo(0, savedY); } catch(_){}
-        if (savedFocus) {
-          const el = document.getElementById(savedFocus);
-          if (el && typeof el.focus === 'function') { try { el.focus(); } catch(_){} }
-        }
-      });
-    });
+    showSyncBanner(editing);
   }
 } else {
   // Firebase 미설정 — localStorage 단독 모드
