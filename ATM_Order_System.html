@@ -10194,13 +10194,48 @@ const INVENTORY_BOX_RULES = {
   // 오리·양고기·가공육은 kg 환산 규칙 없음 (박스/팩 단위만)
 };
 
-// kg 누적값을 박스로 환산: floor(kg/boxKg) + (나머지 ≥ threshold ? 1 : 0)
+// ⭐ (2026-07-29) 단계별 소수점 박스 환산표
+//   축종별 kg 구간 → 0 / 0.2 / 0.4 / 0.6 / 0.8 / 1.0 박스
+//   Pork/Duck/Lamb : 3 kg 단위 구간 · Beef/Wagyu : 4 kg 단위 구간 (더 큼)
+//   같은 원료를 여러 주문이 각각 소수점으로 나눠 차감 → 재고 정밀 추적
+const INVENTORY_STEP_TABLE = {
+  // 돼지고기·오리·양고기 계열 (작은 박스 = 15kg 이상 1박스)
+  small: [
+    { min: 0,  max: 3,   box: 0.0 },
+    { min: 3,  max: 6,   box: 0.2 },
+    { min: 6,  max: 9,   box: 0.4 },
+    { min: 9,  max: 12,  box: 0.6 },
+    { min: 12, max: 15,  box: 0.8 },
+    { min: 15, max: Infinity, box: 1.0 },
+  ],
+  // 소·와규 계열 (큰 박스 = 19kg 이상 1박스)
+  large: [
+    { min: 0,  max: 3,   box: 0.0 },
+    { min: 3,  max: 7,   box: 0.2 },
+    { min: 7,  max: 11,  box: 0.4 },
+    { min: 11, max: 15,  box: 0.6 },
+    { min: 15, max: 19,  box: 0.8 },
+    { min: 19, max: Infinity, box: 1.0 },
+  ],
+};
+function _wmStepTableFor(cut) {
+  if (cut === '소고기' || cut === '와규') return INVENTORY_STEP_TABLE.large;
+  return INVENTORY_STEP_TABLE.small;   // 돼지고기·오리·양고기 등
+}
+
+// 단계별 소수점 박스 환산 — 실중량(kg) → 박스 (0/0.2/0.4/0.6/0.8/1.0)
+// 경계값은 옵션 A (예: 3kg 정확히 = 0.2)
 function inventoryBoxConvert(kgTotal, cut) {
-  const rule = INVENTORY_BOX_RULES[cut];
-  if (!rule || !kgTotal || kgTotal <= 0) return 0;
-  const full = Math.floor(kgTotal / rule.boxKg);
-  const rem = kgTotal - (full * rule.boxKg);
-  return full + (rem >= rule.threshold ? 1 : 0);
+  if (!kgTotal || kgTotal <= 0) return 0;
+  const table = _wmStepTableFor(cut);
+  for (let i = 0; i < table.length; i++) {
+    const row = table[i];
+    // min <= kg < max  (min=0인 첫 구간만 0=0 특별 처리 — 0kg 자체는 0)
+    if (kgTotal >= row.min && (kgTotal < row.max || row.max === Infinity)) {
+      return row.box;
+    }
+  }
+  return 0;
 }
 
 // =========================================================================
@@ -10541,11 +10576,13 @@ function inventoryEnsureProduct(pid) {
   return inv.byProduct[pid];
 }
 
-// 음수 재고 표기: 음수면 (절댓값), 양수/0 이면 그대로 숫자
+// ⭐ (2026-07-29) 소수점 한 자리 표시 — 단계별 박스 차감 도입 후 0.2/0.4/0.6/0.8 표기 지원
+//   음수 재고 표기: (절댓값). 정수면 정수, 소수면 소수 한 자리.
 function inventoryFmt(n) {
-  const v = Math.round(n || 0);
-  if (v < 0) return '(' + Math.abs(v) + ')';
-  return String(v);
+  const v = Math.round((n || 0) * 10) / 10;   // 소수점 1자리 반올림
+  const abs = Math.abs(v);
+  const s = (abs % 1 === 0) ? String(abs) : abs.toFixed(1);
+  return v < 0 ? '(' + s + ')' : s;
 }
 
 // 오늘 배송완료된 주문에서 품목별 출고 집계 (제품 ID 기준)
@@ -10988,106 +11025,8 @@ function inventoryRenderOutgoing() {
   }).join('') + renderUnmatchedWorkedMeatList();
 }
 
-// ⭐ (2026-07-28) 부위별 합산 그룹 UI — 매칭 실패 작업육을 축종+부위로 묶어 일괄 차감
-//   예: A거래처 돼지 돈목뼈 5kg + B거래처 5kg + C거래처 3kg + D거래처 3kg = 총 16kg → 1박스 차감
-//   박스 환산은 반올림 (Math.round)
-window._wmGroups = null;   // 그룹 데이터를 window 에 직접 저장 (inline script 회피)
-function renderUnmatchedSummaryGroups(list) {
-  if (!list || list.length === 0) return '';
-  // 첫 2단어 (축종+부위) 로 그룹화
-  const groups = {};
-  list.forEach(function(item) {
-    const t = _wmFirstTwoTokens(item.workedName || '');
-    const key = t ? (t.축종 + ' ' + t.부위) : ('_기타_' + (item.workedName || ''));
-    if (!groups[key]) groups[key] = { label: t ? (t.축종 + ' ' + t.부위) : (item.workedName || '기타'), items: [], totalKg: 0, custs: new Set() };
-    groups[key].items.push(item);
-    groups[key].totalKg += (item.kg || 0);
-    if (item.custName) groups[key].custs.add(item.custName);
-  });
-  const groupKeys = Object.keys(groups).sort(function(a,b){
-    return groups[b].totalKg - groups[a].totalKg;
-  });
-  if (groupKeys.length === 0) return '';
-  // window 에 그룹 정보 저장 (일괄 차감 시 참조)
-  window._wmGroups = groupKeys.map(function(gk){ return groups[gk].items.map(function(it){ return {orderId:it.orderId, itemIdx:it.itemIdx}; }); });
-  let html = '<div style="margin-bottom:14px; padding:12px 14px; background:#E3F2FD; border-left:4px solid #1976D2; border-radius:6px;">';
-  html += '<div style="font-weight:700; color:#0D47A1; margin-bottom:8px; font-size:13px;">📊 부위별 합산 (매칭 실패) — 원료 선택 후 일괄 차감</div>';
-  html += '<table class="t" style="font-size:12px;">';
-  html += '<thead><tr>';
-  html += '<th style="width:22%;">부위</th>';
-  html += '<th class="num" style="width:12%;">총 중량</th>';
-  html += '<th class="num" style="width:8%;">거래처</th>';
-  html += '<th style="width:38%;">원료 선택</th>';
-  html += '<th class="num" style="width:8%;">환산 박스</th>';
-  html += '<th class="act">일괄 차감</th>';
-  html += '</tr></thead><tbody>';
-  groupKeys.forEach(function(gk, gi) {
-    const g = groups[gk];
-    const rep = g.items[0];
-    const workedProduct = DB.products.find(function(p){ return p.id === rep.workedPid; });
-    const allCands = workedProduct ? getRawMaterialCandidates(workedProduct, rep.notes, 200) : [];
-    const bestPid = allCands.length > 0 ? allCands[0].product.id : '';
-    if (allCands.length === 0) return;
-    const allowedCats = _wmAllowedCategories(rep.workedName || (workedProduct && workedProduct.name), rep.notes);
-    const byCat = {};
-    allowedCats.forEach(function(cat){ byCat[cat] = []; });
-    allCands.forEach(function(c){ const cat = c.product.cut; if (byCat[cat]) byCat[cat].push(c); });
-    const optgroupsHtml = allowedCats.map(function(cat){
-      const arr = byCat[cat];
-      if (!arr || arr.length === 0) return '';
-      const opts = arr.map(function(c){
-        const stockTxt = c.stock > 0 ? ' (재고 ' + c.stock + ')' : ' (재고 0)';
-        const s = (c.product.id === bestPid) ? ' selected' : '';
-        const korM = _wmFirstTwoMatchDetail(rep.workedName, c.product.name).match;
-        const enM  = _wmFirstTwoMatchEnDetail(rep.workedName, c.product.name).match;
-        let mark = '';
-        if (korM && enM) mark = '⭐⭐ ';
-        else if (korM || enM) mark = '⭐ ';
-        if ((korM || enM) && _wmIsFrozen(c.product.name)) mark += '❄️ ';
-        return '<option value="' + c.product.id + '"' + s + '>' + mark + c.product.name + stockTxt + '</option>';
-      }).join('');
-      return '<optgroup label="▼ ' + cat + '">' + opts + '</optgroup>';
-    }).join('');
-    const bestCand = allCands[0];
-    const kgToBoxRatio = bestCand ? inventoryBoxConvert(g.totalKg, bestCand.product.cut) : g.totalKg;
-    const boxRounded = Math.max(1, Math.round(kgToBoxRatio));
-    html += '<tr>';
-    html += '<td style="font-size:12px;"><b>' + g.label + '</b><br><small style="color:var(--muted);">' + g.items.length + '개 라인</small></td>';
-    html += '<td class="num"><b>' + g.totalKg.toFixed(2) + ' kg</b></td>';
-    html += '<td class="num">' + g.custs.size + '</td>';
-    html += '<td><select id="wm_grp_sel_' + gi + '" style="width:100%; padding:4px 6px; font-size:12px;">' + optgroupsHtml + '</select></td>';
-    html += '<td class="num"><b style="color:var(--brand);">' + boxRounded + ' 박스</b><br><small style="color:var(--muted);">' + kgToBoxRatio.toFixed(2) + '박스 반올림</small></td>';
-    html += '<td class="act"><button class="btn sm success" style="font-size:11px;" onclick="applyGroupBatchDeduction(' + gi + ',' + boxRounded + ')">🔻 일괄 차감</button></td>';
-    html += '</tr>';
-  });
-  html += '</tbody></table>';
-  html += '<div style="font-size:11px; color:#546E7A; margin-top:6px;">💡 개별 처리는 아래 리스트에서. 여기서 일괄 차감 시 그룹의 모든 라인이 선택한 원료로 처리됩니다.</div>';
-  html += '</div>';
-  return html;
-}
-
-// 그룹 일괄 차감 실행 — window._wmGroups[gi] 배열의 각 라인 처리
-window.applyGroupBatchDeduction = function(gi, boxToDeduct) {
-  const items = window._wmGroups && window._wmGroups[gi];
-  const sel = document.getElementById('wm_grp_sel_' + gi);
-  if (!items || !items.length) { alert('그룹 데이터가 없습니다. 새로고침 후 재시도.'); return; }
-  if (!sel || !sel.value) { alert('원료를 선택해주세요.'); return; }
-  const rawPid = sel.value;
-  const rawP = DB.products.find(function(p){ return p.id === rawPid; });
-  if (!rawP) { alert('원료 없음'); return; }
-  if (!confirm('부위 그룹 ' + items.length + '건을 [' + rawP.name + '] 로 일괄 차감합니다.\n(총 ' + boxToDeduct + ' 박스)\n계속?')) return;
-  let ok = 0, fail = 0;
-  items.forEach(function(pair) {
-    const r = _wmDeductOne(pair.orderId, pair.itemIdx, rawPid, false);
-    if (r && r.ok) ok++;
-    else fail++;
-  });
-  try { saveLocalDB(); } catch(_){}
-  try { if (typeof DB_REF !== 'undefined' && DB_REF) DB_REF.child('inventory').set(DB.inventory); } catch(_){}
-  alert('✅ 일괄 차감 완료 — 성공 ' + ok + '건 / 실패 ' + fail + '건');
-  if (typeof renderInventory === 'function') renderInventory();
-  else location.reload();
-};
+// ⭐ (2026-07-29) 부위별 합산 카드 제거 — 단계별 소수점 차감으로 대체됨
+// (구 renderUnmatchedSummaryGroups / applyGroupBatchDeduction 삭제)
 
 // ⭐ (2026-07-07) 매칭 실패 작업육 리스트 렌더러 — 재고 화면 하단 표시
 function renderUnmatchedWorkedMeatList() {
@@ -11105,8 +11044,7 @@ function renderUnmatchedWorkedMeatList() {
   html += '<b style="color:#C05500;">⚠️ 자동 매칭 실패 작업육 (수동 처리 필요) — ' + list.length + '건</b>';
   html += '<div style="font-size:11px; color:#7A4A0A; margin-top:4px;">품목명·요청사항으로 원료 자동 유추 실패. 아래에서 원료를 선택하고 차감하세요. [기억] 체크 시 다음번 자동 매칭됨.</div>';
   html += '</div>';
-  // ⭐ (2026-07-28) 상단 부위별 합산 카드 (옵션 A)
-  html += renderUnmatchedSummaryGroups(list);
+  // ⭐ (2026-07-29) 부위별 합산 카드 제거됨 — 단계별 소수점 차감으로 대체
   custNames.forEach(custName => {
     const items = byCust[custName];
     html += '<div style="margin-bottom:14px;">';
@@ -11598,24 +11536,25 @@ function inventoryCategoryBlockHTML(item) {
         </span>
       </div>
       ${s.products.length === 0 ? `<div style="font-size:8px; color:#888; padding:2px 6px;">등록 품목 없음</div>` : `
+      <!-- ⭐ (2026-07-29) 소수점 한 자리 표시 대응: 컬럼 폭 확대 + tabular-nums + nowrap -->
       <table style="width:100%; border-collapse:collapse; font-size:8px; table-layout:fixed;">
         <thead>
           <tr style="background:#F0E5D8;">
             <th style="text-align:left; padding:2px 4px; border:1px solid #D8C6B0;">품목</th>
-            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:34px;">전</th>
-            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:34px;">입</th>
-            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:34px;">출</th>
-            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:38px;">현</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:42px;">전</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:42px;">입</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:42px;">출</th>
+            <th style="text-align:right; padding:2px 4px; border:1px solid #D8C6B0; width:46px;">현</th>
           </tr>
         </thead>
         <tbody>
           ${s.products.map(({p, e}) => `
             <tr>
               <td style="padding:2px 4px; border:1px solid #E5DCD3; word-break:break-word;">${p.name}</td>
-              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right;">${inventoryFmt(e.prev)}</td>
-              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; color:#2F7D32;">${inventoryFmt(e.receivedToday)}</td>
-              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; color:#B8860B;">${inventoryFmt(e.deductedToday)}</td>
-              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; font-weight:700;">${inventoryFmt(e.stock)}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; white-space:nowrap; font-variant-numeric:tabular-nums;">${inventoryFmt(e.prev)}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; color:#2F7D32; white-space:nowrap; font-variant-numeric:tabular-nums;">${inventoryFmt(e.receivedToday)}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; color:#B8860B; white-space:nowrap; font-variant-numeric:tabular-nums;">${inventoryFmt(e.deductedToday)}</td>
+              <td style="padding:2px 4px; border:1px solid #E5DCD3; text-align:right; font-weight:700; white-space:nowrap; font-variant-numeric:tabular-nums;">${inventoryFmt(e.stock)}</td>
             </tr>
           `).join('')}
         </tbody>
