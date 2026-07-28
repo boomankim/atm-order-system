@@ -1362,12 +1362,23 @@ function viewHome() {
     </div>
 
     <div class="card">
-      <h3>🥩 오늘의 작업육 <span style="font-weight:400; font-size:12px; color:var(--muted);">— 품목명에 "작업" 포함된 분류, 거래처별 정리</span></h3>
+      <h3>🥩 오늘의 작업육
+        <span style="font-weight:400; font-size:12px; color:var(--muted);">— 작업 필요 품목</span>
+        <span style="float:right;">
+          <button id="workViewCustBtn" class="btn sm" onclick="setTodayWorkView('cust')">👥 거래처별</button>
+          <button id="workViewProdBtn" class="btn sm secondary" onclick="setTodayWorkView('prod')">📦 품목별</button>
+        </span>
+      </h3>
       <div id="processingToday"></div>
     </div>
 
     <div class="card">
-      <h3>🚚 오늘 배송 예정 / Today's Deliveries</h3>
+      <h3>🚚 오늘 배송 예정 / Today's Deliveries
+        <span style="float:right;">
+          <button id="delivViewCustBtn" class="btn sm" onclick="setTodayDeliveryView('cust')">👥 거래처별</button>
+          <button id="delivViewProdBtn" class="btn sm secondary" onclick="setTodayDeliveryView('prod')">📦 품목별</button>
+        </span>
+      </h3>
       <div id="recentOrders"></div>
     </div>
 
@@ -1394,12 +1405,93 @@ function viewHome() {
   renderRecentOrders();
 }
 
+// ⭐ (2026-07-28) 홈 오늘의 작업/배송 뷰 모드 상태
+window._todayWorkView = window._todayWorkView || 'cust';       // 'cust' | 'prod'
+window._todayDeliveryView = window._todayDeliveryView || 'cust';
+
+window.setTodayWorkView = function(mode) {
+  window._todayWorkView = mode;
+  ['workViewCustBtn','workViewProdBtn'].forEach(function(id){
+    const el = document.getElementById(id);
+    if (el) el.classList.add('secondary');
+  });
+  const active = document.getElementById(mode === 'cust' ? 'workViewCustBtn' : 'workViewProdBtn');
+  if (active) active.classList.remove('secondary');
+  renderProcessingToday();
+};
+window.setTodayDeliveryView = function(mode) {
+  window._todayDeliveryView = mode;
+  ['delivViewCustBtn','delivViewProdBtn'].forEach(function(id){
+    const el = document.getElementById(id);
+    if (el) el.classList.add('secondary');
+  });
+  const active = document.getElementById(mode === 'cust' ? 'delivViewCustBtn' : 'delivViewProdBtn');
+  if (active) active.classList.remove('secondary');
+  renderRecentOrders();
+};
+
 function renderProcessingToday() {
   const div = document.getElementById('processingToday');
   if (!div) return;
   const today = todayLocalISO();
   const tomorrowDate = new Date(); tomorrowDate.setDate(tomorrowDate.getDate() + 1);
   const tomorrow = toLocalISODate(tomorrowDate);
+
+  // ⭐ 품목별 뷰
+  if (window._todayWorkView === 'prod') {
+    const prodGroups = { today: {}, tomorrow: {} };
+    DB.orders.forEach(function(o) {
+      const dDate = (o.deliveryDate || '').slice(0,10);
+      let bucket;
+      if (dDate === today) bucket = 'today';
+      else if (dDate === tomorrow) bucket = 'tomorrow';
+      else return;
+      o.items.forEach(function(it) {
+        const p = DB.products.find(function(x){ return x.id === it.productId; });
+        if (!p) return;
+        if (p.cut !== '작업육' && !p.name.includes('작업')) return;
+        const key = it.productId + '__' + (it.notes || '');
+        if (!prodGroups[bucket][key]) {
+          prodGroups[bucket][key] = { product: p, notes: it.notes || '', qty: 0, unit: it.unit, kg: 0, custIds: new Set() };
+        }
+        const g = prodGroups[bucket][key];
+        g.qty += Number(it.quantity) || 0;
+        if (it.procPreviewKg != null) g.kg += Number(it.procPreviewKg) || 0;
+        g.custIds.add(o.customerId);
+      });
+    });
+    function renderProdBucket(label, color, groups) {
+      const keys = Object.keys(groups);
+      if (keys.length === 0) return '';
+      // 카테고리 정렬 (cut) → 이름순
+      keys.sort(function(a,b){
+        const pa = groups[a].product, pb = groups[b].product;
+        return (pa.cut||'').localeCompare(pb.cut||'') || (pa.name||'').localeCompare(pb.name||'');
+      });
+      let html = '<div style="margin:14px 0 8px; border-bottom:2px solid ' + color + '; padding-bottom:5px;">'
+             + '<h4 style="margin:0; color:' + color + '; font-size:14px;">' + label + '</h4></div>';
+      html += '<table class="t" style="font-size:13px;">'
+           + '<thead><tr><th>품목</th><th>요청사항</th><th class="num">주문 합계</th><th class="num">입력 kg</th><th class="num">거래처 수</th></tr></thead><tbody>';
+      keys.forEach(function(k){
+        const g = groups[k];
+        html += '<tr>'
+             + '<td><b>' + g.product.name + '</b> <small style="color:var(--muted);">' + (g.product.brand||'') + '</small></td>'
+             + '<td style="color:var(--brand-dark);">' + (g.notes ? '📝 ' + g.notes : '—') + '</td>'
+             + '<td class="num"><b>' + g.qty + ' ' + (g.unit === '작업중량' ? 'kg' : g.unit) + '</b></td>'
+             + '<td class="num">' + (g.kg > 0 ? g.kg.toFixed(2) + ' kg' : '—') + '</td>'
+             + '<td class="num">' + g.custIds.size + '</td>'
+             + '</tr>';
+      });
+      html += '</tbody></table>';
+      return html;
+    }
+    let html = renderProdBucket('📅 오늘 (' + today + ') 배송 작업 — 품목별', '#C62828', prodGroups.today);
+    html += renderProdBucket('🌅 내일 (' + tomorrow + ') 배송 작업 — 품목별', '#1565C0', prodGroups.tomorrow);
+    if (!html) html = '<div class="empty" style="padding:24px;"><div class="icon">🥩</div>오늘·내일 배송 예정 작업육이 없습니다.</div>';
+    div.innerHTML = html;
+    return;
+  }
+  // 이하 거래처별 뷰 (기존)
 
   // 작업육 품목 추출 → 배송일 기준으로 오늘/내일 2그룹으로 나눔
   // (실측중량은 item.procPreviewKg 라는 작업육 전용 필드만 사용 — actualWeightKg 와 분리)
@@ -1552,7 +1644,6 @@ function renderStats() {
 function renderRecentOrders() {
   const div = document.getElementById('recentOrders');
   const today = todayLocalISO();
-  // 배송일(deliveryDate) 기준 — 오늘 배송분만 표시 (내일 되면 그날 배송분만 자동 표시)
   const recent = [...DB.orders]
     .filter(o => (o.deliveryDate||'').slice(0,10) === today)
     .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
@@ -1560,6 +1651,49 @@ function renderRecentOrders() {
     div.innerHTML = `<div class="empty"><div class="icon">📭</div>오늘(${today}) 배송 예정 주문이 없습니다.</div>`;
     return;
   }
+  // ⭐ (2026-07-28) 품목별 뷰
+  if (window._todayDeliveryView === 'prod') {
+    const prodGroups = {};
+    recent.forEach(function(o) {
+      o.items.forEach(function(it) {
+        const p = DB.products.find(function(x){ return x.id === it.productId; });
+        if (!p) return;
+        const key = it.productId + '__' + (it.notes || '');
+        if (!prodGroups[key]) {
+          prodGroups[key] = { product: p, notes: it.notes || '', qty: 0, unit: it.unit, kg: 0, custIds: new Set() };
+        }
+        const g = prodGroups[key];
+        g.qty += Number(it.quantity) || 0;
+        if (it.actualWeightKg != null) g.kg += Number(it.actualWeightKg) || 0;
+        g.custIds.add(o.customerId);
+      });
+    });
+    const keys = Object.keys(prodGroups).sort(function(a,b){
+      const pa = prodGroups[a].product, pb = prodGroups[b].product;
+      return (pa.cut||'').localeCompare(pb.cut||'') || (pa.name||'').localeCompare(pb.name||'');
+    });
+    // 카테고리별 그룹 헤더
+    let html = '<table class="t"><thead><tr><th>품목</th><th>요청사항</th><th class="num">주문 합계</th><th class="num">계근 kg</th><th class="num">거래처</th></tr></thead><tbody>';
+    let lastCut = '';
+    keys.forEach(function(k){
+      const g = prodGroups[k];
+      if (g.product.cut !== lastCut) {
+        lastCut = g.product.cut;
+        html += '<tr style="background:#F5F5F5;"><td colspan="5" style="font-weight:700; color:var(--brand); font-size:12px;">▼ ' + (lastCut || '기타') + '</td></tr>';
+      }
+      html += '<tr>'
+           + '<td><b>' + g.product.name + '</b> <small style="color:var(--muted);">' + (g.product.brand||'') + '</small></td>'
+           + '<td style="color:var(--brand-dark); font-size:12px;">' + (g.notes ? '📝 ' + g.notes : '—') + '</td>'
+           + '<td class="num"><b>' + g.qty + ' ' + (g.unit === '작업중량' ? 'kg' : g.unit) + '</b></td>'
+           + '<td class="num">' + (g.kg > 0 ? g.kg.toFixed(2) + ' kg' : '—') + '</td>'
+           + '<td class="num">' + g.custIds.size + '</td>'
+           + '</tr>';
+    });
+    html += '</tbody></table>';
+    div.innerHTML = html;
+    return;
+  }
+  // 이하 거래처별 뷰 (기존)
   div.innerHTML = `
     <table class="t">
       <thead><tr>
@@ -4729,8 +4863,22 @@ function addToCart(prodId, notes) {
     notes: (notes == null ? '' : String(notes))
   });
   renderCart();
-  // ⭐ 장바구니 자동 저장 — 관리자 화면 갔다 와도 유지
   _autoSaveCurrentCartDraft();
+  // ⭐ (2026-07-28) 클릭 시각 피드백 — 클릭한 요소에 노란 배경 플래시 (250ms)
+  try {
+    const el = (window.event && window.event.currentTarget) || null;
+    if (el && el.style) {
+      const origBg = el.style.background;
+      const origTs = el.style.transition;
+      el.style.transition = 'background 60ms ease-out';
+      el.style.background = '#FFF176';
+      setTimeout(function(){
+        el.style.transition = 'background 300ms ease-out';
+        el.style.background = origBg || 'transparent';
+        setTimeout(function(){ el.style.transition = origTs || ''; }, 320);
+      }, 60);
+    }
+  } catch(_){}
 }
 
 // URL 에서 현재 거래처 ID 추출 → CART draft 저장
@@ -5365,7 +5513,14 @@ function viewOffice() {
       </table>`}
     </div>
     <div class="card">
-      <h3>오늘 발행 완료 (${all.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span></h3>
+      <h3>오늘 발행 완료 (${all.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span>
+        ${(() => {
+          const pending = all.filter(o => o.status === 'invoiced');
+          return pending.length > 0
+            ? `<button class="btn sm" style="float:right; background:#2E7D32; color:#fff;" onclick="batchMarkDelivered()" title="오늘 발행된 인보이스 상태 주문 ${pending.length}건을 모두 배송완료로 변경 + 재고 자동 차감">🚚 일괄 배송완료 (${pending.length}건)</button>`
+            : '';
+        })()}
+      </h3>
       ${all.length === 0 ? `<div class="empty">오늘 발행된 인보이스가 없습니다.</div>` : `
       <table class="t">
         <thead><tr><th>인보이스#</th><th>주문번호</th><th>거래처</th><th class="num">금액</th><th>상태</th><th class="act"></th></tr></thead>
@@ -7973,6 +8128,55 @@ function viewInvoice(params) {
     </div>
   `;
 }
+// ⭐ (2026-07-28) 오늘 발행 인보이스 일괄 배송완료 처리
+//   대상: 오늘 발행된 status='invoiced' 주문만 (delivered는 제외)
+//   각 주문마다 markDelivered 와 동일한 처리 (status 변경 + 재고 자동 차감)
+window.batchMarkDelivered = function() {
+  const todayISO = todayLocalISO();
+  const targets = DB.orders.filter(function(o) {
+    if (o.status !== 'invoiced') return false;
+    const ref = toLocalISODate(o.invoicedAt);
+    return ref === todayISO;
+  });
+  if (targets.length === 0) {
+    alert('오늘 배송 처리할 인보이스가 없습니다.');
+    return;
+  }
+  if (!confirm('오늘 발행된 인보이스 ' + targets.length + '건을 모두 배송완료로 변경합니다.\n\n' +
+               '· 각 주문 상태: 인보이스 → 배송완료\n' +
+               '· 재고 자동 차감 함께 실행 (매칭 성공한 원료)\n' +
+               '· 매칭 실패 작업육은 재고현황 리스트로 이동\n\n' +
+               '되돌리기 어렵습니다. 계속?')) return;
+  let statusOk = 0, dedOk = 0, dedFail = 0, deducted = 0;
+  const now = new Date().toISOString();
+  targets.forEach(function(o) {
+    o.status = 'delivered';
+    o.deliveredAt = now;
+    try {
+      saveEntityFields('orders', o.id, { status: 'delivered', deliveredAt: now });
+      statusOk++;
+    } catch(e) { console.warn('batch status save failed:', o.id, e); }
+    try {
+      if (typeof window.inventoryAutoApplyOneOrder === 'function') {
+        const r = window.inventoryAutoApplyOneOrder(o.id);
+        if (r && r.ok && !r.skipped) {
+          dedOk++;
+          deducted += (r.deductedProducts || 0);
+        }
+      }
+    } catch(e) {
+      dedFail++;
+      console.warn('batch deduct failed:', o.id, e);
+    }
+  });
+  alert('✅ 일괄 배송완료 완료\n\n' +
+        '· 상태 변경: ' + statusOk + '/' + targets.length + '건\n' +
+        '· 재고 차감 성공: ' + dedOk + '건 (총 ' + deducted + '개 원료)\n' +
+        (dedFail > 0 ? '· 재고 차감 실패: ' + dedFail + '건 (재고현황 확인)\n' : '') +
+        '\n매출일보 자동 반영됨. 매칭 실패 작업육은 재고현황에서 확인·수동 처리하세요.');
+  route();
+};
+
 function markDelivered(id) {
   const o = DB.orders.find(x => x.id === id);
   o.status = 'delivered'; o.deliveredAt = new Date().toISOString();
