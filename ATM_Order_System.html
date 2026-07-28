@@ -4864,19 +4864,44 @@ function addToCart(prodId, notes) {
   });
   renderCart();
   _autoSaveCurrentCartDraft();
-  // ⭐ (2026-07-28) 클릭 시각 피드백 — 클릭한 요소에 노란 배경 플래시 (250ms)
+  // ⭐ (2026-07-28) 클릭 시각 피드백 — 클릭한 요소 우측에 초록 ✓ 아이콘 순간 표시 (900ms)
   try {
     const el = (window.event && window.event.currentTarget) || null;
-    if (el && el.style) {
-      const origBg = el.style.background;
-      const origTs = el.style.transition;
-      el.style.transition = 'background 60ms ease-out';
-      el.style.background = '#FFF176';
+    if (el) {
+      // 이미 있는 체크 아이콘 제거
+      const old = el.querySelector('.atm-add-check');
+      if (old) old.remove();
+      const check = document.createElement('span');
+      check.className = 'atm-add-check';
+      check.textContent = '✓';
+      check.style.cssText =
+        'position:absolute; right:12px; top:50%; transform:translateY(-50%) scale(0.5); ' +
+        'color:#fff; background:#2E7D32; ' +
+        'width:22px; height:22px; border-radius:50%; ' +
+        'display:flex; align-items:center; justify-content:center; ' +
+        'font-size:14px; font-weight:900; ' +
+        'box-shadow:0 2px 6px rgba(46,125,50,0.4); ' +
+        'opacity:0; transition: opacity 120ms ease-out, transform 200ms cubic-bezier(0.34,1.56,0.64,1); ' +
+        'pointer-events:none; z-index:10;';
+      // 부모 element position 이 static이면 relative 로 임시 세팅
+      const origPos = el.style.position;
+      const computed = window.getComputedStyle(el).position;
+      if (computed === 'static') el.style.position = 'relative';
+      el.appendChild(check);
+      // 다음 프레임에 애니메이션 시작
+      requestAnimationFrame(function(){
+        check.style.opacity = '1';
+        check.style.transform = 'translateY(-50%) scale(1)';
+      });
+      // 900ms 후 페이드 아웃 + 제거
       setTimeout(function(){
-        el.style.transition = 'background 300ms ease-out';
-        el.style.background = origBg || 'transparent';
-        setTimeout(function(){ el.style.transition = origTs || ''; }, 320);
-      }, 60);
+        check.style.opacity = '0';
+        check.style.transform = 'translateY(-50%) scale(0.7)';
+        setTimeout(function(){
+          if (check.parentNode) check.parentNode.removeChild(check);
+          if (computed === 'static') el.style.position = origPos || '';
+        }, 200);
+      }, 700);
     }
   } catch(_){}
 }
