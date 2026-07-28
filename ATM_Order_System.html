@@ -10758,6 +10758,7 @@ function inventoryRenderOutgoing() {
 // ⭐ (2026-07-28) 부위별 합산 그룹 UI — 매칭 실패 작업육을 축종+부위로 묶어 일괄 차감
 //   예: A거래처 돼지 돈목뼈 5kg + B거래처 5kg + C거래처 3kg + D거래처 3kg = 총 16kg → 1박스 차감
 //   박스 환산은 반올림 (Math.round)
+window._wmGroups = null;   // 그룹 데이터를 window 에 직접 저장 (inline script 회피)
 function renderUnmatchedSummaryGroups(list) {
   if (!list || list.length === 0) return '';
   // 첫 2단어 (축종+부위) 로 그룹화
@@ -10771,9 +10772,11 @@ function renderUnmatchedSummaryGroups(list) {
     if (item.custName) groups[key].custs.add(item.custName);
   });
   const groupKeys = Object.keys(groups).sort(function(a,b){
-    return groups[b].totalKg - groups[a].totalKg;   // 총 kg 큰 순
+    return groups[b].totalKg - groups[a].totalKg;
   });
   if (groupKeys.length === 0) return '';
+  // window 에 그룹 정보 저장 (일괄 차감 시 참조)
+  window._wmGroups = groupKeys.map(function(gk){ return groups[gk].items.map(function(it){ return {orderId:it.orderId, itemIdx:it.itemIdx}; }); });
   let html = '<div style="margin-bottom:14px; padding:12px 14px; background:#E3F2FD; border-left:4px solid #1976D2; border-radius:6px;">';
   html += '<div style="font-weight:700; color:#0D47A1; margin-bottom:8px; font-size:13px;">📊 부위별 합산 (매칭 실패) — 원료 선택 후 일괄 차감</div>';
   html += '<table class="t" style="font-size:12px;">';
@@ -10787,13 +10790,11 @@ function renderUnmatchedSummaryGroups(list) {
   html += '</tr></thead><tbody>';
   groupKeys.forEach(function(gk, gi) {
     const g = groups[gk];
-    // 대표 아이템으로 후보 계산 (같은 축종+부위는 매칭 후보 동일)
     const rep = g.items[0];
     const workedProduct = DB.products.find(function(p){ return p.id === rep.workedPid; });
     const allCands = workedProduct ? getRawMaterialCandidates(workedProduct, rep.notes, 200) : [];
     const bestPid = allCands.length > 0 ? allCands[0].product.id : '';
     if (allCands.length === 0) return;
-    // 옵션 HTML
     const allowedCats = _wmAllowedCategories(rep.workedName || (workedProduct && workedProduct.name), rep.notes);
     const byCat = {};
     allowedCats.forEach(function(cat){ byCat[cat] = []; });
@@ -10814,7 +10815,6 @@ function renderUnmatchedSummaryGroups(list) {
       }).join('');
       return '<optgroup label="▼ ' + cat + '">' + opts + '</optgroup>';
     }).join('');
-    // 박스 환산 (반올림) — 대표 원료의 카테고리 기준 kg→box 변환
     const bestCand = allCands[0];
     const kgToBoxRatio = bestCand ? inventoryBoxConvert(g.totalKg, bestCand.product.cut) : g.totalKg;
     const boxRounded = Math.max(1, Math.round(kgToBoxRatio));
@@ -10826,8 +10826,6 @@ function renderUnmatchedSummaryGroups(list) {
     html += '<td class="num"><b style="color:var(--brand);">' + boxRounded + ' 박스</b><br><small style="color:var(--muted);">' + kgToBoxRatio.toFixed(2) + '박스 반올림</small></td>';
     html += '<td class="act"><button class="btn sm success" style="font-size:11px;" onclick="applyGroupBatchDeduction(' + gi + ',' + boxRounded + ')">🔻 일괄 차감</button></td>';
     html += '</tr>';
-    // hidden data (그룹 items 정보 저장용)
-    html += '<tr style="display:none;"><td colspan="6"><script>window._wmGrp' + gi + '=' + JSON.stringify(g.items.map(function(it){ return {orderId:it.orderId, itemIdx:it.itemIdx}; })) + ';</script></td></tr>';
   });
   html += '</tbody></table>';
   html += '<div style="font-size:11px; color:#546E7A; margin-top:6px;">💡 개별 처리는 아래 리스트에서. 여기서 일괄 차감 시 그룹의 모든 라인이 선택한 원료로 처리됩니다.</div>';
@@ -10835,16 +10833,16 @@ function renderUnmatchedSummaryGroups(list) {
   return html;
 }
 
-// 그룹 일괄 차감 실행
+// 그룹 일괄 차감 실행 — window._wmGroups[gi] 배열의 각 라인 처리
 window.applyGroupBatchDeduction = function(gi, boxToDeduct) {
-  const items = window['_wmGrp' + gi];
+  const items = window._wmGroups && window._wmGroups[gi];
   const sel = document.getElementById('wm_grp_sel_' + gi);
-  if (!items || !sel || !sel.value) { alert('원료를 선택해주세요.'); return; }
+  if (!items || !items.length) { alert('그룹 데이터가 없습니다. 새로고침 후 재시도.'); return; }
+  if (!sel || !sel.value) { alert('원료를 선택해주세요.'); return; }
   const rawPid = sel.value;
   const rawP = DB.products.find(function(p){ return p.id === rawPid; });
   if (!rawP) { alert('원료 없음'); return; }
   if (!confirm('부위 그룹 ' + items.length + '건을 [' + rawP.name + '] 로 일괄 차감합니다.\n(총 ' + boxToDeduct + ' 박스)\n계속?')) return;
-  // 각 라인 순차 차감
   let ok = 0, fail = 0;
   items.forEach(function(pair) {
     const r = _wmDeductOne(pair.orderId, pair.itemIdx, rawPid, false);
