@@ -2080,44 +2080,89 @@ function ordAdmToggleAll(checked) {
   if (head) head.checked = !!checked;
 }
 
-function ordAdmDeleteOne(oid) {
+async function ordAdmDeleteOne(oid) {
   const o = DB.orders.find(x => x.id === oid);
   if (!o) return;
   if (!confirm(`주문 ${o.orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.`)) return;
+  // ⭐ (2026-07-29) 보스 권한 확인
+  const ok = await verifyBossPassword('주문 ' + o.orderNo + ' 삭제');
+  if (!ok) return;
   DB.orders = DB.orders.filter(x => x.id !== oid);
   // Phase 2 동시성: 트랜잭션으로 안전 삭제
   removeEntityFromFirebase('orders', oid);
   saveLocalDB();
   route();
 }
+window.ordAdmDeleteOne = ordAdmDeleteOne;
 
-function ordAdmDeleteSelected(cid) {
+async function ordAdmDeleteSelected(cid) {
   const ids = Array.from(document.querySelectorAll('.ordAdmChk:checked')).map(el => el.value);
   if (ids.length === 0) return alert('삭제할 주문을 선택하세요.');
   if (!confirm(`선택한 ${ids.length}건의 주문을 삭제할까요?\n복구할 수 없습니다.`)) return;
+  // ⭐ (2026-07-29) 보스 권한 확인
+  const ok = await verifyBossPassword('선택한 주문 ' + ids.length + '건 삭제');
+  if (!ok) return;
   DB.orders = DB.orders.filter(o => !ids.includes(o.id));
   // Phase 2 동시성: 트랜잭션으로 일괄 삭제
   removeEntitiesFromFirebase('orders', ids);
   saveLocalDB();
   route();
 }
+window.ordAdmDeleteSelected = ordAdmDeleteSelected;
 
-function ordAdmDeleteAll(cid) {
+// ⭐ (2026-07-29) 보스 권한 인증 — 매니저도 관리자 비번 알지만 이 액션만은 보스만.
+//   최초 사용 시 자동으로 보스 비번 설정 화면 → 이후엔 매번 보스 비번 입력.
+async function verifyBossPassword(actionLabel) {
+  // 최초 설정
+  if (!DB.settings || !DB.settings.bossPasswordHash) {
+    alert('🔐 이 액션은 "보스 권한"이 필요합니다.\n\n최초 사용이므로 지금 보스 비밀번호를 설정합니다.\n(관리자·사무원·직원 비번과 별도, 보스만 알고 있어야 함)');
+    const pw = prompt('새 보스 비밀번호 (최소 4자):', '');
+    if (!pw || pw.length < 4) { alert('취소되었습니다. (4자 이상 필요)'); return false; }
+    const pw2 = prompt('확인을 위해 다시 입력:', '');
+    if (pw !== pw2) { alert('두 비밀번호가 일치하지 않습니다.'); return false; }
+    if (!DB.settings) DB.settings = {};
+    DB.settings.bossPasswordHash = await hashPw(pw);
+    try { saveEntityField && saveLocalDB(); } catch(_){}
+    try {
+      if (typeof DB_REF !== 'undefined' && DB_REF) {
+        _lastSaveTime = Date.now();
+        await DB_REF.child('settings/bossPasswordHash').set(DB.settings.bossPasswordHash);
+      }
+    } catch(_){}
+    alert('✅ 보스 비밀번호가 설정되었습니다. 계속하려면 방금 설정한 비번을 입력해주세요.');
+  }
+  // 인증
+  const input = prompt('🔐 보스 비밀번호 입력 — ' + (actionLabel || '보호된 작업'), '');
+  if (!input) return false;
+  const h = await hashPw(input);
+  if (h !== DB.settings.bossPasswordHash) {
+    alert('❌ 보스 비밀번호가 틀렸습니다.');
+    return false;
+  }
+  return true;
+}
+window.verifyBossPassword = verifyBossPassword;
+
+async function ordAdmDeleteAll(cid) {
   const cust = DB.customers.find(c => c.id === cid);
   const custName = cust ? cust.name : '거래처 없음';
   const orders = DB.orders.filter(o => (o.customerId || '__none__') === cid);
   if (orders.length === 0) return;
   if (!confirm(`⚠️ ${custName}의 거래내역 ${orders.length}건을 전체 삭제합니다.\n복구할 수 없습니다. 계속할까요?`)) return;
-  const typed = prompt(`확인을 위해 거래처명 "${custName}" 을(를) 입력하세요:`);
+  // ⭐ (2026-07-29) 보스 권한 확인 — 관리자 비번과 별개, 매니저는 여기서 차단됨
+  const ok = await verifyBossPassword(`${custName} 거래내역 ${orders.length}건 삭제`);
+  if (!ok) return;
+  const typed = prompt(`최종 확인: 거래처명 "${custName}" 을(를) 그대로 입력하세요:`);
   if (typed !== custName) return alert('거래처명이 일치하지 않아 취소되었습니다.');
   const idsToRemove = orders.map(o => o.id);
   DB.orders = DB.orders.filter(o => (o.customerId || '__none__') !== cid);
   // Phase 2 동시성: 트랜잭션으로 일괄 삭제
   removeEntitiesFromFirebase('orders', idsToRemove);
   saveLocalDB();
-  alert(`${custName}의 거래내역 ${orders.length}건이 삭제되었습니다.`);
+  alert(`✅ ${custName}의 거래내역 ${orders.length}건이 삭제되었습니다.`);
   route();
 }
+window.ordAdmDeleteAll = ordAdmDeleteAll;
 
 function renderBackupAdmin() {
   const body = document.getElementById('adminBody');
