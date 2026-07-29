@@ -2083,10 +2083,10 @@ function ordAdmToggleAll(checked) {
 async function ordAdmDeleteOne(oid) {
   const o = DB.orders.find(x => x.id === oid);
   if (!o) return;
-  if (!confirm(`주문 ${o.orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.`)) return;
-  // ⭐ (2026-07-29) 보스 권한 확인
+  // ⭐ (2026-07-29) 보스 권한 먼저 확인 → 통과 시에만 삭제 안내창 표시
   const ok = await verifyBossPassword('주문 ' + o.orderNo + ' 삭제');
   if (!ok) return;
+  if (!confirm(`주문 ${o.orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.`)) return;
   DB.orders = DB.orders.filter(x => x.id !== oid);
   // Phase 2 동시성: 트랜잭션으로 안전 삭제
   removeEntityFromFirebase('orders', oid);
@@ -2098,10 +2098,10 @@ window.ordAdmDeleteOne = ordAdmDeleteOne;
 async function ordAdmDeleteSelected(cid) {
   const ids = Array.from(document.querySelectorAll('.ordAdmChk:checked')).map(el => el.value);
   if (ids.length === 0) return alert('삭제할 주문을 선택하세요.');
-  if (!confirm(`선택한 ${ids.length}건의 주문을 삭제할까요?\n복구할 수 없습니다.`)) return;
-  // ⭐ (2026-07-29) 보스 권한 확인
+  // ⭐ (2026-07-29) 보스 권한 먼저 확인 → 통과 시에만 삭제 안내창 표시
   const ok = await verifyBossPassword('선택한 주문 ' + ids.length + '건 삭제');
   if (!ok) return;
+  if (!confirm(`선택한 ${ids.length}건의 주문을 삭제할까요?\n복구할 수 없습니다.`)) return;
   DB.orders = DB.orders.filter(o => !ids.includes(o.id));
   // Phase 2 동시성: 트랜잭션으로 일괄 삭제
   removeEntitiesFromFirebase('orders', ids);
@@ -2148,10 +2148,10 @@ async function ordAdmDeleteAll(cid) {
   const custName = cust ? cust.name : '거래처 없음';
   const orders = DB.orders.filter(o => (o.customerId || '__none__') === cid);
   if (orders.length === 0) return;
-  if (!confirm(`⚠️ ${custName}의 거래내역 ${orders.length}건을 전체 삭제합니다.\n복구할 수 없습니다. 계속할까요?`)) return;
-  // ⭐ (2026-07-29) 보스 권한 확인 — 관리자 비번과 별개, 매니저는 여기서 차단됨
+  // ⭐ (2026-07-29) 보스 권한 먼저 확인 — 매니저는 여기서 즉시 차단, 헛클릭 최소화
   const ok = await verifyBossPassword(`${custName} 거래내역 ${orders.length}건 삭제`);
   if (!ok) return;
+  if (!confirm(`⚠️ ${custName}의 거래내역 ${orders.length}건을 전체 삭제합니다.\n복구할 수 없습니다. 계속할까요?`)) return;
   const typed = prompt(`최종 확인: 거래처명 "${custName}" 을(를) 그대로 입력하세요:`);
   if (typed !== custName) return alert('거래처명이 일치하지 않아 취소되었습니다.');
   const idsToRemove = orders.map(o => o.id);
