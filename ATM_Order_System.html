@@ -5493,6 +5493,9 @@ function viewOffice() {
   const app = document.getElementById('app');
   // ⭐ 매출일보 정렬 모드 — 화면 진입 시 항상 알파벳순으로 초기화 (사용자 지시)
   window._salesSortMode = 'alpha';
+  // ⭐ (2026-07-29) 입금 패널 sticky 날짜 리셋 (다른 페이지 갔다 오면 오늘 날짜로)
+  //   패널 안에서만 유지되는 임시 상태. viewOffice 진입 = "새로 시작"으로 간주.
+  window._ipDateSticky = null;
   const ready = DB.orders.filter(o => o.status === 'weighed');
   // 발행 완료 — 당일 발행분만 (invoicedAt 기준). 이전 발행 건은 #history 에서 조회.
   // ⭐ Bug fix (2026-07-07): invoicedAt 은 UTC ISO 문자열이라 .slice(0,10) 하면 시드니 오전엔
@@ -5609,14 +5612,16 @@ function viewOffice() {
             <div class="field"><label>거래처</label>
               ${renderCustomerSearchSelect({ selectId: 'ipCustomer', placeholder: '— 선택하세요 —', onChange: 'renderPaymentHistoryList(this.value)' })}
             </div>
-            <div class="field"><label>입금일</label><input type="date" id="ipDate" value="${today}"></div>
-            <div class="field"><label>금액 ($)</label><input type="number" id="ipAmount" min="0" step="0.01" placeholder="0.00" oninput="schedulePaymentMatchSearch(this.value)" onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"></div>
+            <div class="field"><label>입금일</label><input type="date" id="ipDate" value="${(window._ipDateSticky || today)}" onchange="window._ipDateSticky = this.value"></div>
+            <div class="field"><label>금액 ($)</label><input type="text" inputmode="decimal" id="ipAmount" placeholder="0.00"
+              oninput="formatAmountInput(this); schedulePaymentMatchSearch(getAmountValue(this))"
+              onblur="finalizeAmountInput(this, true)"></div>
           </div>
           <!-- ⭐ (2026-07-08) 금액 입력 시 자동으로 거래처 매칭 후보 표시 -->
           <div id="paymentMatchBox" style="margin:8px 0;"></div>
           <div class="grid-3">
             <div class="field"><label>입금 방법</label>
-              <select id="ipMethod"><option value="cash">현금</option><option value="cheque">체크</option><option value="bank">은행이체</option></select>
+              <select id="ipMethod"><option value="bank" selected>은행이체</option><option value="cash">현금</option><option value="cheque">체크</option></select>
             </div>
             <div class="field"><label>참조번호</label><input type="text" id="ipRef" placeholder="선택 입력"></div>
             <div class="field"><label>메모</label><input type="text" id="ipNotes" placeholder="선택 입력"></div>
@@ -6445,7 +6450,8 @@ window.applyPaymentMatch = function(cid, invRef) {
 window.saveInlinePayment = function() {
   const cid = document.getElementById('ipCustomer').value;
   const date = document.getElementById('ipDate').value;
-  const amount = parseFloat(document.getElementById('ipAmount').value);
+  // ⭐ 콤마 포맷된 값 → 순수 숫자로 변환
+  const amount = getAmountValue(document.getElementById('ipAmount'));
   const method = document.getElementById('ipMethod').value;
   const ref = document.getElementById('ipRef').value.trim();
   const notes = document.getElementById('ipNotes').value.trim();
@@ -6803,6 +6809,40 @@ window.filterCustomerSelect = function(selId, query) {
   custAcInput(selId, query);
 };
 // 금액 천단위 쉼표 (예: 1234.5 → "1,234.50")
+// ⭐ (2026-07-29) 금액 입력 콤마 포맷 유틸 — 금액 필드에만 사용 (kg 등 다른 숫자는 그대로).
+//   type="text" inputmode="decimal" 로 만들어야 함 (type=number 는 콤마 허용 안 됨).
+//   저장 시 getAmountValue() 로 숫자 추출.
+window.formatAmountInput = function(el) {
+  if (!el) return;
+  const raw = String(el.value || '').replace(/[^\d.-]/g, '');
+  if (raw === '' || raw === '-') { el.value = raw; return; }
+  // 마이너스 부호 처리
+  const isNeg = raw.startsWith('-');
+  const body = isNeg ? raw.slice(1) : raw;
+  const parts = body.split('.');
+  const intPart = (parts[0] || '0').replace(/^0+(?=\d)/, '') || '0';
+  const decPart = parts.length > 1 ? '.' + parts.slice(1).join('').slice(0, 2) : '';
+  const withCommas = Number(intPart).toLocaleString('en-US');
+  const caretEnd = (el.selectionEnd === el.value.length);
+  el.value = (isNeg ? '-' : '') + withCommas + decPart;
+  if (caretEnd) {
+    try { el.setSelectionRange(el.value.length, el.value.length); } catch(_){}
+  }
+};
+window.finalizeAmountInput = function(el, twoDecimals) {
+  if (!el) return;
+  const v = getAmountValue(el);
+  if (isNaN(v)) { el.value = ''; return; }
+  el.value = twoDecimals ? v.toLocaleString('en-US', {minimumFractionDigits: 2, maximumFractionDigits: 2})
+                          : v.toLocaleString('en-US');
+};
+window.getAmountValue = function(el) {
+  if (!el) return 0;
+  const raw = String(el.value || '').replace(/,/g, '').trim();
+  const n = parseFloat(raw);
+  return isNaN(n) ? 0 : n;
+};
+
 function fmtMoney(n) {
   return (Number(n) || 0).toLocaleString('en-AU', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
@@ -8062,6 +8102,12 @@ function viewInvoice(params) {
           </div>
         </div>
       </div>
+
+      ${o.officeNote ? `
+      <div style="margin:0 0 14px 0; padding:10px 14px; background:#FFFCF0; border:2px solid #5C0F0F; border-radius:4px;">
+        <div style="font-size:10px; color:#888; text-transform:uppercase; margin-bottom:4px; font-weight:700;">Notice / 공지</div>
+        <div style="font-weight:700; font-size:16px; color:#5C0F0F; line-height:1.5;">${String(o.officeNote).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/\n/g,'<br>')}</div>
+      </div>` : ''}
 
       <div style="display:flex; justify-content:space-between; margin-bottom:14px;">
         <div>
