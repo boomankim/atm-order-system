@@ -8300,7 +8300,7 @@ function viewInvoice(params) {
       <button class="btn kakao" onclick="sendInvoice('${o.id}')">📤 카톡/이메일 공유</button>
       ${o.status==='invoiced' ? `<button class="btn secondary" onclick="markDelivered('${o.id}')">배송완료 처리</button>` : ''}
       ${isInvoiceEditable(o)
-        ? `<button class="btn" style="background:#B8860B;color:#fff;" onclick="location.hash='#invoicePrep?id=${o.id}'" title="전체 백업 전까지 수정 가능">✏️ 인보이스 수정</button>`
+        ? `<button class="btn" style="background:#B8860B;color:#fff;" onclick="attemptEditInvoice('${o.id}')" title="발행 후 ${INVOICE_EDIT_DAYS}일 이내 수정 가능 — 보스 권한 필요">✏️ 인보이스 수정</button>`
         : `<button class="btn secondary" style="cursor:not-allowed;opacity:0.55;" onclick="alert('편집 불가: '+ (invoiceEditLockReason(DB.orders.find(x=>x.id==='${o.id}'))||'')); return false;" title="편집 잠금">🔒 편집 잠금</button>`}
       <button class="btn" style="background:#C0392B;color:#fff;" onclick="location.hash='#creditIssue?orderId=${o.id}'">🧾 크레딧 노트 발행 (반품)</button>
       <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
@@ -8583,24 +8583,76 @@ function shareOrder(orderId) {
 //   3) getCreditNotesForOrder(o.id).length === 0 (크레딧 미발행)
 // 위 조건 불충족 시 편집 불가 → 크레딧 노트로만 수정
 // =========================================================================
+// ⭐ (2026-07-30) 편집 창 정책 변경 — 백업 여부 무관, 발행일 기준 7일째 밤 12시까지
+//   즉 발행일 다음날 부터 세서 7일째 24:00 (= 8일째 00:00) 넘어가면 잠금.
+//   [예] 7/25 발행 → 8/1 00:00 까지 편집 가능.
+//   기존: 전체 백업 후에는 잠금 (너무 엄격) → 실무 정정 어려움 해소.
+const INVOICE_EDIT_DAYS = 7;
+function _invoiceEditDeadline(o) {
+  if (!o || !o.invoicedAt) return null;
+  const issued = new Date(o.invoicedAt);
+  // 발행일 자정으로 정규화 → +7일째 자정
+  const d = new Date(issued.getFullYear(), issued.getMonth(), issued.getDate() + INVOICE_EDIT_DAYS + 1, 0, 0, 0, 0);
+  return d;
+}
+function _daysSinceInvoiced(o) {
+  if (!o || !o.invoicedAt) return null;
+  const now = new Date();
+  const issued = new Date(o.invoicedAt);
+  const dayMs = 24 * 60 * 60 * 1000;
+  return Math.floor((now.getTime() - issued.getTime()) / dayMs);
+}
 function isInvoiceEditable(o) {
   if (!o) return false;
   if (o.status !== 'invoiced' && o.status !== 'delivered') return false;
   if (!o.invoicedAt) return false;
-  const lastBkp = (DB.settings && DB.settings.lastFullBackupAt) || '';
-  // 문자열 ISO 대소 비교 = 시각 비교와 동일
-  if (lastBkp && o.invoicedAt <= lastBkp) return false;
   if (getCreditNotesForOrder(o.id).length > 0) return false;
+  const deadline = _invoiceEditDeadline(o);
+  if (deadline && Date.now() >= deadline.getTime()) return false;
   return true;
 }
 // 편집 불가 사유 (UI 툴팁용)
 function invoiceEditLockReason(o) {
   if (!o.invoicedAt) return '미발행';
   if (getCreditNotesForOrder(o.id).length > 0) return '크레딧 노트 이미 발행됨 (편집 불가, 추가 크레딧으로 처리)';
-  const lastBkp = (DB.settings && DB.settings.lastFullBackupAt) || '';
-  if (lastBkp && o.invoicedAt <= lastBkp) return '전체 백업 이후엔 편집 불가 (크레딧으로 처리)';
+  const deadline = _invoiceEditDeadline(o);
+  if (deadline && Date.now() >= deadline.getTime()) {
+    return '편집 창 만료 (발행 후 ' + INVOICE_EDIT_DAYS + '일 지남) — 크레딧 노트로 처리';
+  }
   return '';
 }
+
+// ⭐ (2026-07-30) 인보이스 수정 진입 게이트 — 보스 비밀번호 + 부작용 경고
+//   1) 편집 창 확인 → 만료면 알림 후 취소
+//   2) 부작용 경고 팝업 (재고·PDF·매출일보)
+//   3) 보스 비밀번호 검증 → 통과 시 #invoicePrep 로 이동
+window.attemptEditInvoice = async function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  if (!isInvoiceEditable(o)) {
+    alert('❌ 편집 불가\n\n사유: ' + (invoiceEditLockReason(o) || '알 수 없음'));
+    return;
+  }
+  const daysAgo = _daysSinceInvoiced(o);
+  const deadline = _invoiceEditDeadline(o);
+  const deadlineStr = deadline ? deadline.toLocaleString('ko-KR', {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit'}) : '알 수 없음';
+  const warnMsg =
+    '⚠️ 인보이스 수정 확인\n' +
+    '\n' +
+    '이 인보이스는 [' + (daysAgo === 0 ? '오늘' : daysAgo + '일 전') + '] 발행됨\n' +
+    '편집 마감: ' + deadlineStr + '\n' +
+    '\n' +
+    '수정 후 반드시 확인:\n' +
+    '  ① 재고 현황 — 이미 차감된 재고와 실제 어긋날 수 있음\n' +
+    '  ② PDF 파일 재생성 — 저장된 PDF 는 자동으로 안 바뀜\n' +
+    '  ③ 매출일보 재저장 — 옛 매출일보 PDF 는 옛 숫자 그대로\n' +
+    '\n' +
+    '계속하시겠습니까?';
+  if (!confirm(warnMsg)) return;
+  const ok = await verifyBossPassword('인보이스 수정');
+  if (!ok) return;
+  location.hash = '#invoicePrep?id=' + orderId;
+};
 
 // =========================================================================
 // ⭐ CREDIT NOTE (2026-07-07) — 반품/취소용 크레딧 노트 (사무실 전용)
