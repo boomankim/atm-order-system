@@ -3498,20 +3498,46 @@ function renderFavoritesList(custId) {
       <b>${cust.name}</b> — 아래 품목을 클릭해 빈 짝(요청사항 없이) 추가/모두 제거.<br>
       같은 품목이라도 요청사항이 다르면 별개의 짝으로 자동 학습됩니다 (주문/인보이스 단계에서).
     </div>
-    ${cuts.map(cut => `
-      <h4 style="margin-top:18px; color:var(--brand-dark);">${CUT_DISPLAY[cut]||cut}</h4>
-      <div class="quick-add">
-        ${DB.products.filter(p => p.active && p.cut === cut).map(p => {
-          const isFav = getFavoriteProductIds(cust).includes(p.id);
-          return `<span class="qa ${isFav?'fav':''}" id="qa_${p.id}"
-                       onclick="toggleFav('${custId}','${p.id}')">
-            ${isFav?'⭐ ':''}${p.name}
-          </span>`;
-        }).join('')}
-      </div>
-    `).join('')}
+    ${cuts.map(cut => {
+      // ⭐ (2026-07-30) 카테고리 접두어 이후 이름 기준 가나다 → 영문 세부번호 순 정렬
+      //   예: '와규 꼬리 …' → '꼬리 …' 기준으로 소트. 같은 이름이면 뒤 영문/MB 등급으로 tie-break.
+      const items = DB.products.filter(p => p.active && p.cut === cut).slice();
+      items.sort((a, b) => _favSortNameAfterPrefix(a, b));
+      return `
+        <h4 style="margin-top:18px; color:var(--brand-dark);">${CUT_DISPLAY[cut]||cut}</h4>
+        <div style="display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px;">
+          ${items.map(p => {
+            const isFav = getFavoriteProductIds(cust).includes(p.id);
+            const safeName = String(p.name || '').replace(/"/g, '&quot;');
+            return `<span class="qa ${isFav?'fav':''}" id="qa_${p.id}"
+                         title="${safeName}"
+                         onclick="toggleFav('${custId}','${p.id}')"
+                         style="padding:6px 10px; border-radius:6px; font-size:11px; text-align:center;
+                                white-space:nowrap; overflow:hidden; text-overflow:ellipsis;
+                                cursor:pointer; user-select:none;
+                                border:0.5px solid var(--line); background:#fff;">
+              ${isFav?'⭐ ':''}${p.name}
+            </span>`;
+          }).join('')}
+        </div>
+      `;
+    }).join('')}
   `;
   renderFavChips(custId);
+}
+
+// ⭐ (2026-07-30) 즐겨찾기 · 카탈로그 · 관리자 품목 목록 공용 정렬 헬퍼
+//   product.name 은 '[카테고리한글] [품목한글] [영문/MB]' 패턴 (예: '와규 볼라블레이드 WAGYU BOLAR BLADE MB6-7').
+//   접두어(첫 단어) 제거 후 남은 문자열을 한글 로케일로 비교 → 가나다 순 정렬.
+//   같은 이름이면 뒤 영문/MB 등급까지 자연 정렬.
+function _favSortNameAfterPrefix(a, b) {
+  const strip = (name) => {
+    const parts = String(name || '').trim().split(/\s+/);
+    return parts.length > 1 ? parts.slice(1).join(' ') : (parts[0] || '');
+  };
+  const sa = strip(a.name);
+  const sb = strip(b.name);
+  return sa.localeCompare(sb, 'ko-KR', { numeric: true, sensitivity: 'base' });
 }
 
 function renderFavChips(custId) {
