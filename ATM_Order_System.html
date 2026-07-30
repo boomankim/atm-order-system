@@ -71,8 +71,11 @@
   }
 
   /* Main container */
-  main { max-width: 1100px; margin: 0 auto; padding: 16px; }
-  main.narrow { max-width: 780px; }
+  /* ⭐ (2026-07-30) 데스크톱 화면 넓이 확장 — 사무실/작업장/관리자 데이터가 잘 보이게
+   *   1600px 상한 → 4K 모니터에서도 눈이 왔다갔다 부담 없는 폭. 좌우 여백 자동 중앙정렬. */
+  main { max-width: 1600px; margin: 0 auto; padding: 16px; }
+  main.narrow { max-width: 780px; }   /* 거래처 주문 화면 (모바일 위주, 좁게) */
+  main.medium { max-width: 1200px; }  /* 홈 등 카드 위주 화면 */
 
   h2.page-title {
     margin: 4px 0 16px 0; font-size: 22px;
@@ -1344,7 +1347,13 @@ function route() {
     t.classList.toggle('active', routePath === path);
   });
   const view = ROUTES[path] || ROUTES['home'];
-  document.getElementById('app').innerHTML = '';
+  const _appEl = document.getElementById('app');
+  // ⭐ (2026-07-30) 화면 이동 시 잔여 width 클래스 초기화 — narrow(주문)/medium(홈)
+  //   viewOrder 가 'narrow' 를 추가한 뒤 다른 화면으로 가도 클래스가 남아있는 문제 방지
+  _appEl.classList.remove('narrow', 'medium');
+  _appEl.innerHTML = '';
+  // 홈은 medium(1200px) 로 살짝 좁게 — 카드 위주라 너무 넓으면 허전
+  if (path === 'home') _appEl.classList.add('medium');
   view(params);
   // ⭐ (2026-07-26) B: 원격 업데이트 재렌더 시 스크롤 유지 (플래그 확인)
   if (!window._preserveScrollOnce) {
