@@ -314,10 +314,64 @@
     .invoice-header { flex-direction: column; }
   }
 
+  /* ⭐ (2026-07-30) 거래처 주문 화면 세로 모드 개선
+   *   - 좁은 폰 (<600px): 수량+요청사항을 세로 스택 (요청사항 라벨 세로 쌓임 방지)
+   *   - 폰트/터치 영역 확대 (품목명 15px, 입력창 44px 이상) */
+  .cart-item-fields {
+    display: flex;
+    gap: 8px;
+    align-items: flex-end;
+    margin-top: 8px;
+  }
+  .cart-item-fields .qty-wrap { flex: 0 0 140px; }
+  .cart-item-fields .notes-wrap { flex: 1; min-width: 0; }
+  @media (max-width: 600px) {
+    .cart-item-fields {
+      flex-direction: column;
+      align-items: stretch;
+      gap: 10px;
+    }
+    .cart-item-fields .qty-wrap,
+    .cart-item-fields .notes-wrap {
+      flex: 1 1 auto;
+      width: 100%;
+    }
+    .cart-item .name { font-size: 15px; }
+    .cart-item-fields input,
+    .cart-item-fields select {
+      font-size: 15px !important;
+      min-height: 40px;
+    }
+    .cart-item .del { font-size: 26px; padding: 4px 10px; }
+  }
+
+  /* ⭐ (2026-07-30) 거래처 주문 화면 가로 모드 최적화
+   *   폰 가로 (~500px 이하 높이) 에서 상단 nav / 하단 Submit 바가 화면 대부분 차지 → 슬림하게 */
+  @media (max-height: 500px) and (orientation: landscape) {
+    .nav { padding: 4px 8px; }
+    .nav .logo { font-size: 12px; margin-right: 6px; }
+    .nav .tab { padding: 3px 8px; font-size: 12px; }
+    .nav .util { padding: 3px 8px; font-size: 11px; }
+    h2.page-title { font-size: 16px; margin: 6px 0; }
+    .summary-bar { padding: 6px 14px; }
+    .summary-bar .info { font-size: 12px; }
+    .summary-bar .info b { font-size: 14px; }
+    .summary-bar button { padding: 6px 16px; font-size: 13px; }
+    .card { padding: 10px 14px; margin-bottom: 8px; }
+    .card h3 { font-size: 13px; margin: 4px 0 6px 0; }
+  }
+
   /* PWA install banner animation */
   @keyframes pwaSlideUp {
     from { transform: translateY(120px); opacity: 0; }
     to   { transform: translateY(0); opacity: 1; }
+  }
+  /* ⭐ (2026-07-30) 즐겨찾기 카드 담김 시각 피드백 — 초록 ✓ 팝 애니메이션 */
+  @keyframes favCheckPop {
+    0%   { transform: translate(0,-50%) scale(0);   opacity: 0; }
+    25%  { transform: translate(0,-50%) scale(1.3); opacity: 1; }
+    50%  { transform: translate(0,-50%) scale(1);   opacity: 1; }
+    100% { transform: translate(0,-50%) scale(1);   opacity: 0; }
   }
   /* iOS PWA safe area */
   body { padding-bottom: env(safe-area-inset-bottom); }
@@ -710,30 +764,69 @@ function saveDB() {
   }
 }
 
-// === Phase 1 동시성 개선 (2026-06-12) =====================================
-// saveDB()는 DB 전체를 Firebase에 덮어쓰기 때문에 여러 기기가 동시에
-// 다른 주문을 계근/단가 입력 시 last-write-wins 충돌로 데이터가 사라질 수 있음.
-// saveOrderItemField()는 변경된 필드 하나만 부분 업데이트해서 충돌을 회피.
+// === Phase 3 동시성 근본 수정 (2026-07-30) =================================
+// 🔥 이전 문제: 로컬 findIndex 로 얻은 인덱스를 Firebase path 로 그대로 사용.
+//    두 클라이언트가 동시 작업 시 로컬 인덱스 ≠ 서버 인덱스 → 엉뚱한 주문 덮어씀.
+//    실제 사고: AT2026-06757/06782 거래처 뒤바뀜, AT2026-06789 중량 오염.
+//
+// 🛡️ 새 정책: 저장 전 서버에서 ID 로 실제 인덱스 재확인.
+//    - _saveByIdSafe(entityType, entityId, mutator): Firebase 에서 ID 로 위치 찾은 뒤 저장
+//    - 실패 시 콘솔 경고 + 재시도 없음 (더 이상 잘못된 위치에 쓰지 않음)
+//    - Transaction 대신 once() → update() 조합 사용 (다운로드 최소화)
+//
+// saveOrderItemField / saveEntityField / saveEntityFields / saveEntity 모두 새 방식.
+
+// 내부 헬퍼: 서버에서 entity ID 로 실제 인덱스를 찾고, mutator 로 update payload 생성 후 저장.
+// mutator(serverIdx) → { 'orders/47/status': 'invoiced', ... } 형태의 update 객체 반환
+function _saveByIdSafe(entityType, entityId, mutator, opLabel) {
+  if (!DB_REF) return;
+  _lastSaveTime = Date.now();
+  DB_REF.child(entityType).once('value').then(snap => {
+    const serverList = snap.val();
+    if (!Array.isArray(serverList) && (typeof serverList !== 'object' || serverList === null)) {
+      console.error('❌ [' + opLabel + '] 서버 ' + entityType + ' 배열이 아님, 저장 취소');
+      return;
+    }
+    // 서버 데이터가 array 또는 object (numeric keys) — 둘 다 처리
+    let serverIdx = -1;
+    if (Array.isArray(serverList)) {
+      serverIdx = serverList.findIndex(x => x && x.id === entityId);
+    } else {
+      // Firebase 는 sparse array 를 object 로 반환 — key 들 순회
+      Object.keys(serverList).forEach(k => {
+        if (serverList[k] && serverList[k].id === entityId) {
+          serverIdx = Number(k);
+        }
+      });
+    }
+    if (serverIdx < 0 || !Number.isFinite(serverIdx)) {
+      console.error('❌ [' + opLabel + '] 서버에 entity ' + entityId + ' 없음, 저장 취소');
+      return;
+    }
+    const update = mutator(serverIdx);
+    if (!update || Object.keys(update).length === 0) return;
+    DB_REF.update(update).catch(e => {
+      console.error('❌ [' + opLabel + '] Firebase update 실패:', e);
+    });
+  }).catch(e => {
+    console.error('❌ [' + opLabel + '] 서버 인덱스 조회 실패:', e);
+  });
+}
+
+// saveOrderItemField (기존 API 유지, 내부만 ID-safe 로 교체)
 // 사용처: updateWeighing, updatePrepWeight, updatePrepPrice (계근/사무실).
 // listKey: 'items' (계근 화면) 또는 'invoiceItems' (인보이스 준비 화면).
-// 다른 기기의 작업이 같은 주문의 같은 필드를 동시 수정하지 않는 한 안전.
 function saveOrderItemField(orderId, listKey, itemIdx, field) {
   const o = DB.orders.find(x => x.id === orderId);
   if (!o || !o[listKey] || !o[listKey][itemIdx]) return;
   saveLocalDB();
-  if (DB_REF) {
-    const orderIdx = DB.orders.findIndex(x => x.id === orderId);
-    if (orderIdx < 0) return;
-    _lastSaveTime = Date.now();
-    const value = o[listKey][itemIdx][field];
-    const path = 'orders/' + orderIdx + '/' + listKey + '/' + itemIdx + '/' + field;
+  const value = o[listKey][itemIdx][field];
+  _saveByIdSafe('orders', orderId, (serverIdx) => {
+    const path = 'orders/' + serverIdx + '/' + listKey + '/' + itemIdx + '/' + field;
     const update = {};
     update[path] = (value === undefined ? null : value);
-    DB_REF.update(update).catch(e => {
-      console.error('Firebase partial save error, falling back to full save:', e);
-      if (DB_REF) DB_REF.set(DB).catch(() => {});
-    });
-  }
+    return update;
+  }, 'saveOrderItemField/' + listKey + '/' + field);
 }
 
 // === Phase 2 동시성 개선 (2026-06-12) =====================================
@@ -742,7 +835,7 @@ function saveOrderItemField(orderId, listKey, itemIdx, field) {
 // last-write-wins 충돌을 방지한다.
 
 // 한 entity 의 단일 필드만 업데이트 — 예: order.status, customer.phone
-// 다른 사용자가 같은 entity 의 *다른* 필드를 동시 수정해도 양쪽 모두 보존됨.
+// 🛡️ (2026-07-30) ID-safe: 서버에서 실제 인덱스 재확인 후 저장.
 function saveEntityField(entityType, entityId, field) {
   const list = DB[entityType];
   if (!Array.isArray(list)) return;
@@ -765,59 +858,47 @@ function saveEntityField(entityType, entityId, field) {
       });
     }
   }
+  const value = list[idx][field];
   saveLocalDB();
-  if (DB_REF) {
-    _lastSaveTime = Date.now();
-    const value = list[idx][field];
-    const path = entityType + '/' + idx + '/' + field;
+  _saveByIdSafe(entityType, entityId, (serverIdx) => {
+    const path = entityType + '/' + serverIdx + '/' + field;
     const update = {};
     update[path] = (value === undefined ? null : value);
-    DB_REF.update(update).catch(e => {
-      console.error('Firebase partial save error, falling back to full save:', e);
-      if (DB_REF) DB_REF.set(DB).catch(() => {});
-    });
-  }
+    return update;
+  }, 'saveEntityField/' + entityType + '/' + field);
 }
 
 // 여러 필드를 한 번에 — 예: order.status + order.invoicedAt 동시 변경
+// 🛡️ (2026-07-30) ID-safe.
 function saveEntityFields(entityType, entityId, fields) {
   const list = DB[entityType];
   if (!Array.isArray(list)) return;
   const idx = list.findIndex(x => x && x.id === entityId);
   if (idx < 0) return;
   saveLocalDB();
-  if (DB_REF) {
-    _lastSaveTime = Date.now();
+  _saveByIdSafe(entityType, entityId, (serverIdx) => {
     const update = {};
     Object.keys(fields).forEach(f => {
       const v = fields[f];
-      update[entityType + '/' + idx + '/' + f] = (v === undefined ? null : v);
+      update[entityType + '/' + serverIdx + '/' + f] = (v === undefined ? null : v);
     });
-    DB_REF.update(update).catch(e => {
-      console.error('Firebase partial save error, falling back to full save:', e);
-      if (DB_REF) DB_REF.set(DB).catch(() => {});
-    });
-  }
+    return update;
+  }, 'saveEntityFields/' + entityType);
 }
 
 // 기존 entity 한 개를 통째로 교체 (편집 후 저장)
-// 다른 사용자가 같은 entity 를 동시 수정한 경우 마지막 저장이 이김 (불가피).
-// 그러나 *다른* entity 작업은 영향 받지 않음.
+// 🛡️ (2026-07-30) ID-safe: 서버 인덱스 재확인 → 절대 다른 entity 덮어쓰지 않음.
 function saveEntity(entityType, entityId, value) {
   const list = DB[entityType];
   if (!Array.isArray(list)) return;
   const idx = list.findIndex(x => x && x.id === entityId);
   if (idx < 0) return;
   saveLocalDB();
-  if (DB_REF) {
-    _lastSaveTime = Date.now();
+  _saveByIdSafe(entityType, entityId, (serverIdx) => {
     const update = {};
-    update[entityType + '/' + idx] = value;
-    DB_REF.update(update).catch(e => {
-      console.error('Firebase partial save error, falling back to full save:', e);
-      if (DB_REF) DB_REF.set(DB).catch(() => {});
-    });
-  }
+    update[entityType + '/' + serverIdx] = value;
+    return update;
+  }, 'saveEntity/' + entityType);
 }
 
 // 신규 entity 를 안전하게 array 끝에 추가 — Firebase 트랜잭션으로
@@ -4850,23 +4931,109 @@ function renderFavQuick(cust) {
     </div>`;
     return;
   }
+  // ⭐ (2026-07-30) 옵션 B — 카드 전체 담기
+  //   카드 어디를 눌러도 담김 (60~72px 터치 영역)
+  //   담긴 순간 초록 ✓ 팝 + 배경 초록 반짝 → 확실한 시각 피드백
+  //   담긴 개수 배지 표시 (한 카드 여러 번 담기 가능)
+  //   삭제는 우상단 작은 [✕] 버튼만 (실수 방지)
+  const currentCartCount = (pid, notesN) => CART.filter(c =>
+    c.productId === pid && normalizeFavNotes(c.notes || '') === notesN
+  ).length;
   div.innerHTML = pairs.map(({product: p, notes}) => {
     const cutLabel = CUT_DISPLAY[p.cut] || p.cut;
     const notesAttr = notes.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
     const notesPart = notes
-      ? `<br><small style="color:var(--brand-dark); font-weight:600; margin-left:8px;">📝 ${notes}</small>`
+      ? `<div style="margin-top:4px; margin-left:2px;"><small style="color:var(--brand-dark); font-weight:600; padding:2px 8px; background:#FFF5D6; border-radius:10px;">📝 ${notes}</small></div>`
       : '';
-    return `<div onclick="addToCart('${p.id}', '${notesAttr}')"
+    const inCart = currentCartCount(p.id, notes);
+    const badgeHtml = inCart > 0
+      ? `<span style="display:inline-block; background:#2E7D32; color:#fff; font-size:11px; font-weight:700; padding:2px 8px; border-radius:10px; margin-left:6px;">🛒 ${inCart}</span>`
+      : '';
+    return `<div class="fav-card" data-pid="${p.id}" data-notes="${notesAttr}"
+         onclick="favCardAdd(this)"
+         style="position:relative; cursor:pointer; padding:12px 44px 12px 14px; margin-bottom:8px;
+                background:#FFFCF3; border:1.5px solid #F0D89A; border-radius:10px;
+                text-align:left; line-height:1.5;
+                transition:background 0.2s, border-color 0.2s;
+                min-height:56px;"
          onmouseover="this.style.background='#FFF5D6'"
-         onmouseout="this.style.background='transparent'"
-         style="cursor:pointer; padding:5px 4px; font-size:14px; text-align:left; line-height:1.5; border-bottom:1px dashed var(--line);">
-      <span style="color:var(--brand); font-weight:600; font-size:11px; letter-spacing:0.3px;">${cutLabel}</span>
-      <span style="color:var(--ink); font-weight:700;"> ${p.name}</span>
-      ${p.brand ? '<span style="font-weight:400; color:var(--muted); font-size:12px;"> · ' + p.brand + '</span>' : ''}
+         onmouseout="this.style.background='#FFFCF3'">
+      <div>
+        <span style="color:var(--brand); font-weight:700; font-size:11px; letter-spacing:0.3px;">${cutLabel}</span>
+        <span style="color:var(--ink); font-weight:700; font-size:15px; margin-left:2px;">${p.name}</span>
+        ${p.brand ? '<span style="font-weight:400; color:var(--muted); font-size:12px;"> · ' + p.brand + '</span>' : ''}
+        ${badgeHtml}
+      </div>
       ${notesPart}
+      <button onclick="event.stopPropagation(); favCardRemove(this)"
+        title="즐겨찾기에서 제거"
+        style="position:absolute; top:6px; right:6px; background:transparent; border:none;
+               color:#999; font-size:16px; cursor:pointer; padding:4px 8px; border-radius:4px;
+               line-height:1;"
+        onmouseover="this.style.background='#FEE'; this.style.color='#C62828';"
+        onmouseout="this.style.background='transparent'; this.style.color='#999';"
+      >✕</button>
     </div>`;
   }).join('');
 }
+
+// ⭐ (2026-07-30) 옵션 B — 카드 클릭 시 담기 + 시각 피드백
+window.favCardAdd = function(cardEl) {
+  const pid = cardEl.getAttribute('data-pid');
+  const notes = cardEl.getAttribute('data-notes') || '';
+  if (!pid) return;
+  addToCart(pid, notes);
+  // 배경 초록 반짝 (200ms) + 초록 원 ✓ 아이콘 팝 (900ms)
+  const origBg = cardEl.style.background;
+  const origBorder = cardEl.style.borderColor;
+  cardEl.style.background = '#C8E6C9';
+  cardEl.style.borderColor = '#2E7D32';
+  setTimeout(() => {
+    cardEl.style.background = origBg;
+    cardEl.style.borderColor = origBorder;
+  }, 250);
+  // 초록 원 ✓ 팝
+  const check = document.createElement('div');
+  check.style.cssText =
+    'position:absolute; top:50%; right:50px; transform:translate(0,-50%); ' +
+    'width:26px; height:26px; border-radius:50%; background:#2E7D32; color:#fff; ' +
+    'font-size:16px; font-weight:900; display:flex; align-items:center; justify-content:center; ' +
+    'box-shadow:0 3px 10px rgba(46,125,50,0.5); pointer-events:none; z-index:10; ' +
+    'animation: favCheckPop 0.9s ease-out forwards;';
+  check.textContent = '✓';
+  cardEl.appendChild(check);
+  // 애니메이션 끝난 후 fav 리스트 재렌더 → 배지 카운트 갱신 (애니메이션 도중 카드 파괴 방지)
+  setTimeout(() => {
+    if (check.parentNode) check.parentNode.removeChild(check);
+    const custMatch = location.hash.match(/#order\?c=([^&]+)/);
+    if (custMatch) {
+      const cust = DB.customers.find(c => c.id === custMatch[1]);
+      if (cust) renderFavQuick(cust);
+    }
+  }, 950);
+};
+
+window.favCardRemove = function(btnEl) {
+  const cardEl = btnEl.closest('.fav-card');
+  if (!cardEl) return;
+  const pid = cardEl.getAttribute('data-pid');
+  const notes = cardEl.getAttribute('data-notes') || '';
+  const custMatch = location.hash.match(/#order\?c=([^&]+)/);
+  if (!custMatch) return;
+  const cust = DB.customers.find(c => c.id === custMatch[1]);
+  if (!cust || !Array.isArray(cust.favoritePairs)) return;
+  const targetNotes = normalizeFavNotes(notes);
+  const before = cust.favoritePairs.length;
+  cust.favoritePairs = cust.favoritePairs.filter(pair => {
+    if (!pair || pair.productId !== pid) return true;
+    if (normalizeFavNotes(pair.notes || '') !== targetNotes) return true;
+    return false;
+  });
+  if (cust.favoritePairs.length === before) return;
+  try { saveEntityField('customers', cust.id, 'favoritePairs'); } catch(e) { console.warn(e); }
+  renderFavQuick(cust);
+  if (typeof showToast === 'function') showToast('즐겨찾기에서 제거됨');
+};
 function renderCatalog(q, custId) {
   const div = document.getElementById('catalog');
   const filt = DB.products.filter(p => p.active && (!q || (p.name+' '+p.brand+' '+p.cut).toLowerCase().includes(q.toLowerCase())));
@@ -5010,9 +5177,9 @@ function renderCart() {
             <div><span class="name">${p.name}</span><span class="brand-tag">(${p.brand})</span></div>
             <button class="del" onclick="CART.splice(${idx},1); renderCart(); _autoSaveCurrentCartDraft();">×</button>
           </div>
-          <div style="display:flex; gap:8px; align-items:flex-end; margin-top:8px;">
-            <div style="flex:0 0 140px;">
-              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">수량</label>
+          <div class="cart-item-fields">
+            <div class="qty-wrap">
+              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">수량 / Quantity</label>
               <div style="display:flex; align-items:stretch; border:1px solid var(--line); border-radius:5px; background:#fff; overflow:hidden;">
                 <input type="number" min="0" step="${qtyStep}" value="${qtyDisp}" placeholder=""
                   style="flex:1; min-width:0; padding:6px 6px; font-size:14px; text-align:right; border:none; outline:none; background:transparent;"
@@ -5030,8 +5197,8 @@ function renderCart() {
                 </div>
               </div>
             </div>
-            <div style="flex:1;">
-              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">품목 요청사항 (예: 3mm 슬라이스, 진공포장)</label>
+            <div class="notes-wrap">
+              <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">품목 요청사항 / Notes (예: 3mm 슬라이스, 진공포장)</label>
               <input placeholder="다음 주문에 기억됩니다" value="${(item.notes||'').replace(/"/g,'&quot;')}"
                 style="width:100%; padding:6px 8px; font-size:13px;"
                 onchange="CART[${idx}].notes=this.value; _autoSaveCurrentCartDraft();">
@@ -5538,9 +5705,9 @@ function viewOffice() {
   const app = document.getElementById('app');
   // ⭐ 매출일보 정렬 모드 — 화면 진입 시 항상 알파벳순으로 초기화 (사용자 지시)
   window._salesSortMode = 'alpha';
-  // ⭐ (2026-07-29) 입금 패널 sticky 날짜 리셋 (다른 페이지 갔다 오면 오늘 날짜로)
-  //   패널 안에서만 유지되는 임시 상태. viewOffice 진입 = "새로 시작"으로 간주.
-  window._ipDateSticky = null;
+  // ⭐ (2026-07-30) 입금 패널 sticky 날짜 — 리셋하지 않음
+  //   사용자 요청: 아침에 지정일 세팅 후 20~30건 연속 입력할 때 매번 날짜 다시 입력하는 불편 해소.
+  //   sticky 값은 브라우저 새로고침 전까지 유지. 새 날짜로 바꾸려면 패널에서 직접 변경.
   const ready = DB.orders.filter(o => o.status === 'weighed');
   // 발행 완료 — 당일 발행분만 (invoicedAt 기준). 이전 발행 건은 #history 에서 조회.
   // ⭐ Bug fix (2026-07-07): invoicedAt 은 UTC ISO 문자열이라 .slice(0,10) 하면 시드니 오전엔
@@ -5768,11 +5935,24 @@ window.deletePayment = function(payId) {
   DB.payments.splice(idxNow, 1);
   try { saveLocalDB(); } catch(e){}
 
-  // Firebase 부분 반영 — 배열 전체 재기록이 가장 안전 (인덱스 밀림 대응)
+  // 🛡️ (2026-07-30) 동시성 안전 — 서버에서 payment ID 로 삭제 (전체 재기록 X)
+  //   기존: DB_REF.child('payments').set(DB.payments) → 다른 매니저의 삭제 덮어씀
+  //   신규: transaction 으로 ID 로 찾아 제거 → 다른 삭제와 충돌 없음
   if (typeof DB_REF !== 'undefined' && DB_REF) {
     _lastSaveTime = Date.now();
-    DB_REF.child('payments').set(DB.payments).catch(function(e){
-      console.warn('payments delete Firebase save failed:', e);
+    DB_REF.child('payments').transaction(function(currentList) {
+      if (!currentList) return currentList;
+      // Firebase 는 sparse array 를 object 로 반환 — 둘 다 처리
+      if (Array.isArray(currentList)) {
+        return currentList.filter(function(x) { return x && x.id !== payId; });
+      }
+      var result = {};
+      Object.keys(currentList).forEach(function(k) {
+        if (currentList[k] && currentList[k].id !== payId) result[k] = currentList[k];
+      });
+      return result;
+    }, function(error) {
+      if (error) console.warn('payments delete transaction 실패:', error);
     });
   }
 
@@ -8002,9 +8182,22 @@ async function issueInvoice(orderId) {
     if (!DB.settings.invoiceNoNext) DB.settings.invoiceNoNext = 200001;
     invoiceNo = String(DB.settings.invoiceNoNext++);
   }
+  // 🛡️ (2026-07-30) await 동안 snapshot 이 DB.orders 를 교체했을 수 있음.
+  //   원래 'o' 참조는 옛 배열 소속 → 여기서 DB 를 재검색해 최신 참조로 mutation 적용.
+  //   증상: 발행 후 계근 페이지에 그대로 남아있는 케이스 원천 차단.
+  const invoicedAtISO = new Date().toISOString();
+  const oCurrent = DB.orders.find(x => x.id === orderId);
+  if (!oCurrent) {
+    alert('⚠️ 주문이 사라졌습니다. 발행 취소.\n\n다른 사용자가 삭제했거나 데이터 동기화 문제입니다.');
+    return;
+  }
+  oCurrent.invoiceNo = invoiceNo;
+  oCurrent.status = 'invoiced';
+  oCurrent.invoicedAt = invoicedAtISO;
+  // 참조 o 도 아래 로직 (customPrices, PDF) 에서 계속 사용되므로 동기화
   o.invoiceNo = invoiceNo;
   o.status = 'invoiced';
-  o.invoicedAt = new Date().toISOString();
+  o.invoicedAt = invoicedAtISO;
 
   // 2) ⭐ 거래처 맞춤 단가 저장 (다음 인보이스 자동 인식의 핵심). 라인 단가가 0/마스터든 무관 — 무조건 잠금.
   const cust = DB.customers.find(x => x.id === o.customerId);
