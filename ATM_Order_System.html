@@ -2069,11 +2069,16 @@ function renderOrdersAdmin(params) {
     byCust[cid].orders.push(o);
     byCust[cid].total += computeTotals(o).grand;
   });
-  const custOptions = DB.customers.map(c => {
-    const n = (byCust[c.id]?.orders.length) || 0;
-    return `<option value="${c.id}" ${selCid===c.id?'selected':''}>${c.name} (${n}건)</option>`;
-  }).join('');
   const orphanCount = (byCust['__none__']?.orders.length) || 0;
+
+  // ⭐ (2026-07-30) 주문서 화면과 동일한 검색식 (renderCustomerSearchSelect)로 교체
+  //   기존: 긴 <select> 스크롤 필요 → 신규: 이름·코드·담당자 검색으로 즉시 선택
+  const custPickerHtml = renderCustomerSearchSelect({
+    selectId: 'ordAdmCust',
+    selectedId: (selCid && selCid !== '__none__') ? selCid : '',
+    placeholder: '— 거래처를 선택하세요 —',
+    onChange: "if(this.value) location.hash='#admin?tab=orders&c='+this.value;"
+  });
 
   body.innerHTML = `
     <div class="card" style="border-left:4px solid #C62828;">
@@ -2083,14 +2088,15 @@ function renderOrdersAdmin(params) {
         인보이스 발행된 건은 회계 기록과 차이가 생길 수 있으니 신중히 진행하세요.
       </div>
 
-      <div style="display:flex; gap:10px; align-items:center; flex-wrap:wrap; margin:12px 0;">
-        <label style="font-weight:700;">거래처 선택:</label>
-        <select id="ordAdmCust" onchange="location.hash='#admin?tab=orders&c='+this.value" style="padding:8px; border:1px solid var(--line); border-radius:6px; min-width:220px;">
-          <option value="">— 거래처를 선택하세요 —</option>
-          ${custOptions}
-          ${orphanCount>0 ? `<option value="__none__" ${selCid==='__none__'?'selected':''}>⚠️ 거래처 없음 (${orphanCount}건)</option>` : ''}
-        </select>
-        <span style="font-size:12px; color:var(--muted);">전체 주문: <b>${DB.orders.length}건</b></span>
+      <div style="margin:12px 0;">
+        <label style="font-weight:700; display:block; margin-bottom:6px;">거래처 선택:</label>
+        <div style="max-width:420px;">${custPickerHtml}</div>
+        <div style="font-size:12px; color:var(--muted); margin-top:6px;">
+          전체 주문: <b>${DB.orders.length}건</b>
+          ${orphanCount > 0
+            ? ` · <a href="#admin?tab=orders&c=__none__" style="color:#C62828; font-weight:700; text-decoration:underline;">⚠️ 거래처 없음/삭제됨 (${orphanCount}건) 보기</a>`
+            : ''}
+        </div>
       </div>
 
       <div id="ordAdmList"></div>
