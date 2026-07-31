@@ -11108,8 +11108,9 @@ function matchWorkedMeatToRaw(workedProduct, notes) {
            _wmFirstTwoMatchEnDetail(workedName, nm).match ||
            _wmCrossLangMatchDetail(workedName, nm).match;
   });
-  // ⭐ (2026-07-31 v3.1) 다중 후보 자동 확정 — top1 이 한글·영어 둘 다 EXACT 매칭이고
-  //   나머지 후보 중 그렇게 강한 매칭이 없으면 top1 자동 확정 (명백히 최고 매칭이므로).
+  // ⭐ (2026-07-31 v3.2) 다중 후보 자동 확정 — 두 조건 중 하나 만족시 자동
+  //   (a) top1 이 한글·영어 둘 다 EXACT 매칭이고 나머지 후보 중 그렇게 강한 매칭 없음
+  //   (b) top1 스코어 200+ 이고 2등과 격차 50+ → 명백히 최고 매칭 (다중 후보라도 안전)
   if (firstTwoCands.length >= 2) {
     const bestName = best.product.name;
     const bestKor = _wmFirstTwoMatchDetail(workedName, bestName);
@@ -11121,6 +11122,12 @@ function matchWorkedMeatToRaw(workedProduct, notes) {
              _wmFirstTwoMatchEnDetail(workedName, nm).exact;
     });
     if (bestBothExact && !othersBothExact) {
+      return { auto: true, candidate: best.product, score: best.score, stock: best.stock };
+    }
+    // 규칙 (b): 스코어 200+ 이고 2등과 격차 50+ → 자동
+    const secondScore = cands.length >= 2 ? cands[1].score : 0;
+    const gap = best.score - secondScore;
+    if (best.score >= 200 && gap >= 50) {
       return { auto: true, candidate: best.product, score: best.score, stock: best.stock };
     }
     return { auto: false, candidate: best.product, score: best.score, stock: best.stock,
