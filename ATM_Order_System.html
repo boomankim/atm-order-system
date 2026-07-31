@@ -10752,8 +10752,20 @@ const MIXED_MEAT_KEYWORDS = ['샤브','불고기','민스','mince','shabu','slic
 // -------------------------------------------------------------------------
 const _WM_ANIMALS = ['소','앵거스','와규','돼지','오리','양고기','양'];
 const _WM_ANIMALS_EN = ['BEEF','ANGUS','WAGYU','PORK','DUCK','LAMB'];
-const _WM_COOKING_SKIP = ['불고기','야끼니꾸','야끼','불백'];
-const _WM_COOKING_SKIP_EN = ['BULGOGI','YAKINIKU'];
+// ⭐ (2026-07-31) 처리·조리·포장·양념 방식 단어 — 부위 추출 시 스킵
+//   부위 명명 앞뒤에 이 단어들이 오면 실제 "부위"로 오인되지 않도록 건너뜀.
+//   사용자 제공 리스트 반영 (재단·슬라이스·양념·LA·찜·탕·육포·샤브·포장·작업·롱·팩·돌돌이·대패·돈까스용·상악·하악 등)
+const _WM_COOKING_SKIP = [
+  '불고기','야끼니꾸','야끼','불백',
+  '재단','슬라이스','슬라이스드','큐브','다지기','다진','민스','채썰기','채','스트립','통','뼈째','뼈있는',
+  '양념','LA','찜','편갈비','탕','육포','육회','육전','샤브','포장','작업','롱','팩',
+  '돌돌이','대패','돈까스용','상악','하악'
+];
+const _WM_COOKING_SKIP_EN = [
+  'BULGOGI','YAKINIKU',
+  'SLICE','SLICED','CUT','CUBE','CUBED','DICED','MINCED','STRIP','STRIPPED','WHOLE','CHOPPED','GROUND',
+  'MARINATED','LA','PACK','PACKED','ROLL','ROLLED'
+];
 const _WM_FROZEN_KEYWORDS = ['냉동','FROZEN'];
 // ⭐ (2026-07-31) v3 — 크로스 언어 animal 매핑 (BEEF↔소 등)
 const _WM_EN_TO_KO_ANIMAL = {
@@ -10768,8 +10780,9 @@ const _WM_KO_TO_EN_ANIMAL = {
 const _WM_EN_SKIP = new Set([
   'BEEF','ANGUS','WAGYU','PORK','DUCK','LAMB',
   'BULGOGI','YAKINIKU',
-  'SLICE','SLICED','CUT','CUBE','CUBED','STRIP','WHOLE','WITH','AND','FROM','FOR',
-  'MM','CM','KG','LB','OZ','THE','OF','TO','IN',
+  'SLICE','SLICED','CUT','CUBE','CUBED','DICED','MINCED','STRIP','STRIPPED','WHOLE','CHOPPED','GROUND',
+  'MARINATED','LA','PACK','PACKED','ROLL','ROLLED',
+  'WITH','AND','FROM','FOR','MM','CM','KG','LB','OZ','THE','OF','TO','IN',
   'FROZEN','FRESH','TARA','OAKDALE','SIRHARRY','CAMPBELL','SUNPORK','RIVAREA','WILLMEAT'
 ]);
 
@@ -11095,8 +11108,21 @@ function matchWorkedMeatToRaw(workedProduct, notes) {
            _wmFirstTwoMatchEnDetail(workedName, nm).match ||
            _wmCrossLangMatchDetail(workedName, nm).match;
   });
-  // 첫 2단어 매칭이 여러 개 → 자동 확정 X (사용자 선택)
+  // ⭐ (2026-07-31 v3.1) 다중 후보 자동 확정 — top1 이 한글·영어 둘 다 EXACT 매칭이고
+  //   나머지 후보 중 그렇게 강한 매칭이 없으면 top1 자동 확정 (명백히 최고 매칭이므로).
   if (firstTwoCands.length >= 2) {
+    const bestName = best.product.name;
+    const bestKor = _wmFirstTwoMatchDetail(workedName, bestName);
+    const bestEn  = _wmFirstTwoMatchEnDetail(workedName, bestName);
+    const bestBothExact = bestKor.exact && bestEn.exact;
+    const othersBothExact = firstTwoCands.slice(1).some(function(c){
+      const nm = c.product.name;
+      return _wmFirstTwoMatchDetail(workedName, nm).exact &&
+             _wmFirstTwoMatchEnDetail(workedName, nm).exact;
+    });
+    if (bestBothExact && !othersBothExact) {
+      return { auto: true, candidate: best.product, score: best.score, stock: best.stock };
+    }
     return { auto: false, candidate: best.product, score: best.score, stock: best.stock,
              multipleMatches: firstTwoCands.length };
   }
