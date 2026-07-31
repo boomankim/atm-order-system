@@ -1020,6 +1020,30 @@ function exitCustomerMode() {
   location.hash = '#home';
 }
 
+// ⭐ (2026-07-31) 거래처 코드 자동 기억 (localStorage)
+//   첫 접속 시 "이 기기 기억" 체크 → 다음부터 자동 진입.
+//   "다른 코드 사용" 클릭 시 삭제 → 코드 재입력.
+const CUSTOMER_CODE_KEY = 'atm_customer_code_remember';
+function getRememberedCode() {
+  try { return localStorage.getItem(CUSTOMER_CODE_KEY) || ''; } catch(e) { return ''; }
+}
+function rememberCode(code) {
+  try { localStorage.setItem(CUSTOMER_CODE_KEY, String(code || '')); } catch(e) {}
+}
+function forgetCode() {
+  try { localStorage.removeItem(CUSTOMER_CODE_KEY); } catch(e) {}
+}
+// 코드로 거래처 찾기 (대소문자·공백 무시)
+function findCustomerByCode(code) {
+  if (!code) return null;
+  const q = String(code).trim().toLowerCase().replace(/\s+/g, '');
+  if (!q) return null;
+  return DB.customers.find(c => {
+    const cc = (c.code || '').toLowerCase().replace(/\s+/g, '');
+    return cc && cc === q;
+  }) || null;
+}
+
 // -------- Staff Auth (password gate for #order, #warehouse, #office) --------
 let STAFF_UNLOCKED = false;
 try { STAFF_UNLOCKED = sessionStorage.getItem('atm_staff_unlocked') === '1'; } catch(e){}
@@ -1354,6 +1378,12 @@ function route() {
   _appEl.innerHTML = '';
   // 홈은 medium(1200px) 로 살짝 좁게 — 카드 위주라 너무 넓으면 허전
   if (path === 'home') _appEl.classList.add('medium');
+  // ⭐ (2026-07-31) 배너 잔재 제거 — 허용 화면 밖으로 이동하면 pill 즉시 사라짐
+  const _banner = document.getElementById('sync-banner');
+  if (_banner) {
+    const _allowed = ['office', 'invoicePrep', 'invoice', 'history', 'statement', 'payment', 'admin'];
+    if (_allowed.indexOf(path) < 0) _banner.remove();
+  }
   view(params);
   // ⭐ (2026-07-26) B: 원격 업데이트 재렌더 시 스크롤 유지 (플래그 확인)
   if (!window._preserveScrollOnce) {
@@ -4641,6 +4671,24 @@ function resetInvoiceFooter() {
 // =========================================================================
 function viewEnter(params) {
   const app = document.getElementById('app');
+
+  // ⭐ (2026-07-31) 자동 진입 — localStorage 에 저장된 코드가 있고 유효하면 바로 주문 화면으로
+  //   viewEnter 는 3단계 흐름: (1) 이미 로그인됨 → 안내, (2) 코드 기억됨 → 자동 진입, (3) 신규 → 코드 입력
+  if (!CUSTOMER_MODE) {
+    const remembered = getRememberedCode();
+    if (remembered) {
+      const match = findCustomerByCode(remembered);
+      if (match && match.active !== false) {
+        setCustomerMode(match.id);
+        location.hash = '#order?c=' + match.id;
+        return;
+      } else if (!match || (match && match.active === false)) {
+        // 기억된 코드가 이제 유효하지 않음 (거래처 삭제/차단 등)
+        forgetCode();
+      }
+    }
+  }
+
   const currentCust = CUSTOMER_MODE ? DB.customers.find(c => c.id === CUSTOMER_MODE) : null;
   app.innerHTML = `
     <h2 class="page-title">🥩 ALL THAT MEAT
@@ -4648,7 +4696,7 @@ function viewEnter(params) {
     <div class="card" style="max-width:480px; margin:30px auto;">
       ${currentCust ? `
         <div class="notice" style="border-left-color:var(--ok); background:#E8F5E9;">
-          <b>${currentCust.name}</b>으로 로그인되어 있습니다.<br>
+          <b>${currentCust.name}</b> 로 로그인됨<br>
           <span style="font-size:12px; color:var(--muted);">Logged in as <b>${currentCust.name}</b></span>
         </div>
         <div class="btn-row" style="margin-top:14px;">
@@ -4656,38 +4704,95 @@ function viewEnter(params) {
           <button class="btn secondary" onclick="location.hash='#order?c=${currentCust.id}'">🛒 새 주문 / New Order</button>
         </div>
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line);">
-          <p style="font-size:13px; color:var(--muted);">다른 계정으로 변경하려면 아래에 코드를 입력하세요.<br><span style="font-size:11px;">To switch account, enter the new code below.</span></p>
-          <div class="field"><input id="entryCode" placeholder="거래처 코드 또는 상호명 / Customer code or store name"
-            onkeydown="if(event.key==='Enter') submitEntry()"
-            oninput="liveSearchCustomer()"></div>
-          <div id="liveResult"></div>
-          <button class="btn secondary sm" onclick="submitEntry()" style="margin-top:6px;">계정 변경 / Switch Account</button>
+          <p style="font-size:13px; color:var(--muted); margin:0 0 8px 0;">
+            다른 코드로 변경하려면 아래 버튼을 누르세요.<br>
+            <span style="font-size:11px;">To switch to a different code, click below.</span>
+          </p>
+          <button class="btn secondary sm" onclick="switchCustomerAccount()">🔄 다른 코드 사용 / Switch Code</button>
         </div>
       ` : `
-        <h3>거래처 확인 / Customer Verification</h3>
+        <h3>거래처 코드 입력 / Enter Customer Code</h3>
         <p style="font-size:13px; color:var(--muted); margin:0 0 16px 0;">
-          주문 전 거래처 코드 또는 상호명을 입력해 주세요.<br>
-          <span style="font-size:12px;">Please enter your <b>customer code</b> or <b>store name</b> provided by ATM.</span>
+          ATM에서 카톡으로 전달받은 <b>거래처 코드</b>를 입력해 주세요.<br>
+          <span style="font-size:12px;">Please enter the <b>customer code</b> ATM sent you via KakaoTalk.</span>
         </p>
         <div class="field">
-          <label>거래처 코드 또는 상호명 / Customer Code or Store Name</label>
-          <input id="entryCode" placeholder="예: CUST001 또는 Sydney BBQ" autofocus
-            onkeydown="if(event.key==='Enter') submitEntry()" autocomplete="off"
-            oninput="liveSearchCustomer()" style="font-size:16px; padding:10px;">
+          <label>거래처 코드 / Customer Code</label>
+          <input id="entryCode" placeholder="예: AT0042" autofocus
+            onkeydown="if(event.key==='Enter') submitEntryCode()" autocomplete="off"
+            oninput="liveCheckCode()"
+            style="font-size:20px; padding:12px; letter-spacing:2px; text-align:center; text-transform:uppercase;">
         </div>
         <div id="liveResult"></div>
-        <button class="btn" onclick="submitEntry()" style="width:100%; font-size:16px; padding:14px; margin-top:10px;">✅ 확인 후 주문하기 / Verify &amp; Order</button>
+        <label style="display:flex; align-items:center; gap:10px; margin:14px 0; padding:8px 12px; background:#FAF6F1; border-radius:8px; font-size:13px; color:var(--ink); cursor:pointer;">
+          <input type="checkbox" id="rememberCodeChk" checked style="width:18px; height:18px; cursor:pointer;">
+          <span><b>이 기기 기억하기</b> <span style="color:var(--muted); font-size:11px;">— 다음부터 자동 접속 (Remember on this device)</span></span>
+        </label>
+        <button class="btn" onclick="submitEntryCode()" style="width:100%; font-size:16px; padding:14px;">✅ 확인 후 주문 / Verify &amp; Order</button>
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); line-height:1.9;">
-          ※ 거래처 코드는 ATM에서 카카오톡으로 전달해 드린 코드입니다.<br>
-          ※ Your customer code is sent by ATM via KakaoTalk.<br>
-          ※ 확인 후 브라우저를 새로고침해도 세션이 유지됩니다.<br>
-          ※ 브라우저를 닫으면 다시 입력이 필요합니다.<br>
+          ※ 대소문자·공백은 자동 무시됩니다 (AT0042 = at0042).<br>
+          ※ 코드를 잊으셨거나 오류 시 ATM 사무실로 문의 주세요.<br>
           ※ 문의: ${DB.company.phone || 'ATM 사무실로 연락 주세요'}
         </div>
       `}
     </div>
   `;
 }
+
+// ⭐ (2026-07-31) 코드 입력 실시간 검증 — 초록/빨강 카드로 즉시 피드백
+window.liveCheckCode = function() {
+  const inp = document.getElementById('entryCode');
+  const div = document.getElementById('liveResult');
+  if (!inp || !div) return;
+  const raw = (inp.value || '').trim();
+  if (!raw) { div.innerHTML = ''; return; }
+  const match = findCustomerByCode(raw);
+  if (!match) {
+    div.innerHTML = '<div style="padding:10px 14px;background:#FFF3E0;border-left:4px solid #FF9800;border-radius:6px;font-size:13px;color:#BF6900;margin-top:8px;">'
+      + '❌ 일치하는 코드 없음 — 다시 확인해 주세요</div>';
+    return;
+  }
+  if (match.active === false) {
+    div.innerHTML = '<div style="padding:14px;background:#FFEBEE;border:2px solid #E53935;border-radius:8px;margin-top:8px;text-align:center;">'
+      + '<div style="font-size:18px;font-weight:700;color:#B71C1C;">⛔ 접근 차단됨</div>'
+      + '<div style="font-size:12px;color:#888;margin-top:6px;">문의: ' + ((DB.company && DB.company.phone) || 'ATM 사무실') + '</div>'
+      + '</div>';
+    return;
+  }
+  const nm = (match.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  div.innerHTML = '<div style="padding:16px 14px;background:#E8F5E9;border:2px solid #43A047;border-radius:8px;margin-top:8px;text-align:center;">'
+    + '<div style="font-size:20px;font-weight:700;color:#1B5E20;">✅ ' + nm + '</div>'
+    + '<div style="font-size:12px;color:#43A047;margin-top:6px;">아래 확인 버튼 또는 Enter 를 누르세요</div>'
+    + '</div>';
+};
+
+// ⭐ (2026-07-31) 코드 확인 후 진입
+window.submitEntryCode = function() {
+  const raw = (val('entryCode') || '').trim();
+  if (!raw) return alert('거래처 코드를 입력해 주세요.\nPlease enter your customer code.');
+  const match = findCustomerByCode(raw);
+  if (!match) {
+    return alert('일치하는 코드가 없습니다.\nNo matching code.\n\n· 대소문자·공백은 무시됩니다.\n· 문의: ' + (DB.company.phone || 'ATM 사무실'));
+  }
+  if (match.active === false) {
+    return alert('⛔ 주문 접근이 차단된 거래처입니다.\nOrder access has been suspended.\n\n문의: ' + (DB.company.phone || 'ATM 사무실'));
+  }
+  // "이 기기 기억" 체크 시 localStorage 에 저장
+  const chk = document.getElementById('rememberCodeChk');
+  if (chk && chk.checked) rememberCode(match.code || raw);
+  else forgetCode();
+  setCustomerMode(match.id);
+  location.hash = '#order?c=' + match.id;
+};
+
+// ⭐ (2026-07-31) 다른 코드 사용 — 기억된 코드 삭제 + 세션 초기화 + 코드 입력 화면
+window.switchCustomerAccount = function() {
+  if (!confirm('현재 계정에서 로그아웃하고 다른 코드를 입력할까요?\n\nSign out and switch to a different code?')) return;
+  forgetCode();
+  clearCustomerMode();
+  location.hash = '#enter';
+  setTimeout(() => location.reload(), 100);
+};
 
 function normalizeSearch(s) {
   // 1. 소문자 + 공백 제거
@@ -4902,7 +5007,9 @@ function viewOrder(params) {
   const todayDisplay = new Date().toLocaleDateString('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'short'});
   app.innerHTML = `
     <h2 class="page-title">🛒 ${cust.name}
-      <span style="font-size:12px; font-weight:400; color:var(--muted); margin-left:10px;">${todayDisplay}</span></h2>
+      <span style="font-size:12px; font-weight:400; color:var(--muted); margin-left:10px;">${todayDisplay}</span>
+      ${CUSTOMER_MODE ? `<a href="javascript:switchCustomerAccount()" style="font-size:11px; font-weight:400; color:var(--muted); margin-left:12px; text-decoration:underline;">🔄 다른 코드 사용</a>` : ''}
+    </h2>
 
     <input type="hidden" id="orderDate" value="${todayStr}">
     <input type="hidden" id="deliveryDate" value="">
@@ -10648,6 +10755,49 @@ const _WM_ANIMALS_EN = ['BEEF','ANGUS','WAGYU','PORK','DUCK','LAMB'];
 const _WM_COOKING_SKIP = ['불고기','야끼니꾸','야끼','불백'];
 const _WM_COOKING_SKIP_EN = ['BULGOGI','YAKINIKU'];
 const _WM_FROZEN_KEYWORDS = ['냉동','FROZEN'];
+// ⭐ (2026-07-31) v3 — 크로스 언어 animal 매핑 (BEEF↔소 등)
+const _WM_EN_TO_KO_ANIMAL = {
+  'BEEF': '소', 'ANGUS': '앵거스', 'WAGYU': '와규',
+  'PORK': '돼지', 'DUCK': '오리', 'LAMB': '양'
+};
+const _WM_KO_TO_EN_ANIMAL = {
+  '소': 'BEEF', '앵거스': 'ANGUS', '와규': 'WAGYU',
+  '돼지': 'PORK', '오리': 'DUCK', '양': 'LAMB', '양고기': 'LAMB'
+};
+// 이름에서 영어 PART 로 볼 수 없는 단어 (skip)
+const _WM_EN_SKIP = new Set([
+  'BEEF','ANGUS','WAGYU','PORK','DUCK','LAMB',
+  'BULGOGI','YAKINIKU',
+  'SLICE','SLICED','CUT','CUBE','CUBED','STRIP','WHOLE','WITH','AND','FROM','FOR',
+  'MM','CM','KG','LB','OZ','THE','OF','TO','IN',
+  'FROZEN','FRESH','TARA','OAKDALE','SIRHARRY','CAMPBELL','SUNPORK','RIVAREA','WILLMEAT'
+]);
+
+// ⭐ (2026-07-31) v3 — Damerau-Levenshtein 거리 (transposition 포함).
+//   오타 1글자 (빠짐/추가/자리바꿈/1치환) 감지용.
+function _wmDamLev(a, b) {
+  if (a === b) return 0;
+  const la = a.length, lb = b.length;
+  if (!la) return lb;
+  if (!lb) return la;
+  const d = [];
+  for (let i = 0; i <= la; i++) { d[i] = [i]; }
+  for (let j = 0; j <= lb; j++) { d[0][j] = j; }
+  for (let i = 1; i <= la; i++) {
+    for (let j = 1; j <= lb; j++) {
+      const cost = a.charAt(i-1) === b.charAt(j-1) ? 0 : 1;
+      d[i][j] = Math.min(
+        d[i-1][j] + 1,
+        d[i][j-1] + 1,
+        d[i-1][j-1] + cost
+      );
+      if (i > 1 && j > 1 && a.charAt(i-1) === b.charAt(j-2) && a.charAt(i-2) === b.charAt(j-1)) {
+        d[i][j] = Math.min(d[i][j], d[i-2][j-2] + 1);
+      }
+    }
+  }
+  return d[la][lb];
+}
 
 // 한글 첫 2토큰 (축종+부위) 추출
 function _wmFirstTwoTokens(name) {
@@ -10688,12 +10838,62 @@ function _wmFirstTwoTokensEn(name) {
   return { animal: tokens[animalIdx], part: tokens[idx] };
 }
 
-// 부위 부분 매칭 판정 — 정확 일치 or 서로 포함
+// 부위 부분 매칭 판정 — 정확 일치 or 서로 포함 or 오타 1글자 (길이 6+ 만)
 function _wmPartMatch(w, r) {
   if (!w || !r) return { match: false, exact: false };
   if (w === r) return { match: true, exact: true };
   if (w.length >= 2 && r.indexOf(w) >= 0) return { match: true, exact: false };
   if (r.length >= 2 && w.indexOf(r) >= 0) return { match: true, exact: false };
+  // ⭐ (2026-07-31) v3 — 오타 1글자 허용 (길이 6자 이상, 길이차 1 이내)
+  //   KUCKLE↔KNUCKLE, KNUCKLE↔KNUCKLEE, KNUCKLE↔KUNCKLE 등 매칭
+  //   짧은 단어 (BEEF/PORK 등)는 오매칭 위험 → 6자 이상만 적용
+  if (w.length >= 6 && r.length >= 6 && Math.abs(w.length - r.length) <= 1) {
+    if (_wmDamLev(w, r) <= 1) return { match: true, exact: false, typo: true };
+  }
+  return { match: false, exact: false };
+}
+
+// ⭐ (2026-07-31) v3 — 이름에서 대표 영어 PART 추출 (animal·스킵 단어 제외 후 첫 의미 단어)
+//   raw 원료가 "소 너클 KNUCKLE" 처럼 영어 animal 없어도 뒤 영어 PART 얻기 위함.
+function _wmExtractEnglishPart(name) {
+  if (!name) return null;
+  const upper = String(name).toUpperCase();
+  const tokens = upper.match(/[A-Z][A-Z\-]+/g) || [];
+  for (let i = 0; i < tokens.length; i++) {
+    const t = tokens[i];
+    if (_WM_EN_SKIP.has(t)) continue;
+    if (/^\d/.test(t)) continue;
+    if (t.length < 3) continue;
+    return t;
+  }
+  return null;
+}
+
+// ⭐ (2026-07-31) v3 — 크로스 언어 매칭:
+//   Case A: worked 영어 animal + raw 한글 animal (매핑 일치)
+//   Case B: worked 한글 animal + raw 영어 animal (매핑 일치)
+//   같은 축종이면 영어 PART 끼리 비교 (부분매칭·오타허용 적용).
+function _wmCrossLangMatchDetail(workedName, rawName) {
+  // Case A: worked EN + raw KO
+  const wEn = _wmFirstTwoTokensEn(workedName);
+  const rKo = _wmFirstTwoTokens(rawName);
+  if (wEn && rKo && _WM_EN_TO_KO_ANIMAL[wEn.animal] === rKo.축종) {
+    const rEnPart = _wmExtractEnglishPart(rawName);
+    if (rEnPart) {
+      const m = _wmPartMatch(wEn.part, rEnPart);
+      if (m.match) return m;
+    }
+  }
+  // Case B: worked KO + raw EN
+  const wKo = _wmFirstTwoTokens(workedName);
+  const rEn = _wmFirstTwoTokensEn(rawName);
+  if (wKo && rEn && _WM_EN_TO_KO_ANIMAL[rEn.animal] === wKo.축종) {
+    const wEnPart = _wmExtractEnglishPart(workedName);
+    if (wEnPart) {
+      const m = _wmPartMatch(wEnPart, rEn.part);
+      if (m.match) return m;
+    }
+  }
   return { match: false, exact: false };
 }
 
@@ -10823,6 +11023,15 @@ function getRawMaterialCandidates(workedProduct, notes, topN) {
     const enMatch = _wmFirstTwoMatchEnDetail(workedName, p.name);
     if (enMatch.match) score += enMatch.exact ? 150 : 100;
 
+    // ⭐ (2026-07-31 v3) 크로스 언어 매칭 (BEEF↔소, WAGYU↔와규 등)
+    //   worked 이름에 한글 없어도 영어 animal 로 인식 후 raw 한글 animal 과 매핑 비교.
+    //   부위(PART)는 영어끼리 부분매칭·오타허용 적용.
+    //   한글·영어 매칭이 이미 성공했으면 중복 가산 방지 위해 스킵.
+    if (!korMatch.match && !enMatch.match) {
+      const crossMatch = _wmCrossLangMatchDetail(workedName, p.name);
+      if (crossMatch.match) score += crossMatch.exact ? 130 : 90;
+    }
+
     // ⭐ (2026-07-27 v2) 냉동/FROZEN 우선 (+25) — FIFO: 냉동 재고 먼저 소진
     //   단, 매칭이 성립된 후보 중에서만 부스트 적용 (엉뚱한 냉동 원료 자동 매칭 방지)
     if ((korMatch.match || enMatch.match) && _wmIsFrozen(p.name)) score += 25;
@@ -10878,12 +11087,13 @@ function matchWorkedMeatToRaw(workedProduct, notes) {
   const cands = getRawMaterialCandidates(workedProduct, notes, 10);
   if (cands.length === 0) return { auto: false, candidate: null, score: 0 };
   const best = cands[0];
-  // 첫 2단어 매칭 후보 수 계산
+  // 첫 2단어 매칭 후보 수 계산 (v3: 크로스 언어 매칭도 포함)
   const workedName = (workedProduct && workedProduct.name) || '';
   const firstTwoCands = cands.filter(function(c){
     const nm = c.product && c.product.name;
     return _wmFirstTwoMatchDetail(workedName, nm).match ||
-           _wmFirstTwoMatchEnDetail(workedName, nm).match;
+           _wmFirstTwoMatchEnDetail(workedName, nm).match ||
+           _wmCrossLangMatchDetail(workedName, nm).match;
   });
   // 첫 2단어 매칭이 여러 개 → 자동 확정 X (사용자 선택)
   if (firstTwoCands.length >= 2) {
@@ -11569,10 +11779,12 @@ function renderUnmatchedWorkedMeatList() {
           const sel = (c.product.id === bestPid) ? ' selected' : '';
           const korM = _wmFirstTwoMatchDetail(item.workedName, c.product.name).match;
           const enM  = _wmFirstTwoMatchEnDetail(item.workedName, c.product.name).match;
+          const xM   = (!korM && !enM) && _wmCrossLangMatchDetail(item.workedName, c.product.name).match;
           let mark = '';
           if (korM && enM) mark = '⭐⭐ ';
           else if (korM || enM) mark = '⭐ ';
-          if ((korM || enM) && _wmIsFrozen(c.product.name)) mark += '❄️ ';
+          else if (xM) mark = '🔗 ';   // 크로스 언어 매칭 (BEEF↔소 등)
+          if ((korM || enM || xM) && _wmIsFrozen(c.product.name)) mark += '❄️ ';
           return '<option value="' + c.product.id + '"' + sel + '>' + mark + c.product.name + stockTxt + '</option>';
         }).join('');
         return '<optgroup label="▼ ' + cat + '">' + opts + '</optgroup>';
@@ -12499,10 +12711,25 @@ if (FIREBASE_READY && DB_REF) {
     return false;
   }
 
+  // ⭐ (2026-07-31) 배너 표시 화면 제한 — 사무실·관리자 route 에서만 배너 표시
+  //   거래처 주문/작업장/홈/orderDetail 은 프로 UX 유지 위해 배너 숨김.
+  //   동시성 근본 수정(ID-safe save) 배포로 배너 없이도 데이터 안전 확보됨.
+  const BANNER_ALLOWED_ROUTES = ['office', 'invoicePrep', 'invoice', 'history', 'statement', 'payment', 'admin'];
+  function _isBannerAllowedRoute() {
+    const path = (location.hash || '#home').slice(1).split('?')[0];
+    return BANNER_ALLOWED_ROUTES.indexOf(path) >= 0;
+  }
+
   // ⭐ (2026-07-28) 알림 pill — 클릭 시 자동 새로고침
   //   isEditing=true (편집 중): 빨간 pill, 클릭 시 "저장 안 한 내용 있을 수 있음" 확인 후 새로고침
   //   isEditing=false (읽기 중): 파란 pill, 클릭 즉시 새로고침. 4초 후 자동 사라짐
   function showSyncBanner(isEditing) {
+    // ⭐ (2026-07-31) 사무실·관리자 화면에서만 배너 표시
+    if (!_isBannerAllowedRoute()) {
+      const existing = document.getElementById('sync-banner');
+      if (existing) existing.remove();
+      return;
+    }
     let banner = document.getElementById('sync-banner');
     if (banner) banner.remove();
     banner = document.createElement('div');
