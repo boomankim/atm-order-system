@@ -4783,33 +4783,6 @@ window.liveCheckCode = function() {
   }, 2500);
 };
 
-// ⭐ (2026-07-31) 코드 입력 실시간 검증 — 초록/빨강 카드로 즉시 피드백
-window.liveCheckCode = function() {
-  const inp = document.getElementById('entryCode');
-  const div = document.getElementById('liveResult');
-  if (!inp || !div) return;
-  const raw = (inp.value || '').trim();
-  if (!raw) { div.innerHTML = ''; return; }
-  const match = findCustomerByCode(raw);
-  if (!match) {
-    div.innerHTML = '<div style="padding:10px 14px;background:#FFF3E0;border-left:4px solid #FF9800;border-radius:6px;font-size:13px;color:#BF6900;margin-top:8px;">'
-      + '❌ 일치하는 코드 없음 — 다시 확인해 주세요</div>';
-    return;
-  }
-  if (match.active === false) {
-    div.innerHTML = '<div style="padding:14px;background:#FFEBEE;border:2px solid #E53935;border-radius:8px;margin-top:8px;text-align:center;">'
-      + '<div style="font-size:18px;font-weight:700;color:#B71C1C;">⛔ 접근 차단됨</div>'
-      + '<div style="font-size:12px;color:#888;margin-top:6px;">문의: ' + ((DB.company && DB.company.phone) || 'ATM 사무실') + '</div>'
-      + '</div>';
-    return;
-  }
-  const nm = (match.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-  div.innerHTML = '<div style="padding:16px 14px;background:#E8F5E9;border:2px solid #43A047;border-radius:8px;margin-top:8px;text-align:center;">'
-    + '<div style="font-size:20px;font-weight:700;color:#1B5E20;">✅ ' + nm + '</div>'
-    + '<div style="font-size:12px;color:#43A047;margin-top:6px;">아래 확인 버튼 또는 Enter 를 누르세요</div>'
-    + '</div>';
-};
-
 // ⭐ (2026-08-01) 코드 확인 후 진입 — 항상 자동 저장 (체크박스 없음)
 window.submitEntryCode = function() {
   const raw = (val('entryCode') || '').trim();
