@@ -255,6 +255,33 @@
     font-size: 14px; cursor: pointer;
   }
 
+  /* ⭐ (2026-08-01) 주문 확인 화면 하단 2분할 버튼 (1/3 뒤로 + 2/3 제출) */
+  .order-confirm-bar {
+    position: sticky; bottom: 0; z-index: 20;
+    display: flex; gap: 0;
+    margin: 16px -16px -16px -16px;
+    border-radius: 12px 12px 0 0;
+    overflow: hidden;
+    box-shadow: 0 -4px 16px rgba(0,0,0,0.18);
+    font-family: inherit;
+  }
+  .order-confirm-bar button {
+    border: none; cursor: pointer; padding: 16px 12px;
+    font-family: inherit; font-weight: 700; letter-spacing: 0.3px;
+  }
+  .order-confirm-bar .ocb-back {
+    flex: 1;                 /* 1/3 */
+    background: #6D5442; color: #fff;
+    font-size: 13px;
+  }
+  .order-confirm-bar .ocb-back:hover { background: #5C4638; }
+  .order-confirm-bar .ocb-submit {
+    flex: 2;                 /* 2/3 */
+    background: #F0B400; color: var(--ink);
+    font-size: 15px;
+  }
+  .order-confirm-bar .ocb-submit:hover { background: #E5A800; }
+
   /* Modal */
   .modal-bg {
     position: fixed; inset: 0; background: rgba(0,0,0,0.5);
@@ -1326,7 +1353,7 @@ function route() {
   //  어드민(ADMIN): + admin
   if (!CUSTOMER_MODE) {
     const officeRoutes = ['office', 'invoicePrep', 'invoice', 'history', 'statement', 'payment'];
-    const staffRoutes = ['order', 'warehouse', 'weigh', 'orderDetail'].concat(officeRoutes).concat(['admin']);
+    const staffRoutes = ['order', 'orderConfirm', 'warehouse', 'weigh', 'orderDetail'].concat(officeRoutes).concat(['admin']);
     if (staffRoutes.includes(path) && !STAFF_UNLOCKED) {
       updateNav();
       showStaffLogin();
@@ -1342,7 +1369,7 @@ function route() {
 
   // Customer mode access control
   if (CUSTOMER_MODE) {
-    const allowed = ['order', 'myOrders', 'orderDetail', 'enter'];
+    const allowed = ['order', 'orderConfirm', 'myOrders', 'orderDetail', 'enter'];
     if (!allowed.includes(path)) {
       location.hash = '#myOrders'; return;
     }
@@ -1591,15 +1618,23 @@ function renderProcessingToday() {
       let html = '<div style="margin:14px 0 8px; border-bottom:2px solid ' + color + '; padding-bottom:5px;">'
              + '<h4 style="margin:0; color:' + color + '; font-size:14px;">' + label + '</h4></div>';
       html += '<table class="t" style="font-size:13px;">'
-           + '<thead><tr><th>품목</th><th>요청사항</th><th class="num">주문 합계</th><th class="num">입력 kg</th><th class="num">거래처 수</th></tr></thead><tbody>';
+           + '<thead><tr><th>품목</th><th>요청사항 · 거래처</th><th class="num">주문 합계</th><th class="num">입력 kg</th></tr></thead><tbody>';
       keys.forEach(function(k){
         const g = groups[k];
+        // ⭐ (2026-08-01) 요청사항 옆에 거래처명 병기 (이름순 정렬, 알파벳)
+        const custNames = Array.from(g.custIds).map(function(cid){
+          const c = DB.customers.find(function(x){ return x.id === cid; });
+          return c ? c.name : '(?)';
+        }).sort(function(a,b){ return a.localeCompare(b, 'ko-KR'); });
+        const notesHtml = g.notes ? '<div style="color:var(--brand-dark); font-weight:600;">📝 ' + g.notes + '</div>' : '';
+        const custHtml = '<div style="color:var(--muted); font-size:11px; margin-top:' + (g.notes ? '3px' : '0') + '; line-height:1.5;">'
+                       + '🏪 ' + custNames.join(', ') + ' <span style="color:var(--brand-dark); font-weight:600;">(' + custNames.length + '곳)</span>'
+                       + '</div>';
         html += '<tr>'
              + '<td><b>' + g.product.name + '</b> <small style="color:var(--muted);">' + (g.product.brand||'') + '</small></td>'
-             + '<td style="color:var(--brand-dark);">' + (g.notes ? '📝 ' + g.notes : '—') + '</td>'
+             + '<td>' + (notesHtml || (g.notes ? '' : '')) + custHtml + '</td>'
              + '<td class="num"><b>' + g.qty + ' ' + (g.unit === '작업중량' ? 'kg' : g.unit) + '</b></td>'
              + '<td class="num">' + (g.kg > 0 ? g.kg.toFixed(2) + ' kg' : '—') + '</td>'
-             + '<td class="num">' + g.custIds.size + '</td>'
              + '</tr>';
       });
       html += '</tbody></table>';
@@ -5058,7 +5093,7 @@ function viewOrder(params) {
 
     <div class="summary-bar">
       <div class="info">총 <b id="totalQty">0</b>개</div>
-      <button onclick="confirmAndSubmitOrder('${cust.id}')">주문 제출 / Submit Order</button>
+      <button onclick="goToOrderConfirm('${cust.id}')">확인 / Confirm →</button>
     </div>
   `;
   renderFavQuick(cust);
@@ -5393,6 +5428,102 @@ function renderDeliveryBadge(dateISO) {
   else if (diff <= 3) { label = `${diff}일 후`; color = '#5C0F0F'; bg = '#FFE082'; }
   else { label = `${diff}일 후`; color = 'var(--muted)'; bg = 'var(--surface)'; }
   return `<span style="display:inline-block; padding:2px 8px; border-radius:10px; background:${bg}; color:${color}; font-size:11px; font-weight:700; margin-right:4px;">${label}</span><span style="font-size:12px;">${dmy}</span>`;
+}
+
+// =========================================================================
+// ⭐ (2026-08-01) 주문 확인 화면 — 압축 요약 (읽기 전용) + 하단 2분할 버튼
+//   흐름: viewOrder → [확인] → viewOrderConfirm → [주문 제출] → 배송일 모달
+//   수정·삭제는 뒤로 가서 처리 (확인 화면은 검토 전용).
+// =========================================================================
+window.goToOrderConfirm = function(custId) {
+  if (!Array.isArray(CART) || CART.length === 0) {
+    return alert('주문 내역이 비어 있습니다.\nCart is empty.');
+  }
+  const emptyQty = CART.filter(it => it.quantity == null || it.quantity === '' || isNaN(it.quantity) || Number(it.quantity) <= 0);
+  if (emptyQty.length > 0) {
+    const names = emptyQty.map(it => {
+      const p = DB.products.find(x => x.id === it.productId);
+      return p ? p.name : '(품목)';
+    }).join(', ');
+    return alert('❌ 수량 미입력 품목이 있습니다:\n' + names + '\n\n수량을 입력해 주세요.\nPlease enter quantity for all items.');
+  }
+  // 요청사항 저장 (draft 에 이미 반영됨, 명시 저장으로 안전 보장)
+  try { saveCartDraft(custId); } catch(_){}
+  location.hash = '#orderConfirm?c=' + custId;
+};
+
+function viewOrderConfirm(params) {
+  const custId = params.get('c');
+  const cust = DB.customers.find(c => c.id === custId);
+  const app = document.getElementById('app');
+  app.classList?.add?.('narrow');
+
+  if (!cust) {
+    app.innerHTML = '<div class="card"><div class="empty"><div class="icon">🔒</div>거래처 정보가 없습니다.<br><small>No customer info.</small></div></div>';
+    return;
+  }
+
+  // CART 가 비어 있으면 draft 에서 복원 (새로고침 대응)
+  let cartItems = Array.isArray(CART) ? CART : [];
+  let deliveryNotes = '';
+  if (cartItems.length === 0) {
+    const draft = loadCartDraft(custId);
+    if (draft) {
+      cartItems = Array.isArray(draft.cart) ? draft.cart : [];
+      deliveryNotes = draft.deliveryNotes || '';
+      CART = cartItems;
+    }
+  } else {
+    const draft = loadCartDraft(custId);
+    if (draft) deliveryNotes = draft.deliveryNotes || '';
+  }
+
+  if (cartItems.length === 0) {
+    app.innerHTML = `<div class="card"><div class="empty"><div class="icon">📭</div>
+      주문 내용이 없습니다.<br><small>Cart is empty.</small><br><br>
+      <button class="btn" onclick="location.hash='#order?c=${custId}'">← 주문 화면으로 / Back to Order</button>
+    </div></div>`;
+    return;
+  }
+
+  const todayDisplay = new Date().toLocaleDateString('ko-KR', {year:'numeric', month:'long', day:'numeric', weekday:'short'});
+  const esc = s => String(s || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  const unitShort = { '박스':'box', '팩':'pack', '작업중량':'kg' };
+
+  const rows = cartItems.map(item => {
+    const p = DB.products.find(x => x.id === item.productId);
+    if (!p) return '';
+    const qtyDisp = (item.quantity == null || item.quantity === '' || isNaN(item.quantity)) ? '?' : item.quantity;
+    const u = unitShort[item.unit] || item.unit || '';
+    const notesPart = item.notes ? ` · <span style="color:var(--brand-dark); font-weight:600;">${esc(item.notes)}</span>` : '';
+    return `<div style="padding:8px 12px; border-bottom:1px solid var(--line); font-size:14px; line-height:1.4;">
+      <div style="font-weight:700; color:var(--ink);">${esc(p.name)}</div>
+      <div style="font-size:12px; color:var(--muted); margin-top:2px;">
+        <b style="color:var(--brand-dark);">${qtyDisp} ${u}</b>${notesPart}
+      </div>
+    </div>`;
+  }).join('');
+
+  app.innerHTML = `
+    <h2 class="page-title" style="margin-bottom:6px;">🛒 ${esc(cust.name)}
+      <span style="font-size:12px; font-weight:400; color:var(--muted); margin-left:8px;">${todayDisplay}</span>
+    </h2>
+    ${deliveryNotes ? `
+    <div style="padding:8px 12px; margin-bottom:8px; background:#FFF7E0; border-left:4px solid #B8860B; border-radius:4px; font-size:13px;">
+      <b style="color:#7A4A00;">📝 요청 / Notes:</b> <span style="color:#5C3A00;">${esc(deliveryNotes)}</span>
+    </div>` : ''}
+    <div class="card" style="padding:0; margin-bottom:70px;">
+      <h3 style="margin:0; padding:10px 14px; border-bottom:1px solid var(--line); font-size:14px; background:var(--surface);">
+        📦 주문 내용 / Order
+        <span style="float:right; color:var(--muted); font-size:12px; font-weight:400;">${cartItems.length}개 · items</span>
+      </h3>
+      ${rows}
+    </div>
+    <div class="order-confirm-bar">
+      <button class="ocb-back" onclick="location.hash='#order?c=${custId}'">← 주문서 / order</button>
+      <button class="ocb-submit" onclick="confirmAndSubmitOrder('${custId}')">✅ 주문서 제출 / submit</button>
+    </div>
+  `;
 }
 
 // =========================================================================
@@ -12487,6 +12618,7 @@ const ROUTES = {
   'admin': viewAdmin,
   'enter': viewEnter,
   'order': viewOrder,
+  'orderConfirm': viewOrderConfirm,  // ⭐ (2026-08-01) 주문 확인 화면 (읽기 전용 요약)
   'orderDetail': viewOrderDetail,
   'myOrders': viewMyOrders,
   'warehouse': viewWarehouse,
