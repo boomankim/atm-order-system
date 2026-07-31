@@ -4671,25 +4671,10 @@ function resetInvoiceFooter() {
 // =========================================================================
 function viewEnter(params) {
   const app = document.getElementById('app');
-
-  // ⭐ (2026-07-31) 자동 진입 — localStorage 에 저장된 코드가 있고 유효하면 바로 주문 화면으로
-  //   viewEnter 는 3단계 흐름: (1) 이미 로그인됨 → 안내, (2) 코드 기억됨 → 자동 진입, (3) 신규 → 코드 입력
-  if (!CUSTOMER_MODE) {
-    const remembered = getRememberedCode();
-    if (remembered) {
-      const match = findCustomerByCode(remembered);
-      if (match && match.active !== false) {
-        setCustomerMode(match.id);
-        location.hash = '#order?c=' + match.id;
-        return;
-      } else if (!match || (match && match.active === false)) {
-        // 기억된 코드가 이제 유효하지 않음 (거래처 삭제/차단 등)
-        forgetCode();
-      }
-    }
-  }
-
   const currentCust = CUSTOMER_MODE ? DB.customers.find(c => c.id === CUSTOMER_MODE) : null;
+  // ⭐ (2026-08-01) 자동 진입 제거 → 항상 코드 입력 화면 표시.
+  //   저장된 코드가 있으면 입력창에 pre-fill + 초록 카드 자동 표시 (사용자가 확인 후 클릭 진입).
+  const rememberedCode = (!currentCust) ? getRememberedCode() : '';
   app.innerHTML = `
     <h2 class="page-title">🥩 ALL THAT MEAT
       <span class="sub">거래처 주문 포털 / Customer Order Portal</span></h2>
@@ -4718,26 +4703,85 @@ function viewEnter(params) {
         </p>
         <div class="field">
           <label>거래처 코드 / Customer Code</label>
-          <input id="entryCode" placeholder="예: AT0042" autofocus
-            onkeydown="if(event.key==='Enter') submitEntryCode()" autocomplete="off"
+          <input id="entryCode" placeholder="예: AT0042" autofocus autocomplete="off"
+            value="${(rememberedCode || '').replace(/"/g,'&quot;')}"
+            onkeydown="if(event.key==='Enter') submitEntryCode()"
             oninput="liveCheckCode()"
             style="font-size:20px; padding:12px; letter-spacing:2px; text-align:center; text-transform:uppercase;">
         </div>
         <div id="liveResult"></div>
-        <label style="display:flex; align-items:center; gap:10px; margin:14px 0; padding:8px 12px; background:#FAF6F1; border-radius:8px; font-size:13px; color:var(--ink); cursor:pointer;">
-          <input type="checkbox" id="rememberCodeChk" checked style="width:18px; height:18px; cursor:pointer;">
-          <span><b>이 기기 기억하기</b> <span style="color:var(--muted); font-size:11px;">— 다음부터 자동 접속 (Remember on this device)</span></span>
-        </label>
-        <button class="btn" onclick="submitEntryCode()" style="width:100%; font-size:16px; padding:14px;">✅ 확인 후 주문 / Verify &amp; Order</button>
-        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); line-height:1.9;">
+        <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:11px; color:var(--muted); line-height:1.7;">
           ※ 대소문자·공백은 자동 무시됩니다 (AT0042 = at0042).<br>
+          <span style="opacity:0.85;">Case and spaces are ignored automatically (AT0042 = at0042).</span><br>
           ※ 코드를 잊으셨거나 오류 시 ATM 사무실로 문의 주세요.<br>
-          ※ 문의: ${DB.company.phone || 'ATM 사무실로 연락 주세요'}
+          <span style="opacity:0.85;">If you forgot your code or see an error, please contact the ATM office.</span><br>
+          ※ 문의 / Inquiry: ${DB.company.phone || 'ATM 사무실'}
         </div>
       `}
     </div>
   `;
+  // ⭐ (2026-08-01) 저장된 코드 pre-fill 후 커서 끝, 자동 매칭 검증
+  if (rememberedCode && !currentCust) {
+    setTimeout(() => {
+      const inp = document.getElementById('entryCode');
+      if (!inp) return;
+      // 커서 끝에 위치
+      try { inp.setSelectionRange(inp.value.length, inp.value.length); } catch(_){}
+      inp.focus();
+      liveCheckCode();
+    }, 30);
+  }
 }
+
+// ⭐ (2026-08-01) 코드 입력 실시간 검증
+//   - 일치 → 초록 카드 즉시 표시 (positive feedback 빠르게)
+//   - 불일치 → 2.5초 후 빨간 안내 (typing 중 계속 붉은 메시지 뜨는 것 방지)
+//   - 초록 카드 클릭 = 확인 후 주문 (별도 버튼 없음)
+let _liveCheckTimer = null;
+window.liveCheckCode = function() {
+  const inp = document.getElementById('entryCode');
+  const div = document.getElementById('liveResult');
+  if (!inp || !div) return;
+  const raw = (inp.value || '').trim();
+  // 이전 타이머 취소 (계속 타이핑 중이면 안내 안 뜸)
+  if (_liveCheckTimer) { clearTimeout(_liveCheckTimer); _liveCheckTimer = null; }
+  if (!raw) { div.innerHTML = ''; return; }
+  const match = findCustomerByCode(raw);
+  // 매치 성공 → 즉시 초록 카드 (클릭 = 진입)
+  if (match) {
+    if (match.active === false) {
+      div.innerHTML = '<div style="padding:14px;background:#FFEBEE;border:2px solid #E53935;border-radius:8px;margin-top:8px;text-align:center;">'
+        + '<div style="font-size:18px;font-weight:700;color:#B71C1C;">⛔ 접근 차단됨 / Access Blocked</div>'
+        + '<div style="font-size:12px;color:#888;margin-top:6px;">문의 / Inquiry: ' + ((DB.company && DB.company.phone) || 'ATM 사무실') + '</div>'
+        + '</div>';
+      return;
+    }
+    const nm = (match.name || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    div.innerHTML = '<div onclick="submitEntryCode()" '
+      + 'onmouseover="this.style.background=\'#C8E6C9\'" '
+      + 'onmouseout="this.style.background=\'#E8F5E9\'" '
+      + 'style="cursor:pointer; padding:20px 14px;background:#E8F5E9;border:2px solid #43A047;border-radius:8px;margin-top:8px;text-align:center;transition:background 0.15s;">'
+      + '<div style="font-size:20px;font-weight:700;color:#1B5E20;">✅ ' + nm + '</div>'
+      + '<div style="font-size:12px;color:#43A047;margin-top:6px;">아래 확인 버튼 또는 Enter 를 누르세요 / Tap here or press Enter</div>'
+      + '</div>';
+    return;
+  }
+  // 매치 실패 → 화면 클리어 + 2.5초 debounce 후 빨간 안내
+  div.innerHTML = '';
+  _liveCheckTimer = setTimeout(() => {
+    const cur = (document.getElementById('entryCode') || {}).value || '';
+    if ((cur.trim()) !== raw) return;   // 사용자가 계속 입력 중 → 안내 안 뜸
+    if (!cur.trim()) return;
+    if (findCustomerByCode(cur.trim())) return;  // 그새 매치되면 스킵
+    const d = document.getElementById('liveResult');
+    if (d) {
+      d.innerHTML = '<div style="padding:10px 14px;background:#FFF3E0;border-left:4px solid #FF9800;border-radius:6px;font-size:13px;color:#BF6900;margin-top:8px;">'
+        + '❌ 일치하는 코드 없음 / No matching code<br>'
+        + '<span style="font-size:11px; opacity:0.85;">다시 확인해 주세요 / Please check again.</span>'
+        + '</div>';
+    }
+  }, 2500);
+};
 
 // ⭐ (2026-07-31) 코드 입력 실시간 검증 — 초록/빨강 카드로 즉시 피드백
 window.liveCheckCode = function() {
@@ -4766,7 +4810,7 @@ window.liveCheckCode = function() {
     + '</div>';
 };
 
-// ⭐ (2026-07-31) 코드 확인 후 진입
+// ⭐ (2026-08-01) 코드 확인 후 진입 — 항상 자동 저장 (체크박스 없음)
 window.submitEntryCode = function() {
   const raw = (val('entryCode') || '').trim();
   if (!raw) return alert('거래처 코드를 입력해 주세요.\nPlease enter your customer code.');
@@ -4777,10 +4821,8 @@ window.submitEntryCode = function() {
   if (match.active === false) {
     return alert('⛔ 주문 접근이 차단된 거래처입니다.\nOrder access has been suspended.\n\n문의: ' + (DB.company.phone || 'ATM 사무실'));
   }
-  // "이 기기 기억" 체크 시 localStorage 에 저장
-  const chk = document.getElementById('rememberCodeChk');
-  if (chk && chk.checked) rememberCode(match.code || raw);
-  else forgetCode();
+  // 항상 저장 (다음 접속 시 자동 pre-fill)
+  rememberCode(match.code || raw);
   setCustomerMode(match.id);
   location.hash = '#order?c=' + match.id;
 };
