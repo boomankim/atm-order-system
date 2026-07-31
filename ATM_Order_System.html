@@ -5093,7 +5093,9 @@ function viewOrder(params) {
 
     <div class="summary-bar">
       <div class="info">총 <b id="totalQty">0</b>개</div>
-      <button onclick="goToOrderConfirm('${cust.id}')">확인 / Confirm →</button>
+      ${CUSTOMER_MODE
+        ? `<button onclick="goToOrderConfirm('${cust.id}')">확인 / Confirm →</button>`
+        : `<button onclick="confirmAndSubmitOrder('${cust.id}')">주문 제출 / Submit Order</button>`}
     </div>
   `;
   renderFavQuick(cust);
