@@ -3623,22 +3623,40 @@ function renderFavChips(custId) {
     chipsEl.innerHTML = `<span style="color:var(--muted); font-size:13px;">없음 — 아래 품목을 클릭해 추가하세요 / None yet</span>`;
     return;
   }
+  // ⭐ (2026-08-01) 정렬 — 카테고리(cut) 우선, 그 안에서 접두어 이후 이름 가나다·알파벳순
+  pairs.sort((a, b) => {
+    const c = compareCut(a.product.cut, b.product.cut);
+    if (c !== 0) return c;
+    return _favSortNameAfterPrefix(a.product, b.product);
+  });
+  // ⭐ (2026-08-01) 노란색 카드 그리드 (핸드폰 즐겨찾기 UI 와 일치, 4열 반응형)
+  chipsEl.style.cssText = 'display:grid; grid-template-columns:repeat(auto-fill, minmax(220px, 1fr)); gap:6px; min-height:26px;';
   chipsEl.innerHTML = pairs.map(({product: p, notes, idx}) => {
     const lbl = CUT_DISPLAY[p.cut] || p.cut;
     const notesPart = notes
-      ? `&nbsp;—&nbsp;<span style="opacity:0.9; font-style:italic;">${notes}</span>`
-      : `&nbsp;<span style="opacity:0.6; font-size:10px;">(요청사항 없음)</span>`;
-    return `<span style="background:var(--brand); color:#fff; border-radius:20px; padding:5px 8px 5px 12px;
-                 font-size:12px; font-weight:600; display:inline-flex;
-                 align-items:center; gap:6px; user-select:none;">
-        <span style="opacity:0.75; font-size:10px;">${lbl}</span><span>${p.name}</span>${notesPart}
-        <button onclick="editFavPairNotes('${custId}', ${idx})"
-          style="background:rgba(255,255,255,0.2); border:none; color:#fff; border-radius:50%;
-                 width:20px; height:20px; cursor:pointer; padding:0; font-size:11px;" title="요청사항 수정">📝</button>
-        <button onclick="removeFavPairByIdx('${custId}', ${idx})"
-          style="background:rgba(255,255,255,0.2); border:none; color:#fff; border-radius:50%;
-                 width:20px; height:20px; cursor:pointer; padding:0; font-size:13px; font-weight:700;" title="이 짝 제거">×</button>
-      </span>`;
+      ? `<div style="margin-top:4px;"><small style="color:var(--brand-dark); font-weight:600; padding:2px 8px; background:#FFF5D6; border-radius:10px;">📝 ${notes}</small></div>`
+      : '';
+    return `<div class="fav-admin-card" data-idx="${idx}"
+         onclick="editFavPairNotes('${custId}', ${idx})"
+         onmouseover="this.style.background='#FFF5D6'"
+         onmouseout="this.style.background='#FFFCF3'"
+         style="position:relative; cursor:pointer; padding:10px 36px 10px 12px;
+                background:#FFFCF3; border:1.5px solid #F0D89A; border-radius:10px;
+                text-align:left; line-height:1.4; transition:background 0.15s; min-height:48px;">
+      <div>
+        <span style="color:var(--brand); font-weight:700; font-size:10px; letter-spacing:0.3px;">${lbl}</span>
+        <span style="color:var(--ink); font-weight:700; font-size:13px; margin-left:3px;">${p.name}</span>
+      </div>
+      ${notesPart}
+      <button onclick="event.stopPropagation(); removeFavPairByIdx('${custId}', ${idx})"
+        title="이 짝 제거"
+        style="position:absolute; top:5px; right:5px; background:transparent; border:none;
+               color:#999; font-size:15px; cursor:pointer; padding:3px 7px; border-radius:4px;
+               line-height:1; font-weight:700;"
+        onmouseover="this.style.background='#FEE'; this.style.color='#C62828';"
+        onmouseout="this.style.background='transparent'; this.style.color='#999';"
+      >✕</button>
+    </div>`;
   }).join('');
 }
 function toggleFav(custId, prodId) {
@@ -5073,7 +5091,7 @@ function viewOrder(params) {
     </div>
 
     <div class="card">
-      <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--muted); font-size:12px; font-weight:400;">0개</span></h3>
+      <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--brand-dark); font-size:18px; font-weight:800;">0개</span></h3>
       <div id="cart"></div>
     </div>
 
@@ -5361,7 +5379,7 @@ function renderCart() {
       const p = DB.products.find(x => x.id === item.productId);
       // ⭐ (2026-07-07) 단위 버튼 행 삭제 → 수량 입력창 우측 뱃지를 클릭형 드롭다운(select)으로 통합
       //   뱃지에 표시되는 텍스트: 짧은 영문(box/pack/kg) — 박스/팩 혼동 방지
-      //   드롭다운 열림 시: 한글+영문 병기(박스/box, 팩/pack, 작업중량/kg) — 선택 시 명확성 확보
+      //   드롭다운 열림 시: 한글+영문 병기(박스/box, 팩/pack, 중량/kg) — 선택 시 명확성 확보
       const qtyStep = item.unit === '작업중량' ? 0.1 : 1;
       // ⭐ (2026-07-08) 카테고리 필터 제거 — 모든 품목에 3가지 단위 모두 제공.
       //   기존: 작업육 → [박스,작업중량], 그 외 → [박스,팩]
@@ -5369,7 +5387,7 @@ function renderCart() {
       const allowedUnits = ['박스','팩','작업중량'];
       const qtyDisp = (item.quantity == null || item.quantity === '' || isNaN(item.quantity)) ? '' : item.quantity;
       const unitShort = { '박스':'box', '팩':'pack', '작업중량':'kg' };
-      const unitLong  = { '박스':'박스/box', '팩':'팩/pack', '작업중량':'작업중량/kg' };
+      const unitLong  = { '박스':'박스/box', '팩':'팩/pack', '작업중량':'중량/kg' };
       const badgeText = unitShort[item.unit] || 'box';
       return `
         <div class="cart-item">
@@ -8000,13 +8018,14 @@ function viewInvoicePrep(params) {
       </div>
 
       <div class="btn-row" style="margin-top:18px;">
+        <!-- ⭐ (2026-08-01) 위험 버튼(주문 삭제)을 최좌측 격리 → 실수 방지, 주요 액션(발행 확정)은 최우측 -->
+        <button class="btn danger" onclick="deleteOrderFromPrep('${o.id}')">🗑 주문 삭제</button>
+        <button class="btn secondary" style="margin-left:auto;" onclick="location.hash='${_isEditMode ? '#invoice?id='+o.id : '#office'}'">← ${_isEditMode ? '인보이스로' : '사무실로'}</button>
+        <button class="btn secondary" onclick="resetPrepPricesToMaster('${o.id}')">🔄 마스터값으로 초기화</button>
+        <button class="btn" style="background:var(--info);color:#fff;" onclick="applyCustomerPricesToPrep('${o.id}')">💡 거래처 최근 단가 적용</button>
         ${_isEditMode
           ? `<button class="btn success" onclick="updateIssuedInvoice('${o.id}')">💾 수정 저장 (덮어쓰기)</button>`
           : `<button class="btn success" onclick="issueInvoice('${o.id}')">✅ 인보이스 발행 확정</button>`}
-        <button class="btn" style="background:var(--info);color:#fff;" onclick="applyCustomerPricesToPrep('${o.id}')">💡 거래처 최근 단가 적용</button>
-        <button class="btn secondary" onclick="resetPrepPricesToMaster('${o.id}')">🔄 마스터값으로 초기화</button>
-        <button class="btn secondary" onclick="location.hash='${_isEditMode ? '#invoice?id='+o.id : '#office'}'">← ${_isEditMode ? '인보이스로' : '사무실로'}</button>
-        <button class="btn danger" style="margin-left:auto;" onclick="deleteOrderFromPrep('${o.id}')">🗑 주문 삭제</button>
       </div>
     </div>
   `;
@@ -10056,7 +10075,8 @@ async function exportInvoicePDFs(silent = false, onProgress = null) {
 
 async function setBackupFolder() {
   if (!window.showDirectoryPicker) {
-    return alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
+    alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
+    return false;
   }
   try {
     const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
@@ -10066,8 +10086,10 @@ async function setBackupFolder() {
     // 백업 탭이 열려 있으면 새로고침
     const hash = location.hash;
     if (hash.includes('tab=backup')) renderBackupAdmin();
+    return true;   // ⭐ pill 자동 제거용 반환
   } catch(e) {
     if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
+    return false;
   }
 }
 
@@ -12785,6 +12807,39 @@ function showToast(msg, duration = 4000) {
 // =========================================================================
 //  AUTO-SAVE: 인보이스 발행 시 OneDrive 폴더에 JSON + PDF 자동 저장
 // =========================================================================
+// ⭐ (2026-08-01) 백업 폴더 재지정 안내 pill — 우측 상단 지속 표시
+//   자동 다운로드/Save As 창 유발 대신 조용한 pill 로 안내 → 발행 작업 방해 안 함
+//   ATM 데이터는 이미 Firebase 에 실시간 백업됨 → 로컬 JSON 백업 실패해도 데이터 안전
+window._showBackupFolderPill = function() {
+  if (document.getElementById('backup-folder-pill')) return;   // 이미 표시 중
+  const pill = document.createElement('div');
+  pill.id = 'backup-folder-pill';
+  pill.style.cssText =
+    'position:fixed; top:110px; right:12px; z-index:9998;' +
+    'padding:10px 14px; border-radius:20px;' +
+    'background:#E68A00; color:#fff;' +
+    'font-size:12px; font-weight:600;' +
+    'box-shadow:0 3px 10px rgba(0,0,0,0.25);' +
+    'cursor:pointer; user-select:none;' +
+    'display:flex; align-items:center; gap:8px;';
+  pill.innerHTML =
+    '<span>📁 백업 폴더 재지정 필요 — 클릭</span>' +
+    '<button style="background:rgba(0,0,0,0.15); border:none; color:#fff; border-radius:50%; width:20px; height:20px; cursor:pointer; padding:0; font-size:12px; font-weight:700;" title="닫기">✕</button>';
+  pill.onclick = function(e) {
+    if (e.target.tagName === 'BUTTON') {
+      pill.remove();
+      return;
+    }
+    // 폴더 재선택 실행 → 성공 시 pill 제거
+    if (typeof setBackupFolder === 'function') {
+      setBackupFolder().then(function(ok){ if (ok) pill.remove(); }).catch(function(){});
+    } else {
+      alert('사무실 화면 → 📁 폴더 변경 버튼으로 백업 폴더를 재지정해 주세요.');
+    }
+  };
+  document.body.appendChild(pill);
+};
+
 async function autoSaveInvoice(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   if (!o) return;
@@ -12794,10 +12849,9 @@ async function autoSaveInvoice(orderId) {
   const dateStr = `${now.getFullYear()}-${pad(now.getMonth()+1)}-${pad(now.getDate())}`;
   const dirHandle = await getBackupDirHandle();
 
-  // 1. JSON 백업
-  //   ⭐ (2026-07-26) InvalidStateError (핸들 만료) 명시적 처리:
-  //   - 스테일 핸들 자동 폐기 + 사용자에게 폴더 재선택 유도
-  //   - 알림 반복 방지 (같은 세션에서 한 번만)
+  // 1. JSON 백업 (조용히 처리 — 실패해도 Save As 창 안 뜨게)
+  //   ⭐ (2026-08-01) 핸들 만료 시 자동 다운로드 fallback 제거 → 우측 상단 pill 로만 안내
+  //   이유: 매 발행마다 Save As 창 뜨는 문제 근본 해결. 데이터는 Firebase 로 이미 안전.
   try {
     const json = JSON.stringify(DB, null, 2);
     const jsonFilename = `ATM_backup_${ts}.json`;
@@ -12805,43 +12859,23 @@ async function autoSaveInvoice(orderId) {
       try {
         await writeToFolderPath(dirHandle, ['_백업(JSON)', dateStr], jsonFilename, json);
       } catch(writeErr) {
-        // 폴더 핸들이 무효화됨 (사용자가 폴더 삭제·이동, 브라우저 재시작, 권한 취소 등)
         const isStaleHandle =
           (writeErr && writeErr.name === 'InvalidStateError') ||
           (writeErr && writeErr.name === 'NotAllowedError') ||
           (writeErr && writeErr.name === 'NotFoundError');
         if (isStaleHandle) {
-          console.warn('백업 폴더 핸들 만료 — 재선택 필요:', writeErr.name);
+          console.warn('백업 폴더 핸들 만료 — pill 안내 표시:', writeErr.name);
           _backupDirHandle = null;
           try { await idbSet('backupDirHandle', null); } catch(_){}
-          if (!window._backupHandleAlertShown) {
-            window._backupHandleAlertShown = true;
-            setTimeout(function(){
-              const go = confirm(
-                '⚠️ 백업 폴더 접근이 만료되었습니다.\n\n' +
-                '(폴더가 이동·삭제되었거나 브라우저 권한이 초기화됨)\n\n' +
-                '지금 백업 폴더를 다시 선택하시겠습니까?\n' +
-                '(취소 시 이번 백업은 다운로드 폴더로 대신 저장됩니다)'
-              );
-              if (go && typeof setBackupFolder === 'function') setBackupFolder();
-            }, 300);
-          }
-          // 다운로드로 fallback
-          const blob = new Blob([json], {type:'application/json'});
-          const url = URL.createObjectURL(blob);
-          const a = document.createElement('a');
-          a.href = url; a.download = jsonFilename; a.click();
-          URL.revokeObjectURL(url);
+          if (typeof window._showBackupFolderPill === 'function') window._showBackupFolderPill();
+          // 다운로드 fallback X — Save As 창 유발 방지
         } else {
-          throw writeErr;   // 다른 종류의 에러는 상위 catch로
+          throw writeErr;
         }
       }
     } else {
-      const blob = new Blob([json], {type:'application/json'});
-      const url = URL.createObjectURL(blob);
-      const a = document.createElement('a');
-      a.href = url; a.download = jsonFilename; a.click();
-      URL.revokeObjectURL(url);
+      // 폴더 미지정 → 다운로드 없이 pill 안내만
+      if (typeof window._showBackupFolderPill === 'function') window._showBackupFolderPill();
     }
   } catch(e) { console.warn('JSON 백업 실패:', e); }
 
@@ -12878,20 +12912,29 @@ async function autoSaveInvoice(orderId) {
       const pdfFilename = `${o.invoiceNo || o.orderNo}_${dateStr}_${custName}.pdf`;
       if (dirHandle) {
         const buf = doc.output('arraybuffer');
-        // exportInvoicePDFs 와 동일한 단일 구조로 저장
-        // (선택한 거래처 백업 폴더) > ATM Invoice > {거래처} > PDF
-        await writeToFolderPath(dirHandle, ['ATM Invoice', custName], pdfFilename, buf);
-        showToast(`✅ JSON + 인보이스 PDF 저장 완료 — 📁 ATM Invoice/거래처/`);
+        try {
+          // (선택한 거래처 백업 폴더) > ATM Invoice > {거래처} > PDF
+          await writeToFolderPath(dirHandle, ['ATM Invoice', custName], pdfFilename, buf);
+          showToast(`✅ 인보이스 저장 완료 — 📁 ATM Invoice/${custName}/`);
+        } catch(pdfErr) {
+          // ⭐ (2026-08-01) PDF 쪽에도 Save As 창 유발 방지 — 조용히 pill 안내만
+          const isStale = pdfErr && (pdfErr.name === 'InvalidStateError' || pdfErr.name === 'NotAllowedError' || pdfErr.name === 'NotFoundError');
+          if (isStale) {
+            console.warn('PDF 저장 실패 (핸들 만료):', pdfErr.name);
+            _backupDirHandle = null;
+            try { await idbSet('backupDirHandle', null); } catch(_){}
+            if (typeof window._showBackupFolderPill === 'function') window._showBackupFolderPill();
+          } else {
+            console.warn('PDF 저장 실패:', pdfErr);
+          }
+        }
       } else {
-        doc.save(pdfFilename);
-        showToast('💾 JSON + PDF 다운로드 완료');
+        // 폴더 미지정 → 자동 다운로드 안 함 (Save As 방지). pill 안내는 JSON 쪽에서 이미 표시됨.
+        console.warn('PDF 저장 스킵 — 백업 폴더 미지정');
       }
     } catch(e) {
-      console.warn('PDF 저장 실패:', e);
-      showToast(dirHandle ? '💾 JSON 저장 완료 (PDF 실패)' : '💾 JSON 백업 다운로드 완료');
+      console.warn('PDF 생성 실패:', e);
     }
-  } else {
-    showToast(dirHandle ? '💾 JSON 백업 저장 완료' : '💾 JSON 백업 다운로드 완료');
   }
 }
 
