@@ -5830,40 +5830,142 @@ async function submitOrder(custId) {
 // =========================================================================
 //  VIEW: WAREHOUSE (Weighing)
 // =========================================================================
+// ⭐ (2026-08-01) 계근 대기 색상 배분 시스템
+//   태블릿 4명이 자율적으로 담당 거래처 색상 지정. 상단 팔레트에서 색 선택 후 리스트 터치.
+//   색상 데이터: order.assignedColor ('red'|'blue'|'yellow'|'pink'|'green'|null)
+//   활성 색상·필터 상태는 localStorage 에 태블릿별 저장.
+const WH_COLORS = {
+  red:    { bg: '#FFEBEE', border: '#E57373', dot: '#E53935', label: '빨강' },
+  blue:   { bg: '#E3F2FD', border: '#64B5F6', dot: '#1976D2', label: '파랑' },
+  yellow: { bg: '#FFF9C4', border: '#FFD54F', dot: '#F9A825', label: '노랑' },
+  pink:   { bg: '#FCE4EC', border: '#F48FB1', dot: '#E91E63', label: '분홍' },
+  green:  { bg: '#E8F5E9', border: '#81C784', dot: '#388E3C', label: '초록' }
+};
+window._whActiveColor = window._whActiveColor || null;   // 지정 브러시 색상 (null=지우개)
+window._whFilterColor = window._whFilterColor || null;   // 필터 색상 (null=전체)
+window._whFilterOn = window._whFilterOn || false;
+try {
+  window._whActiveColor = localStorage.getItem('atm_wh_active_color') || null;
+  window._whFilterOn = localStorage.getItem('atm_wh_filter_on') === '1';
+} catch(_){}
+
+window.whPickColor = function(color) {
+  window._whActiveColor = color;   // null = 지우개
+  try { localStorage.setItem('atm_wh_active_color', color || ''); } catch(_){}
+  renderWarehouseList();
+};
+
+window.whToggleFilter = function() {
+  window._whFilterOn = !window._whFilterOn;
+  try { localStorage.setItem('atm_wh_filter_on', window._whFilterOn ? '1' : '0'); } catch(_){}
+  renderWarehouseList();
+};
+
+window.whAssignColor = function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return;
+  const target = window._whActiveColor || null;   // null=지우개
+  if (o.assignedColor === target) {
+    // 같은 색 다시 클릭 → 해제
+    o.assignedColor = null;
+  } else {
+    o.assignedColor = target;
+  }
+  try { saveEntityField('orders', orderId, 'assignedColor'); } catch(e) { console.warn('assignedColor 저장 실패:', e); }
+  renderWarehouseList();
+};
+
 function viewWarehouse() {
   const app = document.getElementById('app');
-  // ⭐ (2026-07-27) 대기 주문 정렬 — 거래처명 가나다/알파벳 순 (한글·영문 자연 정렬)
+  app.innerHTML = `
+    <h2 class="page-title">⚖️ 작업장 — 계근 입력
+      <span class="sub">박스/팩 챙기고 실제 중량 입력</span></h2>
+    <div class="card">
+      <div id="whPaletteBar"></div>
+      <div id="whList"></div>
+    </div>
+  `;
+  renderWarehouseList();
+}
+
+function renderWarehouseList() {
+  const paletteEl = document.getElementById('whPaletteBar');
+  const listEl = document.getElementById('whList');
+  if (!paletteEl || !listEl) return;
+
   const _custNameOf = function(o) {
     const c = (DB.customers||[]).find(x => x.id === o.customerId);
     return (c && c.name) || '';
   };
   const pending = (DB.orders||[]).filter(o => o.status === 'new' || o.status === 'weighing')
     .sort((a,b) => _custNameOf(a).localeCompare(_custNameOf(b), 'ko-KR'));
-  app.innerHTML = `
-    <h2 class="page-title">⚖️ 작업장 — 계근 입력
-      <span class="sub">박스/팩 챙기고 실제 중량 입력</span></h2>
-    <div class="card">
-      <h3>대기 주문 (${pending.length}건)</h3>
-      ${pending.length === 0 ? `<div class="empty"><div class="icon">✅</div>처리할 주문이 없습니다.</div>` : `
-      <table class="t">
-        <thead><tr><th>주문번호</th><th>거래처</th><th>품목수</th><th>상태</th><th>주문일시</th><th>희망 배송일</th><th class="act"></th></tr></thead>
-        <tbody>
-          ${pending.map(o => {
-            const c = DB.customers.find(x=>x.id===o.customerId);
-            return `<tr>
-              <td><b>${o.orderNo}</b></td>
-              <td>${c?c.name:'-'}</td>
-              <td>${o.items.length}</td>
-              <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
-              <td>${new Date(o.orderDate).toLocaleString('ko-KR')}</td>
-              <td>${renderDeliveryBadge(o.deliveryDate)}</td>
-              <td class="act"><button class="btn sm" onclick="location.hash='#weigh?id=${o.id}'">계근하기 →</button></td>
-            </tr>`;
-          }).join('')}
-        </tbody>
-      </table>`}
-    </div>
-  `;
+
+  // ⭐ 팔레트 (상단): 지우개 + 5색 + 필터 토글
+  const activeC = window._whActiveColor;
+  const filterOn = window._whFilterOn;
+  const filterColor = activeC || null;   // 필터는 활성 색 기준
+  const btnStyle = (isActive, bg, border) =>
+    'display:inline-flex; align-items:center; justify-content:center; gap:6px; ' +
+    'padding:10px 14px; border-radius:20px; cursor:pointer; user-select:none; ' +
+    'font-size:13px; font-weight:700; margin-right:6px; margin-bottom:6px; ' +
+    'background:' + bg + '; border:' + (isActive ? '3px solid ' + border : '2px solid transparent') + ';' +
+    (isActive ? 'box-shadow:0 2px 8px rgba(0,0,0,0.15);' : '');
+  let paletteHtml = '<div style="margin-bottom:14px; padding:10px 12px; background:#FAF6F1; border-radius:10px;">';
+  paletteHtml += '<div style="font-size:12px; color:var(--muted); margin-bottom:6px;">🎨 색상 선택 후 아래 거래처를 터치하세요</div>';
+  paletteHtml += '<div style="display:flex; flex-wrap:wrap; align-items:center;">';
+  // 지우개
+  paletteHtml += '<span onclick="whPickColor(null)" style="' + btnStyle(activeC === null, '#F5F5F5', '#9E9E9E') + '">🧽 지우개</span>';
+  // 5색
+  Object.keys(WH_COLORS).forEach(function(k){
+    const c = WH_COLORS[k];
+    paletteHtml += '<span onclick="whPickColor(\'' + k + '\')" style="' + btnStyle(activeC === k, c.bg, c.dot) + '">'
+      + '<span style="width:12px; height:12px; border-radius:50%; background:' + c.dot + ';"></span>'
+      + c.label + '</span>';
+  });
+  // 필터 토글 (활성 색상이 있을 때만 의미 있음)
+  const canFilter = !!activeC;
+  const filterBtnBg = filterOn ? WH_COLORS[activeC].bg : '#fff';
+  const filterBtnBorder = filterOn ? WH_COLORS[activeC].dot : '#BDBDBD';
+  paletteHtml += '<span style="margin-left:auto;"></span>';
+  paletteHtml += '<span onclick="' + (canFilter ? 'whToggleFilter()' : 'alert(\'먼저 상단에서 색상을 선택하세요.\')') + '" '
+    + 'style="display:inline-flex; align-items:center; gap:6px; padding:10px 14px; border-radius:20px; cursor:pointer; user-select:none; font-size:13px; font-weight:700; '
+    + 'background:' + filterBtnBg + '; border:2px solid ' + filterBtnBorder + '; ' + (canFilter ? '' : 'opacity:0.5;') + '">'
+    + '🔎 ' + (filterOn && activeC ? WH_COLORS[activeC].label + '만 보기 ✓' : '이 색만 보기') + '</span>';
+  paletteHtml += '</div></div>';
+  paletteEl.innerHTML = paletteHtml;
+
+  // ⭐ 리스트 (필터 적용)
+  const filtered = (filterOn && filterColor) ? pending.filter(o => o.assignedColor === filterColor) : pending;
+  let listHtml = '<h3 style="margin-bottom:8px;">대기 주문 (' + filtered.length
+    + (filterOn && filterColor ? ' / 전체 ' + pending.length : '') + '건)</h3>';
+  if (filtered.length === 0) {
+    listHtml += '<div class="empty"><div class="icon">✅</div>'
+      + (filterOn && filterColor ? WH_COLORS[filterColor].label + ' 색상 배정된 주문이 없습니다.' : '처리할 주문이 없습니다.')
+      + '</div>';
+    listEl.innerHTML = listHtml;
+    return;
+  }
+  listHtml += '<table class="t"><thead><tr>'
+    + '<th>주문번호</th><th>거래처</th><th>품목수</th><th>상태</th><th>주문일시</th><th>희망 배송일</th><th class="act"></th>'
+    + '</tr></thead><tbody>';
+  filtered.forEach(o => {
+    const c = DB.customers.find(x => x.id === o.customerId);
+    const clr = o.assignedColor && WH_COLORS[o.assignedColor] ? WH_COLORS[o.assignedColor] : null;
+    const rowBg = clr ? 'background:' + clr.bg + ';' : '';
+    const rowBorder = clr ? 'border-left:4px solid ' + clr.dot + ';' : '';
+    // 행 전체 클릭 = 색상 지정 (계근 버튼만 계근 화면 이동)
+    listHtml += '<tr style="cursor:pointer;' + rowBg + rowBorder + '" onclick="whAssignColor(\'' + o.id + '\')">'
+      + '<td><b>' + o.orderNo + '</b></td>'
+      + '<td>' + (c ? c.name : '-') + '</td>'
+      + '<td>' + o.items.length + '</td>'
+      + '<td><span class="pill ' + o.status + '">' + statusLabel(o.status) + '</span></td>'
+      + '<td>' + new Date(o.orderDate).toLocaleString('ko-KR') + '</td>'
+      + '<td>' + renderDeliveryBadge(o.deliveryDate) + '</td>'
+      + '<td class="act"><button class="btn sm" onclick="event.stopPropagation(); location.hash=\'#weigh?id=' + o.id + '\'">계근하기 →</button></td>'
+      + '</tr>';
+  });
+  listHtml += '</tbody></table>';
+  listEl.innerHTML = listHtml;
 }
 function viewWeigh(params) {
   const id = params.get('id');
