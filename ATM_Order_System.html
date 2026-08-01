@@ -3549,7 +3549,7 @@ function renderFavoritesList(custId) {
   if (!cust) return;
   const cuts = [...new Set(DB.products.filter(p => p.active).map(p => p.cut))];
   document.getElementById('favList').innerHTML = `
-    <div id="favChipsPanel" style="position:sticky; top:52px; z-index:20; background:var(--bg,#fff);
+    <div id="favChipsPanel" style="background:var(--bg,#fff);
          border:2px solid var(--brand); border-radius:10px; padding:12px 14px; margin-bottom:16px;
          box-shadow:0 2px 8px rgba(0,0,0,0.08);">
       <div style="font-size:12px; font-weight:700; color:var(--brand); margin-bottom:8px;">
