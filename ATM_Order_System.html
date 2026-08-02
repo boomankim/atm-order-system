@@ -6000,6 +6000,53 @@ window.whToggleFilter = function() {
   renderWarehouseList();
 };
 
+// ⭐ (2026-08-02) 계근 대기 - 미지정 배송일 즉시 지정 UI
+//   미지정 주문에만 [📅 지정] 버튼 표시. 클릭 시 날짜 선택 모달 → 저장.
+window.whSetDeliveryDate = function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  const today = todayLocalISO();
+  const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
+  const tmrISO = toLocalISODate(tmr);
+  const suggested = (typeof getFirstBusinessDayOnOrAfter === 'function') ? getFirstBusinessDayOnOrAfter(tmrISO) : tmrISO;
+  if (typeof openModal !== 'function') {
+    // 폴백: 간단한 prompt
+    const v = prompt('배송일 지정 (YYYY-MM-DD)', suggested);
+    if (!v || !/^\d{4}-\d{2}-\d{2}$/.test(v)) return;
+    _whCommitDeliveryDate(orderId, v);
+    return;
+  }
+  openModal(
+    '<h3 style="margin-top:0;">📅 배송일 지정</h3>' +
+    '<div style="font-size:13px; color:var(--muted); margin-bottom:10px;">' +
+      '<b>' + (cust ? cust.name : '-') + '</b> · 주문번호: ' + o.orderNo +
+    '</div>' +
+    '<div class="field" style="margin-bottom:12px;">' +
+      '<label>배송일 / Delivery Date</label>' +
+      '<input type="date" id="whDeliveryDatePicker" min="' + today + '" value="' + suggested + '" style="font-size:15px; padding:10px; width:100%;">' +
+    '</div>' +
+    '<div class="btn-row" style="margin-top:16px;">' +
+      '<button class="btn success" onclick="_whCommitDeliveryDate(\'' + orderId + '\', document.getElementById(\'whDeliveryDatePicker\').value)">✅ 저장</button>' +
+      '<button class="btn secondary" onclick="closeModal()">취소</button>' +
+    '</div>'
+  );
+};
+window._whCommitDeliveryDate = function(orderId, dateISO) {
+  if (!dateISO || !/^\d{4}-\d{2}-\d{2}$/.test(dateISO)) {
+    alert('올바른 날짜를 선택해 주세요.');
+    return;
+  }
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  o.deliveryDate = dateISO;
+  try { saveEntityField('orders', o.id, 'deliveryDate'); }
+  catch(e) { console.warn('배송일 저장 실패:', e); alert('저장 실패: ' + e.message); return; }
+  if (typeof closeModal === 'function') closeModal();
+  if (typeof renderWarehouseList === 'function') renderWarehouseList();
+  if (typeof showToast === 'function') showToast('✅ 배송일 저장 완료: ' + formatDateDMY(dateISO));
+};
+
 window.whAssignColor = function(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   if (!o) return;
@@ -6092,14 +6139,18 @@ function renderWarehouseList() {
     const clr = o.assignedColor && WH_COLORS[o.assignedColor] ? WH_COLORS[o.assignedColor] : null;
     const rowBg = clr ? 'background:' + clr.bg + ';' : '';
     const rowBorder = clr ? 'border-left:4px solid ' + clr.dot + ';' : '';
-    // 행 전체 클릭 = 색상 지정 (계근 버튼만 계근 화면 이동)
+    // 행 전체 클릭 = 색상 지정 (계근 버튼·배송일 지정 버튼만 각자 액션)
+    // ⭐ (2026-08-02) 배송일 미지정 주문에만 [📅 지정] 버튼 표시. 지정되면 자동으로 renderDeliveryBadge 로 전환.
+    const deliveryCell = o.deliveryDate
+      ? renderDeliveryBadge(o.deliveryDate)
+      : '<button class="btn sm" style="background:#E68A00; color:#fff; padding:4px 10px; font-size:12px;" onclick="event.stopPropagation(); whSetDeliveryDate(\'' + o.id + '\')">📅 지정</button>';
     listHtml += '<tr style="cursor:pointer;' + rowBg + rowBorder + '" onclick="whAssignColor(\'' + o.id + '\')">'
       + '<td><b>' + o.orderNo + '</b></td>'
       + '<td>' + (c ? c.name : '-') + '</td>'
       + '<td>' + o.items.length + '</td>'
       + '<td><span class="pill ' + o.status + '">' + statusLabel(o.status) + '</span></td>'
       + '<td>' + new Date(o.orderDate).toLocaleString('ko-KR') + '</td>'
-      + '<td>' + renderDeliveryBadge(o.deliveryDate) + '</td>'
+      + '<td>' + deliveryCell + '</td>'
       + '<td class="act"><button class="btn sm" onclick="event.stopPropagation(); location.hash=\'#weigh?id=' + o.id + '\'">계근하기 →</button></td>'
       + '</tr>';
   });
