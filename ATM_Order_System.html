@@ -1443,14 +1443,12 @@ function viewHome() {
         <div style="font-size:24px; font-weight:800; color:var(--brand-dark); letter-spacing:1px; margin-bottom:6px;">ALL THAT MEAT</div>
         <div style="font-size:13px; color:var(--muted); margin-bottom:30px;">WHOLESALE PTY LTD</div>
 
-        ${annBlock}
-
-        <button class="btn success" style="font-size:18px; padding:16px 48px; border-radius:12px; margin-bottom:16px;"
+        <button class="btn success" style="font-size:18px; padding:16px 48px; border-radius:12px; margin-bottom:24px;"
           onclick="location.hash='#enter'">
           🛒 주문하기 / Place Order
         </button>
 
-
+        ${annBlock}
       </div>
     `;
     return;
@@ -4632,6 +4630,19 @@ function renderCompanyAdmin() {
     </div>
 
     <div class="card">
+      <h3>📅 휴무 기간 설정 / Holiday Periods
+        <small style="color:var(--muted); font-weight:400; font-size:12px; margin-left:8px;">— 배송일 자동 조정 (설날·연말 등)</small>
+      </h3>
+      <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">
+        휴무 기간 안에 배송일이 잡히면 자동으로 다음 영업일로 조정됩니다.<br>
+        배송일 선택 모달과 첫 페이지 공지에도 표시됩니다.
+      </div>
+      <div id="co_holidays_list"></div>
+      <button class="btn secondary sm" onclick="addHolidayRow()">+ 휴무 기간 추가</button>
+      <button class="btn success sm" style="margin-left:8px;" onclick="saveHolidays()">💾 휴무 저장</button>
+    </div>
+
+    <div class="card">
       <h3>📄 인보이스 하단 문구 / Invoice Footer Text</h3>
       <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
         Due Date·PAYMENT TERM 줄은 자동 생성됩니다. 아래 3개 영역만 자유롭게 수정하세요.
@@ -4681,7 +4692,70 @@ function renderCompanyAdmin() {
       if (pv) pv.innerHTML = v ? multilineToDivs(v) : '<i style="color:#aaa;font-weight:400;">(공지 없음 — 박스 미표시)</i>';
     });
   }
+  // ⭐ (2026-08-02) 휴무 리스트 렌더
+  renderHolidayList();
 }
+
+// ⭐ (2026-08-02) 휴무 기간 편집 UI
+function renderHolidayList() {
+  const list = document.getElementById('co_holidays_list');
+  if (!list) return;
+  const holidays = Array.isArray(DB.company.holidays) ? DB.company.holidays : [];
+  if (holidays.length === 0) {
+    list.innerHTML = '<div style="padding:12px; background:#FAF6F1; border-radius:6px; color:var(--muted); font-size:13px; text-align:center; margin-bottom:8px;">등록된 휴무 없음. [+ 휴무 기간 추가] 로 등록하세요.</div>';
+    return;
+  }
+  list.innerHTML = holidays.map(function(h, idx) {
+    const s = (h && h.start) || '';
+    const e = (h && h.end) || '';
+    return '<div style="display:flex; gap:8px; align-items:center; padding:8px 12px; background:#FAF6F1; border-radius:6px; margin-bottom:6px;">'
+      + '<input type="date" data-hol="start" data-idx="' + idx + '" value="' + s + '" style="padding:6px; font-size:13px; flex:1;">'
+      + '<span style="color:var(--muted);">~</span>'
+      + '<input type="date" data-hol="end" data-idx="' + idx + '" value="' + e + '" style="padding:6px; font-size:13px; flex:1;">'
+      + '<button class="btn sm danger" onclick="removeHolidayRow(' + idx + ')" style="padding:4px 10px;">✕</button>'
+      + '</div>';
+  }).join('');
+}
+window.addHolidayRow = function() {
+  if (!DB.company) DB.company = {};
+  if (!Array.isArray(DB.company.holidays)) DB.company.holidays = [];
+  DB.company.holidays.push({ start: '', end: '' });
+  renderHolidayList();
+};
+window.removeHolidayRow = function(idx) {
+  if (!Array.isArray(DB.company.holidays)) return;
+  DB.company.holidays.splice(idx, 1);
+  renderHolidayList();
+};
+window.saveHolidays = function() {
+  if (!DB.company) DB.company = {};
+  const rows = document.querySelectorAll('#co_holidays_list input[type="date"]');
+  const map = {};
+  rows.forEach(function(inp){
+    const idx = inp.getAttribute('data-idx');
+    const key = inp.getAttribute('data-hol');
+    if (!map[idx]) map[idx] = {};
+    map[idx][key] = inp.value || '';
+  });
+  const holidays = [];
+  Object.keys(map).sort(function(a,b){ return Number(a) - Number(b); }).forEach(function(k){
+    const h = map[k];
+    if (h.start && h.end && h.start <= h.end) holidays.push({ start: h.start, end: h.end });
+    else if (h.start || h.end) {
+      // 유효하지 않은 항목 스킵
+    }
+  });
+  DB.company.holidays = holidays;
+  try { saveEntityField && saveDB(); } catch(_){}
+  try {
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      _lastSaveTime = Date.now();
+      DB_REF.child('company/holidays').set(holidays).catch(function(e){ console.warn('holidays 저장 실패:', e); });
+    }
+  } catch(_){}
+  alert('✅ 휴무 기간 저장 완료: ' + holidays.length + '건');
+  renderHolidayList();
+};
 function saveCompany() {
   const gstParsed = parseFloat(val('co_gst'));
   // 인보이스 footer 필드는 보존 (이 버튼은 회사 정보만 저장)
@@ -4693,7 +4767,8 @@ function saveCompany() {
     currency: val('co_cur')||'AUD',
     invoiceAnnouncement: existing.invoiceAnnouncement || '',
     invoiceBankInfo: existing.invoiceBankInfo || '',
-    invoiceNoticeText: existing.invoiceNoticeText || ''
+    invoiceNoticeText: existing.invoiceNoticeText || '',
+    holidays: Array.isArray(existing.holidays) ? existing.holidays : []   // ⭐ 휴무 배열 보존
   };
   const appUrl = val('co_appUrl').trim().replace(/#.*$/, '');
   if (appUrl) DB.settings.appUrl = appUrl;
@@ -5566,11 +5641,18 @@ window.confirmAndSubmitOrder = function(custId) {
   const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
   const tomorrowISO = toLocalISODate(tmr);
   const tomorrowDMY = formatDateDMY(tomorrowISO);
-  const tmrDow = tmr.getDay(); // 0=일, 6=토
-  const isWeekend = (tmrDow === 0 || tmrDow === 6);
-  const tomorrowLabel = isWeekend
-    ? `🚚 <b>내일 배송 / Tomorrow</b><div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${tomorrowDMY} <span style="color:#E8A317; font-weight:700;">(주말 — 월요일 배송)</span></div>`
-    : `🚚 <b>내일 배송 / Tomorrow</b><div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${tomorrowDMY}</div>`;
+  // ⭐ (2026-08-02) 주말·휴무 통합 판정 — 내일이 영업일 아니면 다음 첫 영업일 안내
+  let tomorrowLabel;
+  if (isBusinessDay(tomorrowISO)) {
+    tomorrowLabel = `🚚 <b>내일 배송 / Tomorrow</b><div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${tomorrowDMY}</div>`;
+  } else {
+    const nextBiz = getFirstBusinessDayOnOrAfter(tomorrowISO);
+    const nextDMY = formatDateDMY(nextBiz);
+    let reasonBadge;
+    if (isHolidayDate(tomorrowISO)) reasonBadge = '(휴무 — ' + formatDateShort(nextBiz) + ' 배송)';
+    else reasonBadge = '(주말 — ' + formatDateShort(nextBiz) + ' 배송)';
+    tomorrowLabel = `🚚 <b>내일 배송 / Tomorrow</b><div style="font-weight:400; font-size:12px; opacity:0.9; margin-top:2px;">${tomorrowDMY} <span style="color:#E8A317; font-weight:700;">${reasonBadge}</span></div>`;
+  }
   // 지정일 기본값: 모레
   const day3 = new Date(); day3.setDate(day3.getDate() + 2);
   const day3ISO = toLocalISODate(day3);
@@ -5604,11 +5686,35 @@ window.confirmAndSubmitOrder = function(custId) {
         ✅ 확인 후 제출 / Confirm &amp; Submit
       </button>
     </div>
+    ${_renderHolidayNoticeBox()}
     <div style="margin-top:16px; text-align:center; padding-top:12px; border-top:1px solid var(--line);">
       <button class="btn secondary sm" onclick="closeModal()">취소 / Cancel</button>
     </div>
   `);
 };
+
+// ⭐ (2026-08-02) 배송일 선택 모달 하단 휴무 공지 박스
+//   "M월 D일 휴무 -> M월 D일 배송 합니다" 형식으로 다가올 휴무 표시
+function _renderHolidayNoticeBox() {
+  const upcoming = (typeof upcomingHolidayRanges === 'function') ? upcomingHolidayRanges() : [];
+  if (upcoming.length === 0) return '';
+  const rows = upcoming.map(function(h) {
+    const nextBiz = getFirstBusinessDayOnOrAfter(_addDaysISO(h.end, 1));
+    if (h.start === h.end) {
+      return formatDateShort(h.start) + ' 휴무 -> ' + formatDateShort(nextBiz) + ' 배송 합니다';
+    }
+    return formatDateShort(h.start) + ' ~ ' + formatDateShort(h.end) + ' 휴무 -> ' + formatDateShort(nextBiz) + ' 배송 합니다';
+  }).join('<br>');
+  return '<div style="margin-top:14px; padding:12px 14px; background:#FFF7E0; border-left:4px solid #B8860B; border-radius:6px; font-size:13px; color:#5C3A00; line-height:1.7;">'
+    + '<b style="color:#7A4A00;">📢 휴무 안내</b><br>' + rows
+    + '</div>';
+}
+// 헬퍼: dateISO + N일
+function _addDaysISO(dateISO, n) {
+  const d = new Date(dateISO + 'T12:00:00');
+  d.setDate(d.getDate() + n);
+  return toLocalISODate(d);
+}
 
 window.showCustomDateInput = function() {
   const box = document.getElementById('customDateBox');
@@ -5625,6 +5731,18 @@ window.showCustomDateInput = function() {
 window.submitCustomDate = function(custId) {
   const v = (document.getElementById('customDeliveryDate') || {}).value || '';
   if (!v) return alert('날짜를 선택해 주세요.\nPlease pick a date.');
+  // ⭐ (2026-08-02) 지정일 검증 — 주말·휴무 기간이면 다음 영업일로 자동 조정 확인
+  if (!isBusinessDay(v)) {
+    const nextBiz = getFirstBusinessDayOnOrAfter(v);
+    const reason = isHolidayDate(v) ? '휴무 기간입니다' : '주말입니다';
+    const ok = confirm(
+      '선택하신 ' + formatDateDMY(v) + ' 은 ' + reason + '.\n' +
+      formatDateDMY(nextBiz) + ' 배송으로 진행할까요?'
+    );
+    if (!ok) return;   // 취소 시 사장님이 다시 선택
+    setDeliveryAndSubmit(custId, nextBiz);
+    return;
+  }
   setDeliveryAndSubmit(custId, v);
 };
 
@@ -5648,33 +5766,40 @@ window.setDeliveryAndSubmit = function(custId, dateISO) {
   const el = document.getElementById('deliveryDate');
   if (el) el.value = dateISO;
   closeModal();
-  submitOrder(custId);
+  // ⭐ (2026-08-02) 파라미터 명시 전달 — 2단계 확인 화면에서도 정상 저장
+  submitOrder(custId, dateISO);
 };
 
-// 내일 배송 클릭 처리 — 내일이 토/일이면 월요일 배송 확인 팝업
+// ⭐ (2026-08-02) 내일 배송 클릭 처리 — 주말·휴무 자동 스킵 후 첫 영업일로 배송
 window.handleTomorrowDelivery = function(custId) {
   const tmr = new Date(); tmr.setDate(tmr.getDate() + 1);
-  const dow = tmr.getDay(); // 0=일, 6=토
-  if (dow === 0 || dow === 6) {
-    const dayName = (dow === 0) ? '일요일' : '토요일';
-    // 토요일이면 +2일, 일요일이면 +1일 후가 월요일
-    const addDays = (dow === 6) ? 2 : 1;
-    const mon = new Date(); mon.setDate(mon.getDate() + 1 + addDays);
-    const monISO = toLocalISODate(mon);
-    const monDMY = formatDateDMY(monISO);
-    const ok = confirm(
-      '내일은 ' + dayName + '입니다.\n' +
-      '월요일(' + monDMY + ') 배송으로 진행됩니다.\n\n' +
-      '확인하시겠습니까?'
-    );
-    if (ok) setDeliveryAndSubmit(custId, monISO);
-    // 취소 시 모달 유지 — 사용자가 지정일 배송 선택 가능
+  const tmrISO = toLocalISODate(tmr);
+  const targetISO = getFirstBusinessDayOnOrAfter(tmrISO);
+  if (targetISO === tmrISO) {
+    // 내일이 이미 영업일 → 그대로 진행
+    setDeliveryAndSubmit(custId, tmrISO);
     return;
   }
-  setDeliveryAndSubmit(custId, toLocalISODate(tmr));
+  // 내일이 주말 또는 휴무 → 다음 영업일 확인 팝업
+  const targetDMY = formatDateDMY(targetISO);
+  const targetDate = new Date(targetISO + 'T12:00:00');
+  const dowLabel = ['일','월','화','수','목','금','토'][targetDate.getDay()];
+  let reason = '';
+  const tmrDow = tmr.getDay();
+  if (tmrDow === 0) reason = '내일은 일요일입니다.';
+  else if (tmrDow === 6) reason = '내일은 토요일입니다.';
+  else if (isHolidayDate(tmrISO)) reason = '내일은 휴무일입니다.';
+  else reason = '내일은 영업일이 아닙니다.';
+  const ok = confirm(
+    reason + '\n' +
+    targetDMY + ' (' + dowLabel + '요일) 배송으로 진행됩니다.\n\n' +
+    '확인하시겠습니까?'
+  );
+  if (ok) setDeliveryAndSubmit(custId, targetISO);
+  // 취소 시 모달 유지 — 사용자가 지정일 배송 선택 가능
 };
 
-async function submitOrder(custId) {
+async function submitOrder(custId, deliveryDateISO) {
   // ⭐ (2026-08-01) 중복 제출 최종 방어 — 최근 5초 내 같은 거래처+CART 로 제출한 이력 있으면 차단
   //   인터넷 느린 곳에서 setDeliveryAndSubmit 우회로 재진입되는 극단 케이스 방어.
   const _dedupeKey = 'atm_submit_dedupe';
@@ -5726,13 +5851,27 @@ async function submitOrder(custId) {
     DB.settings.orderSeq = orderSeq + 1;
   }
 
+  // ⭐ (2026-08-02) 배송일 결정 — 파라미터 우선, 없으면 hidden input 폴백 (기존 호환)
+  const _hiddenDate = val('deliveryDate');
+  const _finalDeliveryDate = (deliveryDateISO && String(deliveryDateISO).trim()) || _hiddenDate || '';
+  const _deliveryNotesInput = document.getElementById('deliveryNotes');
+  const _finalDeliveryNotes = _deliveryNotesInput ? (_deliveryNotesInput.value || '') : '';
+  // 확인 화면(orderConfirm) 통해 왔으면 draft 에 저장된 값 복원
+  let _finalNotes = _finalDeliveryNotes;
+  if (!_finalNotes) {
+    try {
+      const draft = loadCartDraft(custId);
+      if (draft && draft.deliveryNotes) _finalNotes = draft.deliveryNotes;
+    } catch(_){}
+  }
+
   const order = {
     id: uid('o'),
     orderNo: 'ATM-' + todayLocalISO().replace(/-/g,'') + '-' + String(orderSeq).padStart(3,'0'),
     customerId: custId,
     orderDate: new Date().toISOString(),
-    deliveryDate: val('deliveryDate'),
-    deliveryNotes: val('deliveryNotes'),
+    deliveryDate: _finalDeliveryDate,
+    deliveryNotes: _finalNotes,
     items: CART.map(i => ({...i, actualWeightKg: null})), // 박스육·작업육 모두 계근 후 직원이 입력
     status: 'new',
     createdAt: new Date().toISOString()
@@ -6432,6 +6571,53 @@ function formatDateDMY(iso) {
   const d = new Date(iso + 'T00:00:00');
   if (isNaN(d.getTime())) return iso;
   return d.toLocaleDateString('en-GB', { day:'2-digit', month:'2-digit', year:'numeric' });
+}
+
+// ⭐ (2026-08-02) 배송일 계산 헬퍼 — 주말·휴무 자동 스킵
+//   휴무 데이터: DB.company.holidays = [{start:'YYYY-MM-DD', end:'YYYY-MM-DD'}, ...]
+function getHolidayRanges() {
+  if (!DB || !DB.company) return [];
+  const arr = DB.company.holidays;
+  if (!Array.isArray(arr)) return [];
+  return arr.filter(h => h && h.start && h.end && h.start <= h.end);
+}
+// dateISO(YYYY-MM-DD) 가 휴무 기간 내인가?
+function isHolidayDate(dateISO) {
+  if (!dateISO) return false;
+  return getHolidayRanges().some(h => dateISO >= h.start && dateISO <= h.end);
+}
+// dateISO 가 영업일인가? (평일 && 휴무 아님)
+function isBusinessDay(dateISO) {
+  if (!dateISO) return false;
+  const d = new Date(dateISO + 'T12:00:00');
+  const dow = d.getDay();
+  if (dow === 0 || dow === 6) return false;
+  if (isHolidayDate(dateISO)) return false;
+  return true;
+}
+// dateISO 부터 시작해 첫 영업일 (자체가 영업일이면 그대로 반환)
+function getFirstBusinessDayOnOrAfter(dateISO) {
+  let d = new Date(dateISO + 'T12:00:00');
+  for (let i = 0; i < 400; i++) {   // 안전장치 (400일)
+    const iso = toLocalISODate(d);
+    if (isBusinessDay(iso)) return iso;
+    d.setDate(d.getDate() + 1);
+  }
+  return dateISO;   // 안전 폴백
+}
+// 오늘 이후 다가올 휴무 기간 리스트 (배송일 선택 모달용)
+function upcomingHolidayRanges() {
+  const today = todayLocalISO();
+  return getHolidayRanges()
+    .filter(h => h.end >= today)   // 끝나지 않은 것만
+    .sort((a, b) => a.start.localeCompare(b.start));
+}
+// "M월 D일" 형식
+function formatDateShort(iso) {
+  if (!iso) return '';
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return iso;
+  return (d.getMonth()+1) + '월 ' + d.getDate() + '일';
 }
 
 function dailyReportComputeRows(dateISO) {
