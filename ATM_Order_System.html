@@ -8980,7 +8980,7 @@ function viewInvoice(params) {
       <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
     </div>
     ${isInvoiceEditable(o) ? `
-    <div style="margin-bottom:12px; padding:8px 12px; background:#FFF7E0; border-left:4px solid #B8860B; border-radius:4px; font-size:12px; color:#5C3A00;">
+    <div class="no-print" style="margin-bottom:12px; padding:8px 12px; background:#FFF7E0; border-left:4px solid #B8860B; border-radius:4px; font-size:12px; color:#5C3A00;">
       ✏️ <b>편집 가능 상태</b> — 다음 전체 백업 전까지 이 인보이스를 수정할 수 있습니다.
     </div>` : ''}
     ${(() => {
@@ -13153,6 +13153,7 @@ window._showBackupFolderPill = function() {
   if (document.getElementById('backup-folder-pill')) return;   // 이미 표시 중
   const pill = document.createElement('div');
   pill.id = 'backup-folder-pill';
+  pill.className = 'no-print';   // ⭐ (2026-08-02) 인쇄·PDF 시 자동 숨김
   pill.style.cssText =
     'position:fixed; top:110px; right:12px; z-index:9998;' +
     'padding:10px 14px; border-radius:20px;' +
