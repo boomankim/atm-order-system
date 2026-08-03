@@ -3499,8 +3499,8 @@ function delCustomer(id) {
 function copyOrderLink(custId) {
   const cust = DB.customers.find(c => c.id === custId);
   const url = location.origin + location.pathname + '#enter';
-  const msg = `${cust ? cust.name + ' 사장님 — ' : ''}ATM 주문 페이지: ${url}\n진입 시 거래처 코드 「${cust ? cust.code : ''}」 또는 가게명 입력`;
-  navigator.clipboard.writeText(msg).then(() => alert('주문 링크 + 거래처 코드가 복사되었습니다!\n링크 자체는 익명이고, 거래처가 코드/가게명을 입력해야 본인 데이터에 접근합니다.\n\n' + msg));
+  const msg = `${cust ? cust.name + ' 사장님 — ' : ''}ATM 주문 페이지: ${url}\n진입 시 거래처 코드 「${cust ? cust.code : ''}」 입력`;
+  navigator.clipboard.writeText(msg).then(() => alert('주문 링크 + 거래처 코드가 복사되었습니다!\n링크 자체는 익명이고, 거래처가 코드를 입력해야 본인 데이터에 접근합니다.\n\n' + msg));
 }
 function kakaoShare(custId) {
   const cust = DB.customers.find(c => c.id === custId);
@@ -3511,7 +3511,7 @@ function kakaoShare(custId) {
     return;
   }
   const url = baseUrl + '#enter';
-  const msg = '[ALL THAT MEAT] ' + cust.name + ' 사장님, 주문 페이지입니다.\n\n🔗 ' + url + '\n\n진입 시 다음 중 하나 입력:\n  ▸ 거래처 코드: ' + cust.code + '\n  ▸ 또는 정확한 가게명: ' + cust.name + '\n\n📞 문의: ' + (DB.company.phone || '');
+  const msg = '[ALL THAT MEAT] ' + cust.name + ' 사장님, 주문 페이지입니다.\n\n🔗 ' + url + '\n\n진입 시 거래처 코드 입력: ' + cust.code + '\n\n📞 문의: ' + (DB.company.phone || '');
   navigator.clipboard.writeText(msg).then(function() {
     alert('✅ 카카오톡 메시지가 복사되었습니다!\n카카오톡을 열고 ' + cust.name + ' 담당자에게 붙여넣기(Ctrl+V) 하세요.\n\n' + msg);
   }).catch(function() {
