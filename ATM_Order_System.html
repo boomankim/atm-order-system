@@ -1871,7 +1871,7 @@ function renderRecentOrders() {
   `;
 }
 function statusLabel(s) {
-  return {new:'신규', weighing:'작업중', weighed:'계근완료', invoiced:'인보이스', delivered:'배송완료'}[s] || s;
+  return {new:'신규', weighing:'작업중', weighed:'계근완료', invoiced:'인보이스', delivered:'배송완료', merged:'병합됨'}[s] || s;
 }
 
 // =========================================================================
@@ -1898,6 +1898,7 @@ function viewAdmin(params) {
         <button class="btn ${tab==='pricing'?'':'secondary'}" onclick="location.hash='#admin?tab=pricing'">💰 단가 비교</button>
         <button class="btn ${tab==='security'?'':'secondary'}" onclick="location.hash='#admin?tab=security'">🔑 보안</button>
         <button class="btn ${tab==='orphan'?'':'secondary'}" onclick="location.hash='#admin?tab=orphan'">🔧 진단</button>
+        <button class="btn ${tab==='audit'?'':'secondary'}" onclick="location.hash='#admin?tab=audit'">🔒 감사 로그</button>
       </div>
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
         <button class="btn secondary" style="font-size:12px; padding:5px 10px;" onclick="setBackupFolder()">📁 폴더 설정</button>
@@ -1919,7 +1920,47 @@ function viewAdmin(params) {
   else if (tab === 'security') renderSecurityAdmin();
   else if (tab === 'backup') renderBackupAdmin();
   else if (tab === 'orphan') renderOrphanAdmin();
+  else if (tab === 'audit') renderAuditAdmin();
 }
+
+// ⭐ (2026-08-04) 감사 로그 조회 — 보스 비번 필요
+window._auditUnlocked = false;
+async function renderAuditAdmin() {
+  const body = document.getElementById('adminBody');
+  if (!window._auditUnlocked) {
+    body.innerHTML = '<div class="card"><div style="text-align:center; padding:30px 20px;">'
+      + '<div style="font-size:44px; margin-bottom:12px;">🔒</div>'
+      + '<div style="font-size:14px; color:var(--muted); margin-bottom:20px;">감사 로그 조회는 보스 비밀번호가 필요합니다.</div>'
+      + '<button class="btn success" onclick="unlockAuditLog()">🔓 보스 비밀번호 입력</button>'
+      + '</div></div>';
+    return;
+  }
+  const logs = Array.isArray(DB.auditLog) ? DB.auditLog.slice() : [];
+  logs.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));   // 최신 위로
+  body.innerHTML = '<div class="card">'
+    + '<h3>🔒 감사 로그 <span style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">— 보스 액션 기록 (총 ' + logs.length + '건)</span></h3>'
+    + '<div style="font-size:12px; color:var(--muted); margin-bottom:12px;">최근 순으로 정렬. 삭제 불가 (읽기 전용).</div>'
+    + (logs.length === 0
+      ? '<div class="empty">기록된 감사 로그가 없습니다.</div>'
+      : '<table class="t"><thead><tr>'
+        + '<th style="width:180px;">언제</th><th>무엇을</th>'
+        + '</tr></thead><tbody>'
+        + logs.map(function(e) {
+          const ts = e.ts ? new Date(e.ts).toLocaleString('ko-KR', {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '-';
+          const txt = String(e.text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          return '<tr><td style="white-space:nowrap; color:var(--muted); font-size:12px;">' + ts + '</td>'
+            + '<td>' + txt + '</td></tr>';
+        }).join('')
+        + '</tbody></table>')
+    + '</div>';
+}
+window.renderAuditAdmin = renderAuditAdmin;
+window.unlockAuditLog = async function() {
+  const ok = await verifyBossPassword('감사 로그 조회');
+  if (!ok) return;
+  window._auditUnlocked = true;
+  renderAuditAdmin();
+};
 
 // ============================================================================
 // ⭐ (2026-07-08) 인보이스 준비 화면 인라인 툴팁 (Feature 2B)
@@ -2242,14 +2283,19 @@ function ordAdmToggleAll(checked) {
 async function ordAdmDeleteOne(oid) {
   const o = DB.orders.find(x => x.id === oid);
   if (!o) return;
+  const orderNo = o.orderNo || oid;
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  const custName = cust ? cust.name : '(거래처 없음)';
   // ⭐ (2026-07-29) 보스 권한 먼저 확인 → 통과 시에만 삭제 안내창 표시
-  const ok = await verifyBossPassword('주문 ' + o.orderNo + ' 삭제');
+  const ok = await verifyBossPassword('주문 ' + orderNo + ' 삭제');
   if (!ok) return;
-  if (!confirm(`주문 ${o.orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.`)) return;
+  if (!confirm(`주문 ${orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.`)) return;
   DB.orders = DB.orders.filter(x => x.id !== oid);
   // Phase 2 동시성: 트랜잭션으로 안전 삭제
   removeEntityFromFirebase('orders', oid);
   saveLocalDB();
+  // ⭐ (2026-08-04) 감사 로그
+  try { auditLogAdd(`주문 개별 삭제: ${orderNo} (${custName})`); } catch(_){}
   route();
 }
 window.ordAdmDeleteOne = ordAdmDeleteOne;
@@ -2257,6 +2303,8 @@ window.ordAdmDeleteOne = ordAdmDeleteOne;
 async function ordAdmDeleteSelected(cid) {
   const ids = Array.from(document.querySelectorAll('.ordAdmChk:checked')).map(el => el.value);
   if (ids.length === 0) return alert('삭제할 주문을 선택하세요.');
+  const cust = DB.customers.find(c => c.id === cid);
+  const custName = cust ? cust.name : (cid === '__none__' ? '(거래처 없음)' : '(?)');
   // ⭐ (2026-07-29) 보스 권한 먼저 확인 → 통과 시에만 삭제 안내창 표시
   const ok = await verifyBossPassword('선택한 주문 ' + ids.length + '건 삭제');
   if (!ok) return;
@@ -2265,6 +2313,8 @@ async function ordAdmDeleteSelected(cid) {
   // Phase 2 동시성: 트랜잭션으로 일괄 삭제
   removeEntitiesFromFirebase('orders', ids);
   saveLocalDB();
+  // ⭐ (2026-08-04) 감사 로그
+  try { auditLogAdd(`주문 선택 삭제: ${custName} (${ids.length}건)`); } catch(_){}
   route();
 }
 window.ordAdmDeleteSelected = ordAdmDeleteSelected;
@@ -2302,6 +2352,33 @@ async function verifyBossPassword(actionLabel) {
 }
 window.verifyBossPassword = verifyBossPassword;
 
+// ⭐ (2026-08-04) 감사 로그 시스템 — 보스 액션 자동 기록
+//   기록 필드: ts (실행 시각), text (무엇을)
+//   저장: DB.auditLog 배열 (Firebase transaction 으로 안전 push)
+//   조회: 관리자 → [🔒 감사 로그] 탭 (보스 비번 필요)
+async function auditLogAdd(text) {
+  if (!DB.auditLog) DB.auditLog = [];
+  const entry = { ts: new Date().toISOString(), text: String(text || '').slice(0, 500) };
+  DB.auditLog.push(entry);
+  try { saveLocalDB(); } catch(_){}
+  // Firebase transaction 으로 안전 append (다른 액션과 동시 발생 방어)
+  try {
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      _lastSaveTime = Date.now();
+      DB_REF.child('auditLog').transaction(function(currentList) {
+        if (!Array.isArray(currentList)) currentList = [];
+        currentList.push(entry);
+        // 5000건 초과 시 오래된 것 삭제 (성능 보호)
+        if (currentList.length > 5000) currentList = currentList.slice(-5000);
+        return currentList;
+      }, function(error) {
+        if (error) console.warn('감사 로그 저장 실패:', error);
+      });
+    }
+  } catch(e) { console.warn('감사 로그 예외:', e); }
+}
+window.auditLogAdd = auditLogAdd;
+
 async function ordAdmDeleteAll(cid) {
   const cust = DB.customers.find(c => c.id === cid);
   const custName = cust ? cust.name : '거래처 없음';
@@ -2318,6 +2395,8 @@ async function ordAdmDeleteAll(cid) {
   // Phase 2 동시성: 트랜잭션으로 일괄 삭제
   removeEntitiesFromFirebase('orders', idsToRemove);
   saveLocalDB();
+  // ⭐ (2026-08-04) 감사 로그
+  try { auditLogAdd(`거래내역 전체 삭제: ${custName} (${orders.length}건)`); } catch(_){}
   alert(`✅ ${custName}의 거래내역 ${orders.length}건이 삭제되었습니다.`);
   route();
 }
@@ -5331,12 +5410,14 @@ function renderCatalog(q, custId) {
   const div = document.getElementById('catalog');
   const filt = DB.products.filter(p => p.active && (!q || (p.name+' '+p.brand+' '+p.cut).toLowerCase().includes(q.toLowerCase())));
   const cuts = [...new Set(filt.map(p => p.cut))];
+  // ⭐ (2026-08-04) 카테고리 정렬 (기존 compareCut 사용) → 카테고리 순서 유지
+  cuts.sort((a, b) => compareCut(a, b));
   const cust = custId ? DB.customers.find(c => c.id === custId) : null;
   const isStaff = STAFF_UNLOCKED && !CUSTOMER_MODE;
   div.innerHTML = cuts.map(cut => `
     <h4 style="margin-top:14px; margin-bottom:4px; color:var(--brand); font-size:12px; text-transform:uppercase; letter-spacing:1px; border-bottom:1px solid var(--line); padding-bottom:4px;">${CUT_DISPLAY[cut] || cut}</h4>
     <div>
-      ${filt.filter(p => p.cut === cut).map(p => {
+      ${filt.filter(p => p.cut === cut).slice().sort(_favSortNameAfterPrefix).map(p => {
         const isFav = cust ? getFavoriteProductIds(cust).includes(p.id) : false;
         const favBtn = (isStaff && custId)
           ? `<button onclick="event.stopPropagation(); toggleCatalogFav('${custId}','${p.id}',this)"
@@ -6343,7 +6424,20 @@ function viewOffice() {
   // ⭐ (2026-07-30) 입금 패널 sticky 날짜 — 리셋하지 않음
   //   사용자 요청: 아침에 지정일 세팅 후 20~30건 연속 입력할 때 매번 날짜 다시 입력하는 불편 해소.
   //   sticky 값은 브라우저 새로고침 전까지 유지. 새 날짜로 바꾸려면 패널에서 직접 변경.
+  // ⭐ (2026-08-04) 병합된 원본 주문 (status='merged') 은 발행 대기에서 제외
   const ready = DB.orders.filter(o => o.status === 'weighed');
+  // 같은 거래처 + 같은 배송일 계근완료 주문 그룹화 → 병합 후보
+  const _mergeGroups = {};
+  ready.forEach(o => {
+    if (!o.customerId || !o.deliveryDate) return;
+    const key = o.customerId + '::' + o.deliveryDate;
+    if (!_mergeGroups[key]) _mergeGroups[key] = [];
+    _mergeGroups[key].push(o);
+  });
+  const _mergeableCustomerIds = new Set();
+  Object.values(_mergeGroups).forEach(arr => {
+    if (arr.length >= 2) arr.forEach(o => _mergeableCustomerIds.add(o.customerId + '::' + o.deliveryDate));
+  });
   // 발행 완료 — 당일 발행분만 (invoicedAt 기준). 이전 발행 건은 #history 에서 조회.
   // ⭐ Bug fix (2026-07-07): invoicedAt 은 UTC ISO 문자열이라 .slice(0,10) 하면 시드니 오전엔
   //   어제 날짜로 나와 오늘 목록에 안 잡힘. 반드시 로컬 날짜로 변환해 비교.
@@ -6372,14 +6466,24 @@ function viewOffice() {
           ${ready.map(o => {
             const c = DB.customers.find(x=>x.id===o.customerId);
             const totals = computeTotals(o);
-            return `<tr style="cursor:pointer;" onclick="location.hash='#invoicePrep?id=${o.id}'">
+            const _groupKey = o.customerId + '::' + o.deliveryDate;
+            const _isMergeable = _mergeableCustomerIds.has(_groupKey);
+            const _rowBg = _isMergeable ? 'background:#FFF7E0;' : '';
+            const _mergeGroup = _mergeGroups[_groupKey] || [];
+            // 병합 버튼: 그룹 첫 주문에만 표시 (같은 배송일·거래처 다른 주문들과 병합)
+            const _isFirstInGroup = _isMergeable && _mergeGroup.length >= 2 && _mergeGroup[0].id === o.id;
+            const _mergeBtn = _isFirstInGroup
+              ? `<button class="btn sm" style="background:#E68A00; color:#fff; margin-right:4px;" onclick="event.stopPropagation(); mergeOrdersInGroup('${o.customerId}', '${o.deliveryDate}')" title="같은 거래처·같은 배송일 계근완료 주문 ${_mergeGroup.length}건 병합">🔗 병합 (${_mergeGroup.length})</button>`
+              : '';
+            return `<tr style="cursor:pointer; ${_rowBg}" onclick="location.hash='#invoicePrep?id=${o.id}'">
               <td><b style="color:var(--brand);">${o.orderNo}</b></td>
-              <td><b>${c?c.name:'-'}</b>${c&&c.contact?`<br><small style="color:var(--muted);">${c.contact} · ${c.phone||''}</small>`:''}</td>
+              <td><b>${c?c.name:'-'}</b>${_isMergeable ? '<span style="margin-left:6px; padding:1px 6px; background:#E68A00; color:#fff; border-radius:8px; font-size:10px; font-weight:700;">중복</span>' : ''}${c&&c.contact?`<br><small style="color:var(--muted);">${c.contact} · ${c.phone||''}</small>`:''}</td>
               <td>${o.items.length}개</td>
               <td class="num">${totals.totalKg.toFixed(1)} kg</td>
               <td class="num">$${fmtMoney(totals.grand)}</td>
               <td>${renderDeliveryBadge(o.deliveryDate)}</td>
               <td class="act">
+                ${_mergeBtn}
                 <button class="btn sm" onclick="event.stopPropagation(); location.hash='#invoicePrep?id=${o.id}'">📂 펼쳐보기 →</button>
               </td>
             </tr>`;
@@ -6720,11 +6824,13 @@ function dailyReportComputeRows(dateISO) {
     let overdue = 0;
     if (days > 0) {
       // 인보이스별로 연결된 크레딧 총액을 미리 매핑 (dateISO 이하만)
+      // ⭐ (2026-08-04) 크레딧 적용 대상: appliedToOrderId 있으면 그 인보이스, 없으면 원본 (cn.orderId)
       const creditByOrderId = {};
       (DB.creditNotes || []).forEach(cn => {
         if (!cn || cn.customerId !== c.id) return;
         if (toLocalISODate(cn.issuedAt) > dateISO) return;
-        creditByOrderId[cn.orderId] = (creditByOrderId[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+        const targetOrderId = cn.appliedToOrderId || cn.orderId;
+        creditByOrderId[targetOrderId] = (creditByOrderId[targetOrderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
       });
       // dateISO 기준 이 거래처의 인보이스 목록 (orderId 매핑용 원본 참조 필요)
       const invoicesAsOf = DB.orders
@@ -7233,10 +7339,12 @@ function _computeUnpaidByInvoice(cid) {
     .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
 
   // 크레딧 차감
+  // ⭐ (2026-08-04) 적용된 크레딧은 target 인보이스, 미적용은 원본 인보이스에 반영
   const creditByInv = {};
   (DB.creditNotes || []).forEach(cn => {
     if (!cn || cn.customerId !== cid) return;
-    creditByInv[cn.orderId] = (creditByInv[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
+    const targetOrderId = cn.appliedToOrderId || cn.orderId;
+    creditByInv[targetOrderId] = (creditByInv[targetOrderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
   });
   // FIFO 입금 배분
   let pool = (DB.payments || [])
@@ -8316,7 +8424,7 @@ function viewInvoicePrep(params) {
 
   app.innerHTML = `
     <h2 class="page-title">📋 ${_isEditMode ? '인보이스 수정' : '인보이스 준비'} — ${o.orderNo}
-      <span class="sub">${cust?cust.name:''}</span></h2>
+      <span style="display:inline-block; font-size:22px; font-weight:800; color:var(--brand-dark); margin-left:14px; padding:2px 12px; background:#FFF5D6; border-radius:6px; border:2px solid #E8A317;">🏪 ${cust?cust.name:'-'}</span></h2>
     ${_editBanner}
 
     <div class="card" style="border-left:4px solid var(--brand); background:#FFFCF5;">
@@ -8327,6 +8435,8 @@ function viewInvoicePrep(params) {
         oninput="updatePrepOfficeNote('${o.id}', this.value)"
         style="width:100%; margin-top:6px; padding:8px 10px; border:1px solid var(--line); border-radius:5px; font-size:14px; font-family:inherit; min-height:44px; box-sizing:border-box;">${_officeNoteRaw}</textarea>
     </div>
+
+    ${_renderUnusedCreditsPanel(o, cust)}
 
     <div class="card">
       <div class="grid-3" style="font-size:13px;">
@@ -8933,6 +9043,34 @@ async function issueInvoice(orderId) {
     console.log('[issueInvoice] 거래처 맞춤 단가 저장:', cust.name, '라인 수:', savedPriceCount, 'customPrices:', JSON.parse(JSON.stringify(cust.customPrices)));
   }
 
+  // ⭐ (2026-08-04) 3-bis) 사용자가 체크한 크레딧 노트를 이 인보이스에 적용
+  //   window._prepSelectedCreditIds 는 invoicePrep 화면에서 체크된 크레딧 ID 배열.
+  //   각 크레딧에 appliedToOrderId + appliedAt 세팅 → 스테이트먼트·매출일보 FIFO 에서 제외됨.
+  const _selectedCreditIds = Array.isArray(window._prepSelectedCreditIds) ? window._prepSelectedCreditIds.slice() : [];
+  let _appliedCount = 0;
+  const _appliedNos = [];
+  (DB.creditNotes || []).forEach(function(cn){
+    if (!cn) return;
+    if (_selectedCreditIds.indexOf(cn.id) >= 0) {
+      // 선택됨 → 이 인보이스에 적용
+      if (cn.appliedToOrderId !== orderId) {
+        cn.appliedToOrderId = orderId;
+        cn.appliedAt = new Date().toISOString();
+        try { saveEntityField('creditNotes', cn.id, 'appliedToOrderId'); } catch(_){}
+        try { saveEntityField('creditNotes', cn.id, 'appliedAt'); } catch(_){}
+      }
+      _appliedCount++;
+      _appliedNos.push(cn.creditNo || cn.id.slice(0,8));
+    } else if (cn.appliedToOrderId === orderId) {
+      // 편집 모드에서 체크 해제됨 → 취소
+      cn.appliedToOrderId = null;
+      cn.appliedAt = null;
+      try { saveEntityField('creditNotes', cn.id, 'appliedToOrderId'); } catch(_){}
+      try { saveEntityField('creditNotes', cn.id, 'appliedAt'); } catch(_){}
+    }
+  });
+  window._prepSelectedCreditIds = [];   // 리셋
+
   // 3) 로컬 즉시 저장 — 이후 작업이 실패해도 발행 결과는 유지
   try { saveLocalDB(); } catch(e){ console.warn('saveLocalDB failed:', e); }
   try {
@@ -8942,6 +9080,9 @@ async function issueInvoice(orderId) {
       invoiceNo: o.invoiceNo
     });
   } catch(e){ console.warn('saveEntityFields failed:', e); }
+  if (_appliedCount > 0) {
+    try { auditLogAdd(`인보이스 발행 시 크레딧 ${_appliedCount}건 적용: ${invoiceNo} (${_appliedNos.join(', ')})`); } catch(_){}
+  }
 
   // 4) ⭐ 즉시 화면 전환 (인보이스 페이지로). 발행 즉시 확인/인쇄 가능. PDF 자동 저장은 백그라운드.
   if (typeof showToast === 'function') {
@@ -8993,7 +9134,7 @@ function viewInvoice(params) {
       const cns = getCreditNotesForOrder(o.id);
       if (cns.length === 0) return '';
       const totalCredit = cns.reduce((s,c) => s + computeCreditNoteTotals(c).grand, 0);
-      return `<div class="card" style="border-left:4px solid #C0392B; background:#FDECEA; margin-bottom:14px;">
+      return `<div class="card no-print" style="border-left:4px solid #C0392B; background:#FDECEA; margin-bottom:14px;">
         <h3 style="color:#C0392B; margin-top:0;">🧾 이 인보이스의 크레딧 노트 (${cns.length}건, 총 -$${fmtMoney(totalCredit)})</h3>
         <table class="t">
           <thead><tr><th>크레딧#</th><th>발행일</th><th>사유</th><th class="num">금액</th><th class="act"></th></tr></thead>
@@ -9006,6 +9147,31 @@ function viewInvoice(params) {
                 <td>${cn.reason || '-'}</td>
                 <td class="num" style="color:#C0392B; font-weight:700;">-$${fmtMoney(cnTotals.grand)}</td>
                 <td class="act"><button class="btn sm secondary" onclick="location.hash='#creditNote?id=${cn.id}'">보기</button></td>
+              </tr>`;
+            }).join('')}
+          </tbody>
+        </table>
+      </div>`;
+    })()}
+    ${(() => {
+      // ⭐ (2026-08-04) 이 인보이스에 "적용된" 다른 크레딧 (다른 원본에서 발행되어 이 인보이스에 적용됨)
+      // 방어: 이 인보이스에서 발행된 크레딧 (orderId === o.id) 은 위 섹션에 이미 있으므로 제외
+      const applied = getAppliedCreditNotesForOrder(o.id).filter(cn => cn.orderId !== o.id);
+      if (applied.length === 0) return '';
+      const totalApplied = applied.reduce((s,c) => s + computeCreditNoteTotals(c).grand, 0);
+      return `<div class="card no-print" style="border-left:4px solid #1B5E20; background:#E8F5E9; margin-bottom:14px;">
+        <h3 style="color:#1B5E20; margin-top:0;">📎 이 인보이스에 적용된 크레딧 (${applied.length}건, 총 -$${fmtMoney(totalApplied)})</h3>
+        <table class="t">
+          <thead><tr><th>크레딧#</th><th>발행일</th><th>사유</th><th class="num">금액</th><th class="act"></th></tr></thead>
+          <tbody>
+            ${applied.map(cn => {
+              const cnTotals = computeCreditNoteTotals(cn);
+              return `<tr>
+                <td><b style="color:#1B5E20;">${cn.creditNo || cn.id.slice(0,8)}</b></td>
+                <td>${new Date(cn.issuedAt).toLocaleDateString('en-AU')}</td>
+                <td>${cn.reason || '-'}</td>
+                <td class="num" style="color:#1B5E20; font-weight:700;">-$${fmtMoney(cnTotals.grand)}</td>
+                <td class="act"><button class="btn sm danger" onclick="unapplyCredit('${cn.id}', '${o.id}')">↩️ 적용 취소</button></td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -9118,6 +9284,16 @@ function viewInvoice(params) {
           <div class="tot-row"><span>Subtotal (ex GST)</span><span>$${fmtMoney(totals.subtotal)}</span></div>
           <div class="tot-row"><span>GST (${(DB.company.gstRate*100).toFixed(0)}%)</span><span>$${fmtMoney(totals.gst)}</span></div>
           <div class="tot-row grand"><span>TOTAL</span><span>$${fmtMoney(totals.grand)}</span></div>
+          ${(() => {
+            const applied = getAppliedCreditNotesForOrder(o.id);
+            if (applied.length === 0) return '';
+            const creditSum = applied.reduce((s,cn) => s + (computeCreditNoteTotals(cn).grand || 0), 0);
+            const amountDue = totals.grand - creditSum;
+            const creditList = applied.map(cn => 'CN-' + (cn.creditNo || cn.id.slice(0,8)) + ' (-$' + fmtMoney(computeCreditNoteTotals(cn).grand) + ')').join(', ');
+            return `<div class="tot-row" style="color:#C0392B;"><span>Applied Credits</span><span>-$${fmtMoney(creditSum)}</span></div>
+              <div class="tot-row grand" style="color:#1B5E20; border-top:2px solid #1B5E20;"><span>AMOUNT DUE</span><span>$${fmtMoney(amountDue)}</span></div>
+              <div style="font-size:10px; color:var(--muted); margin-top:4px; text-align:right;">${creditList}</div>`;
+          })()}
         </div>
       </div>
 
@@ -9331,6 +9507,9 @@ window.attemptEditInvoice = async function(orderId) {
   if (!confirm(warnMsg)) return;
   const ok = await verifyBossPassword('인보이스 수정');
   if (!ok) return;
+  // ⭐ (2026-08-04) 감사 로그
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  try { auditLogAdd(`인보이스 수정 진입: ${o.invoiceNo || o.orderNo} (${cust ? cust.name : '-'})`); } catch(_){}
   location.hash = '#invoicePrep?id=' + orderId;
 };
 
@@ -9358,6 +9537,172 @@ function computeCreditNoteTotals(cn) {
 function getCreditNotesForOrder(orderId) {
   return (DB.creditNotes || []).filter(c => c && c.orderId === orderId);
 }
+
+// ⭐ (2026-08-04) 거래처의 미사용(미적용) 크레딧 노트 조회
+//   applied 필드 없음 = 미사용 (기존 크레딧은 FIFO 로 처리 계속)
+//   applied 필드 있음 (appliedToOrderId 있음) = 이미 적용됨 (숨김)
+function getUnusedCreditNotesForCustomer(customerId) {
+  if (!customerId) return [];
+  return (DB.creditNotes || []).filter(function(c){
+    if (!c || c.customerId !== customerId) return false;
+    if (c.appliedToOrderId) return false;   // 이미 다른 인보이스에 적용됨
+    return true;
+  }).sort(function(a,b){ return (a.issuedAt || '').localeCompare(b.issuedAt || ''); });
+}
+
+// ⭐ (2026-08-04) 특정 인보이스(주문)에 적용된 크레딧 노트 조회
+function getAppliedCreditNotesForOrder(orderId) {
+  if (!orderId) return [];
+  return (DB.creditNotes || []).filter(function(c){
+    return c && c.appliedToOrderId === orderId;
+  });
+}
+
+// ⭐ (2026-08-04) invoicePrep 화면 - 미사용 크레딧 알림 박스 렌더
+function _renderUnusedCreditsPanel(o, cust) {
+  if (!o || !cust) return '';
+  // 이미 이 인보이스에 적용된 크레딧 (재진입 시)
+  const alreadyApplied = getAppliedCreditNotesForOrder(o.id);
+  // 이 거래처의 미사용 크레딧
+  const unused = getUnusedCreditNotesForCustomer(cust.id);
+  // 편집 모드일 때는 alreadyApplied 도 후보에 포함 (해제 가능하게)
+  const candidates = alreadyApplied.concat(unused);
+  if (candidates.length === 0) return '';
+  const rows = candidates.map(function(cn){
+    const grand = (computeCreditNoteTotals(cn).grand || 0);
+    const isApplied = cn.appliedToOrderId === o.id;
+    const dateStr = (cn.issuedAt || '').slice(0,10);
+    const reason = (cn.reason || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    const cnNo = cn.creditNo || cn.id.slice(0,8);
+    return '<label style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:#fff; border:1px solid #E8A317; border-radius:6px; margin-bottom:6px; cursor:pointer;">'
+      + '<input type="checkbox" class="prepCreditChk" data-cnid="' + cn.id + '" data-amount="' + grand + '" ' + (isApplied ? 'checked' : '') + ' onchange="_updatePrepCreditsPreview()" style="width:18px; height:18px; cursor:pointer;">'
+      + '<span style="flex:1;"><b>CN-' + cnNo + '</b> <span style="color:var(--muted); font-size:12px;">(' + dateStr + ')</span>'
+      + (reason ? ' · <span style="color:var(--brand-dark);">' + reason + '</span>' : '')
+      + '</span>'
+      + '<b style="color:#C0392B; font-size:14px;">-$' + fmtMoney(grand) + '</b>'
+      + '</label>';
+  }).join('');
+  // ⭐ (2026-08-04) 편집 모드 재진입 시 이미 적용된 크레딧을 window._prepSelectedCreditIds 에 자동 세팅
+  //   (사용자가 체크박스 안 만져도 발행 시 기존 적용 유지)
+  window._prepSelectedCreditIds = alreadyApplied.map(cn => cn.id);
+  return '<div class="card" style="border-left:4px solid #E8A317; background:#FFF7E0;">'
+    + '<h3 style="margin:0 0 8px 0; color:#7A4A00;">📎 크레딧 노트 적용 <span style="font-weight:400; font-size:12px; color:var(--muted);">— 체크한 크레딧이 이 인보이스에 적용됩니다 (한 번 적용 시 취소 필요)</span></h3>'
+    + '<div style="margin-top:8px;">' + rows + '</div>'
+    + '<div id="prepCreditsPreview" style="margin-top:10px; padding:8px 12px; background:#fff; border-radius:6px; font-size:13px; color:#7A4A00; display:none;"></div>'
+    + '</div>';
+}
+
+// ⭐ (2026-08-04) 주문 병합 — 같은 거래처·같은 배송일 계근완료 주문들을 하나로 병합
+//   방식 A: 사무실 리스트에서 [🔗 병합] 클릭.
+//   옵션 2: 2번째(가장 나중) 주문에 items 병합, 첫번째들은 status='merged'+mergedIntoId.
+//   크레딧 자동 이전 (cn.orderId 를 새 target 으로), 요청사항 존치(합쳐서 표시).
+window.mergeOrdersInGroup = async function(customerId, deliveryDate) {
+  const group = DB.orders.filter(o => o.status === 'weighed' && o.customerId === customerId && o.deliveryDate === deliveryDate);
+  if (group.length < 2) { alert('병합할 주문이 부족합니다 (2건 이상 필요).'); return; }
+  // orderDate 기준 오래된 것 → 최신 순 정렬 (최신 것이 target)
+  group.sort((a,b) => (a.orderDate||'').localeCompare(b.orderDate||''));
+  const target = group[group.length - 1];   // 마지막(가장 나중)
+  const sources = group.slice(0, -1);       // 나머지 (병합될 원본들)
+  const cust = DB.customers.find(c => c.id === customerId);
+  const custName = cust ? cust.name : '(?)';
+  const msg = '📋 주문 병합 확인\n\n' +
+    '거래처: ' + custName + '\n' +
+    '배송일: ' + deliveryDate + '\n' +
+    '병합 대상 주문 ' + group.length + '건:\n' +
+    group.map(o => '  · ' + o.orderNo + ' (' + o.items.length + '건, ' + new Date(o.orderDate).toLocaleTimeString('ko-KR') + ')').join('\n') + '\n\n' +
+    '👉 최종 주문 ' + target.orderNo + ' (가장 나중)에 모두 병합됩니다.\n' +
+    '   나머지 ' + sources.length + '건은 "병합됨" 상태로 남아 이력에만 보입니다.\n\n' +
+    '계속하시겠습니까?';
+  if (!confirm(msg)) return;
+  // items 병합
+  const combinedItems = target.items.slice();
+  sources.forEach(src => {
+    (src.items || []).forEach(it => combinedItems.push(Object.assign({}, it)));
+  });
+  target.items = combinedItems;
+  // invoiceItems 도 있으면 병합 (이미 편집됐을 수도)
+  if (target.invoiceItems) {
+    const combinedInv = target.invoiceItems.slice();
+    sources.forEach(src => {
+      const items = src.invoiceItems || src.items || [];
+      items.forEach(it => combinedInv.push(Object.assign({}, it)));
+    });
+    target.invoiceItems = combinedInv;
+  }
+  // 요청사항 병합 (deliveryNotes)
+  const notesArr = group.map(o => o.deliveryNotes).filter(Boolean);
+  if (notesArr.length > 0) target.deliveryNotes = notesArr.join(' | ');
+  target.mergedFromIds = sources.map(s => s.id);
+  // 원본들 병합됨 처리
+  sources.forEach(src => {
+    src.status = 'merged';
+    src.mergedIntoId = target.id;
+  });
+  // 크레딧 노트도 target 으로 이전 (cn.orderId 변경)
+  (DB.creditNotes || []).forEach(cn => {
+    if (sources.some(s => s.id === cn.orderId)) {
+      cn.orderId = target.id;
+      try { saveEntityField('creditNotes', cn.id, 'orderId'); } catch(_){}
+    }
+    if (sources.some(s => s.id === cn.appliedToOrderId)) {
+      cn.appliedToOrderId = target.id;
+      try { saveEntityField('creditNotes', cn.id, 'appliedToOrderId'); } catch(_){}
+    }
+  });
+  // 저장
+  try {
+    saveEntityFields('orders', target.id, {
+      items: target.items,
+      invoiceItems: target.invoiceItems || null,
+      deliveryNotes: target.deliveryNotes || '',
+      mergedFromIds: target.mergedFromIds
+    });
+    sources.forEach(src => {
+      saveEntityFields('orders', src.id, { status: 'merged', mergedIntoId: target.id });
+    });
+    saveLocalDB();
+  } catch(e) { console.warn('병합 저장 실패:', e); alert('저장 중 오류: ' + e.message); return; }
+  try { auditLogAdd('주문 병합: ' + custName + ' (' + sources.map(s => s.orderNo).join(', ') + ' → ' + target.orderNo + ')'); } catch(_){}
+  alert('✅ 병합 완료: ' + target.orderNo + ' (총 ' + target.items.length + '건 품목)');
+  route();
+};
+
+// ⭐ (2026-08-04) 크레딧 적용 취소 — 보스 비번 필요
+window.unapplyCredit = async function(cnId, orderId) {
+  const cn = (DB.creditNotes || []).find(c => c && c.id === cnId);
+  if (!cn) return alert('크레딧을 찾을 수 없습니다.');
+  if (cn.appliedToOrderId !== orderId) return alert('이 인보이스에 적용되지 않은 크레딧입니다.');
+  const ok = await verifyBossPassword('크레딧 적용 취소 (' + (cn.creditNo || cnId.slice(0,8)) + ')');
+  if (!ok) return;
+  if (!confirm('크레딧을 취소하고 미사용 상태로 되돌립니다.\n다른 인보이스에 다시 적용할 수 있습니다.\n\n계속할까요?')) return;
+  cn.appliedToOrderId = null;
+  cn.appliedAt = null;
+  try {
+    saveEntityField('creditNotes', cn.id, 'appliedToOrderId');
+    saveEntityField('creditNotes', cn.id, 'appliedAt');
+  } catch(e) { console.warn('unapplyCredit 저장 실패:', e); }
+  try { auditLogAdd('크레딧 적용 취소: ' + (cn.creditNo || cnId.slice(0,8)) + ' (원본 미사용으로 복귀)'); } catch(_){}
+  alert('✅ 크레딧 적용 취소됨.');
+  route();   // 화면 새로고침
+};
+
+// ⭐ (2026-08-04) 체크된 크레딧 합계 미리보기 갱신
+window._updatePrepCreditsPreview = function() {
+  const checks = document.querySelectorAll('.prepCreditChk:checked');
+  const preview = document.getElementById('prepCreditsPreview');
+  if (!preview) return;
+  if (checks.length === 0) {
+    preview.style.display = 'none';
+    preview.innerHTML = '';
+    return;
+  }
+  let total = 0;
+  checks.forEach(function(chk){ total += parseFloat(chk.getAttribute('data-amount')) || 0; });
+  preview.style.display = 'block';
+  preview.innerHTML = '<b>선택된 크레딧 ' + checks.length + '건 → 인보이스 총액에서 <span style="color:#C0392B;">-$' + fmtMoney(total) + '</span> 차감됩니다.</b>';
+  // 인보이스 발행 시에도 사용하기 위해 window 에 임시 저장
+  window._prepSelectedCreditIds = Array.from(checks).map(function(c){ return c.getAttribute('data-cnid'); });
+};
 // 거래처의 특정 날짜 크레딧 합계 (매출일보용)
 function getCreditsForCustomerOnDate(customerId, dateISO) {
   return (DB.creditNotes || [])
@@ -10153,6 +10498,16 @@ function buildInvoiceHTML(o, cust, totals) {
           <div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1.5px solid #5C0F0F; margin-top:3px; font-weight:800; font-size:14px; color:#5C0F0F;">
             <span>TOTAL</span><span>$${fmtMoney(totals.grand)}</span>
           </div>
+          ${(() => {
+            const applied = getAppliedCreditNotesForOrder(o.id);
+            if (applied.length === 0) return '';
+            const creditSum = applied.reduce((s,cn) => s + (computeCreditNoteTotals(cn).grand || 0), 0);
+            const amountDue = totals.grand - creditSum;
+            const creditList = applied.map(cn => 'CN-' + (cn.creditNo || cn.id.slice(0,8))).join(', ');
+            return `<div style="display:flex; justify-content:space-between; padding:2px 0; color:#C0392B;"><span>Applied Credits</span><span>-$${fmtMoney(creditSum)}</span></div>
+              <div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1.5px solid #1B5E20; margin-top:3px; font-weight:800; font-size:14px; color:#1B5E20;"><span>AMOUNT DUE</span><span>$${fmtMoney(amountDue)}</span></div>
+              <div style="font-size:9px; color:#888; margin-top:2px; text-align:right;">${creditList}</div>`;
+          })()}
         </div>
       </div>
 
