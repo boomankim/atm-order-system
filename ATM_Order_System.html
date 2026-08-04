@@ -6389,7 +6389,13 @@ function viewOffice() {
     </div>
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-        <h3 style="margin:0;">오늘 발행 완료 (${all.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span></h3>
+        <h3 style="margin:0;">오늘 발행 완료 (${all.length}건)
+          ${(() => {
+            const todayTotal = all.reduce((sum, o) => sum + (computeTotals(o).grand || 0), 0);
+            return all.length > 0 ? '<span style="font-weight:800; font-size:15px; color:var(--brand-dark); margin-left:10px;">총 $' + fmtMoney(todayTotal) + '</span>' : '';
+          })()}
+          <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span>
+        </h3>
         ${(() => {
           const pending = all.filter(o => o.status === 'invoiced');
           if (pending.length > 0) {
