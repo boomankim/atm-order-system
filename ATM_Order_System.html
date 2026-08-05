@@ -11170,11 +11170,10 @@ function viewStatement(params) {
     //   대신 다음 인보이스 발행 시 사무원이 수동 선택 → 인보이스 품목 마지막 줄에 -금액 라인으로 반영됨.
     //   그러므로 인보이스 event 의 amount 는 net (grand - 적용된 크레딧 grand) 사용.
     //
-    // ⭐ (2026-07-07 v3) 하이브리드 FIFO — 인보이스/입금 각각 별도 행, 입금은 인보이스별로 분할.
+    // ⭐ (2026-08-05) 완전 단순화 — 인보이스·입금 각각 1행.
     //   - 인보이스 행: 발행 시점에 1행, net 금액 (크레딧 적용 후)만 표시.
-    //   - 입금 행: 발행 시점에 배분된 인보이스마다 별도 행.
-    //   - 선입금 (excess): 별도 행 표시. 이후 인보이스가 들어오면 자동으로 적용.
-    //   - 발란스: 누적. 하단 요약은 기존 형식 유지.
+    //   - 입금 행: 부만님 입력한 그대로 1행 (분할 없음).
+    //   - 발란스: 누적. 마이너스도 자연스럽게 표시.
 
     // 이벤트 배열 조립 (dateTo 이내 모두)
     const invEvents = DB.orders
@@ -11200,11 +11199,10 @@ function viewStatement(params) {
       return kindOrd[a.kind] - kindOrd[b.kind];
     });
 
-    // 시뮬레이션 상태
-    const unpaidByInv = {};       // invId -> 남은 미결제
-    const invMeta = {};           // invId -> { invNo, date }
+    // ⭐ (2026-08-05) 선입금/선입금 적용 개념 완전 제거.
+    //   입금은 부만님이 입력한 그대로 1행. 인보이스도 1행. 발란스는 자연스럽게 마이너스로 갈 수 있음.
+    //   거래처에게 스테이트먼트 보낼 때 "선입금", "선입금 적용" 같은 혼동스러운 용어 없음.
     let bal = 0;
-    let prepaymentPool = 0;       // 선입금 잔액 (미래 인보이스에 자동 적용)
     let totInv = 0, totPay = 0;
     let rows = '';
     let openingBal = null;
@@ -11213,10 +11211,11 @@ function viewStatement(params) {
     const emitOpening = () => {
       if (openingBal !== null) return;
       openingBal = bal;
+      const openDisp = openingBal < -0.001 ? '-$' + fmtMoney(Math.abs(openingBal)) : '$' + fmtMoney(openingBal);
       rows += '<tr style="color:var(--muted);">'
         + '<td>' + dateFrom + '</td><td>이월 잔액</td>'
         + '<td class="num">—</td><td class="num">—</td><td class="num">—</td>'
-        + '<td class="num"><b>$' + fmtMoney(openingBal) + '</b></td></tr>';
+        + '<td class="num"><b>' + openDisp + '</b></td></tr>';
     };
 
     for (const ev of allEvents) {
@@ -11224,83 +11223,35 @@ function viewStatement(params) {
       if (inPeriod) emitOpening();
 
       if (ev.kind === 'inv') {
-        // 인보이스 발행 — 잔액 증가
+        // 인보이스 발행 — 잔액 증가 (net 금액, 크레딧 이미 반영)
         bal += ev.amount;
-        invMeta[ev.invId] = { invNo: ev.invNo, date: ev.date };
-        // 선입금 자동 적용
-        let netUnpaid = ev.amount;
-        const preApply = Math.min(prepaymentPool, ev.amount);
-        prepaymentPool -= preApply;
-        netUnpaid -= preApply;
-        unpaidByInv[ev.invId] = netUnpaid;
-        // 인보이스 행 출력
         if (inPeriod) {
           totInv += ev.amount;
+          const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
           rows += '<tr>'
             + '<td>' + ev.date + '</td>'
             + '<td><b>' + ev.invNo + '</b></td>'
             + '<td class="num">$' + fmtMoney(ev.amount) + '</td>'
             + '<td class="num">—</td>'
             + '<td class="num">—</td>'
-            + '<td class="num"><b>$' + fmtMoney(bal) + '</b></td>'
+            + '<td class="num"><b>' + balDisp + '</b></td>'
             + '</tr>';
         }
-        // 선입금 적용된 경우 별도 행 (정보 표시용 — 잔액은 이미 인보이스 행에서 반영됨, 이중차감 방지)
-        if (preApply > 0.001) {
-          if (inPeriod) {
-            const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
-            rows += '<tr style="background:#E8F5E9;">'
-              + '<td>' + ev.date + '</td>'
-              + '<td style="color:var(--success);">선입금 적용 → ' + ev.invNo + ' <small style="color:var(--muted);">(정보)</small></td>'
-              + '<td class="num">—</td>'
-              + '<td class="num">—</td>'
-              + '<td class="num" style="color:var(--success);">$' + fmtMoney(preApply) + '</td>'
-              + '<td class="num"><b>' + balDisp + '</b></td>'
-              + '</tr>';
-          }
-        }
       } else if (ev.kind === 'pay') {
-        // 입금 — FIFO로 미결제 인보이스에 배분, 각 인보이스별 별도 행
+        // 입금 — 입력한 그대로 1행. 분할·선입금 개념 없음.
         if (inPeriod) totPay += ev.amount;
-        let remaining = ev.amount;
-        // 발행일 오래된 인보이스부터
-        const invIds = Object.keys(unpaidByInv)
-          .filter(id => (unpaidByInv[id] || 0) > 0.001 && invMeta[id])
-          .sort((a,b) => invMeta[a].date.localeCompare(invMeta[b].date));
-        for (const invId of invIds) {
-          if (remaining <= 0.001) break;
-          const unpaid = unpaidByInv[invId] || 0;
-          const applied = Math.min(remaining, unpaid);
-          unpaidByInv[invId] -= applied;
-          remaining -= applied;
-          bal -= applied;
-          if (inPeriod) {
-            const stillUnpaid = unpaidByInv[invId] > 0.001;
-            const partialTag = stillUnpaid ? ' <small style="color:var(--muted);">(부분납)</small>' : '';
-            rows += '<tr style="background:#E8F5E9;">'
-              + '<td>' + ev.date + '</td>'
-              + '<td style="color:var(--success);">입금 → ' + invMeta[invId].invNo + partialTag + '</td>'
-              + '<td class="num">—</td>'
-              + '<td class="num">—</td>'
-              + '<td class="num" style="color:var(--success);">$' + fmtMoney(applied) + '</td>'
-              + '<td class="num"><b>$' + fmtMoney(bal) + '</b></td>'
-              + '</tr>';
-          }
-        }
-        // 초과분 → 선입금 pool 로
-        if (remaining > 0.001) {
-          prepaymentPool += remaining;
-          bal -= remaining;
-          if (inPeriod) {
-            rows += '<tr style="background:#E8F5E9;">'
-              + '<td>' + ev.date + '</td>'
-              + '<td style="color:var(--success);"><b>선입금 (Prepayment)</b></td>'
-              + '<td class="num">—</td>'
-              + '<td class="num">—</td>'
-              + '<td class="num" style="color:var(--success);">$' + fmtMoney(remaining) + '</td>'
-              + '<td class="num" style="color:var(--success);"><b>' + (bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal)) + '</b></td>'
-              + '</tr>';
-          }
+        bal -= ev.amount;
+        if (inPeriod) {
+          const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
+          const balColor = bal < -0.001 ? 'var(--success)' : (bal > 0 ? 'var(--warn)' : 'var(--muted)');
+          rows += '<tr style="background:#E8F5E9;">'
+            + '<td>' + ev.date + '</td>'
+            + '<td style="color:var(--success);">입금</td>'
+            + '<td class="num">—</td>'
+            + '<td class="num">—</td>'
+            + '<td class="num" style="color:var(--success);">$' + fmtMoney(ev.amount) + '</td>'
+            + '<td class="num" style="color:' + balColor + ';"><b>' + balDisp + '</b></td>'
+            + '</tr>';
         }
       }
     }
@@ -11401,98 +11352,66 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   const cust = DB.customers.find(c => c.id === cid);
   const custName = cust ? cust.name : cid;
   const today = toLocalISODate(new Date());
-  const methodLabel = { cash: '현금', cheque: '체크', bank: '은행이체' };
 
-  // ⭐ (2026-07-07) FIFO 입금 배분: 인보이스 발행일순 오래된 것부터 순차 상쇄
+  // ⭐ (2026-08-05) 선입금·FIFO 분할 개념 제거. 인보이스는 net, 입금은 있는 그대로.
   const allInvoicesAsOf = DB.orders
     .filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid)
     .map(o => ({
       id: o.id,
       dateISO: toLocalISODate(o.invoicedAt || o.orderDate || ''),
       invNo: (o.invoiceNo || o.orderNo || '-'),
-      amount: computeTotals(o).grand
+      amount: computeTotalsWithCredits(o).net
     }))
     .filter(x => x.dateISO && x.dateISO <= dateTo)
     .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
 
-  const creditByInv = {};
-  (DB.creditNotes||[]).forEach(function(cn) {
-    if (!cn || cn.customerId !== cid) return;
-    if (toLocalISODate(cn.issuedAt) > dateTo) return;
-    creditByInv[cn.orderId] = (creditByInv[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
-  });
+  const allPaymentsAsOf = (DB.payments || [])
+    .filter(p => p && p.customerId === cid && (p.date||'') <= dateTo)
+    .sort((a,b) => (a.date||'').localeCompare(b.date||''));
 
-  let pool = DB.payments
-    .filter(p => p.customerId === cid && p.date <= dateTo)
-    .reduce((s,p) => s + p.amount, 0);
-  const totalPaid = pool;
-
-  const invApplied = {};
-  for (const inv of allInvoicesAsOf) {
-    const net = Math.max(0, inv.amount - (creditByInv[inv.id] || 0));
-    const apply = Math.min(pool, net);
-    invApplied[inv.id] = apply;
-    pool -= apply;
-  }
-  const excessPayment = pool;
+  const totalInvoicedAll = allInvoicesAsOf.reduce((s,i) => s + i.amount, 0);
+  const totalPaidAll = allPaymentsAsOf.reduce((s,p) => s + p.amount, 0);
+  const balance = totalInvoicedAll - totalPaidAll;
 
   const inPeriodInvoices = allInvoicesAsOf.filter(inv => inv.dateISO >= dateFrom && inv.dateISO <= dateTo);
-  const totalInvoiced = inPeriodInvoices.reduce((s, i) => s + i.amount, 0);
-  const totalCredit = inPeriodInvoices.reduce((s, i) => s + (creditByInv[i.id]||0), 0);
-  const balance = totalInvoiced
-    - inPeriodInvoices.reduce((s, i) => s + (creditByInv[i.id]||0), 0)
-    - inPeriodInvoices.reduce((s, i) => s + (invApplied[i.id]||0), 0)
-    // opening 잔액 추가
-    + allInvoicesAsOf.filter(i => i.dateISO < dateFrom)
-        .reduce((s, i) => s + (i.amount - (creditByInv[i.id]||0) - (invApplied[i.id]||0)), 0)
-    - excessPayment;
+  const inPeriodPayments = allPaymentsAsOf.filter(p => p.date >= dateFrom && p.date <= dateTo);
+  const totalPaid = inPeriodPayments.reduce((s,p) => s + p.amount, 0);
 
   let txt = '[ALL THAT MEAT] ' + custName + ' 거래내역서\n기준일: ' + today + '\n';
   if (dateFrom !== '2000-01-01' || dateTo !== today) txt += '기간: ' + dateFrom + ' ~ ' + dateTo + '\n';
-  txt += '\n--- 인보이스 (입금 배분) ---\n';
+  txt += '\n--- 인보이스 ---\n';
   if (inPeriodInvoices.length === 0) { txt += '(없음)\n'; }
   else {
     inPeriodInvoices.forEach(function(inv) {
-      const cred = creditByInv[inv.id] || 0;
-      const paid = invApplied[inv.id] || 0;
-      const remaining = inv.amount - cred - paid;
-      let line = inv.dateISO + ' ' + inv.invNo + ' $' + fmtMoney(inv.amount);
-      if (cred > 0.001) line += ' | 크레딧 -$' + fmtMoney(cred);
-      if (paid > 0.001) line += ' | 입금 $' + fmtMoney(paid);
-      line += ' → 잔여 $' + fmtMoney(remaining);
-      txt += line + '\n';
+      txt += inv.dateISO + ' ' + inv.invNo + ' $' + fmtMoney(inv.amount) + '\n';
     });
   }
-  if (excessPayment > 0.001) {
-    txt += '\n선입금 (Prepayment): $' + fmtMoney(excessPayment) + '\n';
+  txt += '\n--- 입금 ---\n';
+  if (inPeriodPayments.length === 0) { txt += '(없음)\n'; }
+  else {
+    inPeriodPayments.forEach(function(p) {
+      txt += p.date + ' 입금 $' + fmtMoney(p.amount) + '\n';
+    });
   }
 
-  // ⭐ (2026-07-07) Overdue 계산 (매출일보 기준: term + 5일 grace, delivered만, 크레딧 반영)
+  // Overdue 계산 (net 기준)
   const daysT = termsDays(cust && cust.terms);
   const GRACE_DAYS = 5;
   const cutoff = new Date(dateTo + 'T00:00:00');
   let overdue = 0;
   if (cust && daysT > 0) {
-    const creditByOrderId = {};
-    (DB.creditNotes || []).forEach(function(cn) {
-      if (!cn || cn.customerId !== cid) return;
-      if (toLocalISODate(cn.issuedAt) > dateTo) return;
-      creditByOrderId[cn.orderId] = (creditByOrderId[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
-    });
     const invoicesAsOf = DB.orders
       .filter(function(o){ return o.status === 'delivered' && o.customerId === cid; })
       .map(function(o){ return {
         orderId: o.id,
         dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
-        amount: computeTotals(o).grand
+        amount: computeTotalsWithCredits(o).net
       }; })
       .filter(function(x){ return x.dateISO && x.dateISO <= dateTo; })
       .sort(function(a,b){ return a.dateISO.localeCompare(b.dateISO); });
-    let totalPaymentAsOf = DB.payments
-      .filter(function(p){ return p.customerId === cid && (p.date||'') <= dateTo; })
-      .reduce(function(s,p){ return s + p.amount; }, 0);
+    let totalPaymentAsOf = totalPaidAll;
     for (const inv of invoicesAsOf) {
-      let unpaid = inv.amount - (creditByOrderId[inv.orderId] || 0);
+      let unpaid = inv.amount;
       if (unpaid < 0) unpaid = 0;
       if (totalPaymentAsOf > 0 && unpaid > 0) {
         const applied = Math.min(totalPaymentAsOf, unpaid);
@@ -11508,7 +11427,7 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
     }
   }
 
-  txt += '\n총 입금: $' + fmtMoney(totalPaid);
+  txt += '\n총 입금 (기간): $' + fmtMoney(totalPaid);
   const balDisplayTxt = balance < -0.001 ? '-$' + fmtMoney(Math.abs(balance)) : '$' + fmtMoney(balance);
   txt += '\n현 미수금: ' + balDisplayTxt;
   if (overdue > 0.001) txt += '\n🔴 Overdue: $' + fmtMoney(overdue) + ' (결제일 + 5일 초과)';
