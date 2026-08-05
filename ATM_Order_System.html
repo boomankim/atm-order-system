@@ -325,6 +325,8 @@
 
   @media print {
     .nav, .summary-bar, .btn, .btn-row, .search-bar, .no-print { display: none !important; }
+    /* ⭐ (2026-08-06) 동기화·업데이트 배너·pill — 인쇄에 절대 나오면 안 됨 */
+    #sync-banner, #atmUpdateBanner, #atmUpdateAnim, #sync-pill-anim { display: none !important; }
     body { background: #fff; }
     main { max-width: 100%; padding: 0; }
     .card { box-shadow: none; }
