@@ -6789,31 +6789,29 @@ function dailyReportComputeRows(dateISO) {
     // 매출일보는 '배송완료(delivered)' 주문만 집계 — 배송완료 시점 자동 반영
     // 날짜는 deliveredAt 우선 → invoicedAt → orderDate 순으로 폴백
     // ⚠️ toLocalISODate() 사용 — UTC ISO를 로컬 날짜로 변환해야 시드니 시각 기준으로 매칭됨
+    // ⭐ (2026-08-05) 크레딧은 인보이스 라인 아이템으로 반영되므로 amount 는 net 사용.
     const allInvoices = DB.orders
       .filter(o => o.status === 'delivered' && o.customerId === c.id)
       .map(o => ({
         dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
-        amount: computeTotals(o).grand
+        amount: computeTotalsWithCredits(o).net
       }))
       .filter(x => x.dateISO);
     const allPayments = (DB.payments||[]).filter(p => p.customerId === c.id);
 
-    // ⭐ (2026-07-07) 크레딧 노트 반영 — 매출/미수금에서 차감.
-    //   전미수금은 이전 크레딧까지 차감, 당일 매출은 당일 크레딧 net으로 반영.
-    const priorCredit = getCreditsForCustomerBefore(c.id, dateISO);
-    const todayCredit = getCreditsForCustomerOnDate(c.id, dateISO);
+    // ⭐ (2026-08-05) 크레딧 별도 차감 로직 제거 — net 인보이스 금액에 이미 반영됨.
+    const todayCredit = 0;   // 하위 호환 표시용 (return 객체)
 
-    // 전미수금 = 선택일 이전(<)까지의 인보이스 - 입금 - 크레딧
+    // 전미수금 = 선택일 이전(<)까지의 net 인보이스 - 입금
     const priorInvoiced = allInvoices.filter(x => x.dateISO < dateISO).reduce((s,x)=>s+x.amount,0);
     const priorPaid = allPayments.filter(p => (p.date||'') < dateISO).reduce((s,p)=>s+p.amount,0);
-    const priorBalance = priorInvoiced - priorPaid - priorCredit;
+    const priorBalance = priorInvoiced - priorPaid;
 
-    // 당일 매출액 / 입금액 (크레딧은 매출에서 차감 → net sales로 표시)
-    const todaySalesGross = allInvoices.filter(x => x.dateISO === dateISO).reduce((s,x)=>s+x.amount,0);
-    const todaySales = todaySalesGross - todayCredit;
+    // 당일 매출액 / 입금액 — net 그대로 사용
+    const todaySales = allInvoices.filter(x => x.dateISO === dateISO).reduce((s,x)=>s+x.amount,0);
     const todayPaid = allPayments.filter(p => (p.date||'') === dateISO).reduce((s,p)=>s+p.amount,0);
 
-    // 현잔액 = 전미수금 + 매출액(net) - 입금액
+    // 현잔액 = 전미수금 + 당일 매출 - 당일 입금
     const currentBalance = priorBalance + todaySales - todayPaid;
 
     // Overdue 정책 (2026-07-07 변경: grace 7→5):
@@ -6823,22 +6821,13 @@ function dailyReportComputeRows(dateISO) {
     const GRACE_DAYS = 5;
     let overdue = 0;
     if (days > 0) {
-      // 인보이스별로 연결된 크레딧 총액을 미리 매핑 (dateISO 이하만)
-      // ⭐ (2026-08-04) 크레딧 적용 대상: appliedToOrderId 있으면 그 인보이스, 없으면 원본 (cn.orderId)
-      const creditByOrderId = {};
-      (DB.creditNotes || []).forEach(cn => {
-        if (!cn || cn.customerId !== c.id) return;
-        if (toLocalISODate(cn.issuedAt) > dateISO) return;
-        const targetOrderId = cn.appliedToOrderId || cn.orderId;
-        creditByOrderId[targetOrderId] = (creditByOrderId[targetOrderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
-      });
-      // dateISO 기준 이 거래처의 인보이스 목록 (orderId 매핑용 원본 참조 필요)
+      // ⭐ (2026-08-05) 크레딧은 net 인보이스 금액에 이미 반영됨. 별도 매핑 불필요.
       const invoicesAsOf = DB.orders
         .filter(o => o.status === 'delivered' && o.customerId === c.id)
         .map(o => ({
           orderId: o.id,
           dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
-          amount: computeTotals(o).grand
+          amount: computeTotalsWithCredits(o).net
         }))
         .filter(x => x.dateISO && x.dateISO <= dateISO)
         .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
@@ -6846,8 +6835,7 @@ function dailyReportComputeRows(dateISO) {
         .filter(p => (p.date||'') <= dateISO)
         .reduce((s,p)=>s+p.amount,0);
       for (const inv of invoicesAsOf) {
-        // ⭐ 크레딧으로 이미 상쇄된 부분 먼저 차감
-        let unpaid = inv.amount - (creditByOrderId[inv.orderId] || 0);
+        let unpaid = inv.amount;
         if (unpaid < 0) unpaid = 0;
         if (totalPaymentAsOf > 0 && unpaid > 0) {
           const applied = Math.min(totalPaymentAsOf, unpaid);
@@ -7326,6 +7314,7 @@ window.schedulePaymentMatchSearch = function(val) {
 };
 
 // 특정 거래처의 배송완료 인보이스별 순미결제액 계산 (FIFO 반영)
+// ⭐ (2026-08-05) 크레딧은 net 인보이스 금액에 이미 반영됨 (computeTotalsWithCredits).
 function _computeUnpaidByInvoice(cid) {
   const invoices = DB.orders
     .filter(o => o.status === 'delivered' && o.customerId === cid)
@@ -7333,26 +7322,18 @@ function _computeUnpaidByInvoice(cid) {
       id: o.id,
       invNo: o.invoiceNo || o.orderNo || '-',
       dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
-      gross: computeTotals(o).grand
+      net: computeTotalsWithCredits(o).net
     }))
     .filter(x => x.dateISO)
     .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
 
-  // 크레딧 차감
-  // ⭐ (2026-08-04) 적용된 크레딧은 target 인보이스, 미적용은 원본 인보이스에 반영
-  const creditByInv = {};
-  (DB.creditNotes || []).forEach(cn => {
-    if (!cn || cn.customerId !== cid) return;
-    const targetOrderId = cn.appliedToOrderId || cn.orderId;
-    creditByInv[targetOrderId] = (creditByInv[targetOrderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
-  });
   // FIFO 입금 배분
   let pool = (DB.payments || [])
     .filter(p => p && p.customerId === cid)
     .reduce((s,p) => s + p.amount, 0);
   const result = [];
   for (const inv of invoices) {
-    const net = Math.max(0, inv.gross - (creditByInv[inv.id] || 0));
+    const net = Math.max(0, inv.net);
     const applied = Math.min(pool, net);
     pool -= applied;
     const unpaid = net - applied;
@@ -8809,13 +8790,20 @@ window.livePrepWeightUpdate = function(idx, val) {
 
 function renderPrepTotals(o) {
   var t = computeTotals(o);
+  // ⭐ (2026-08-05) 이미 적용된 크레딧이 있으면 net 표시 (편집 모드 재진입 시)
+  var _appliedCredits = getAppliedCreditNotesForOrder(o.id);
+  var _cSum = _appliedCredits.reduce(function(s,cn){ return s + (computeCreditNoteTotals(cn).grand || 0); }, 0);
+  var _net = t.grand - _cSum;
+  var _totalColor = _net < -0.001 ? '#C0392B' : 'var(--brand-dark)';
+  var _totalDisp = _net < -0.001 ? '-$' + fmtMoney(Math.abs(_net)) : '$' + fmtMoney(_net);
   var div = document.getElementById('prepTotals');
   if (!div) return;
   div.innerHTML = '<div class="tot-box" style="min-width:280px;padding:14px 18px;background:var(--cream);border-radius:8px;">'
     + '<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>총 중량</span><b>' + t.totalKg.toFixed(2) + ' kg</b></div>'
     + '<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>Subtotal (ex GST)</span><span>$' + fmtMoney(t.subtotal) + '</span></div>'
     + '<div style="display:flex;justify-content:space-between;padding:4px 0;"><span>GST</span><span>$' + fmtMoney(t.gst) + '</span></div>'
-    + '<div style="display:flex;justify-content:space-between;padding:10px 0 0;border-top:2px solid var(--brand);margin-top:6px;font-weight:700;font-size:18px;color:var(--brand-dark);"><span>TOTAL</span><span>$' + fmtMoney(t.grand) + '</span></div>'
+    + (_cSum > 0.001 ? '<div style="display:flex;justify-content:space-between;padding:4px 0;color:#C0392B;"><span>적용된 크레딧</span><span>-$' + fmtMoney(_cSum) + '</span></div>' : '')
+    + '<div style="display:flex;justify-content:space-between;padding:10px 0 0;border-top:2px solid var(--brand);margin-top:6px;font-weight:700;font-size:18px;color:' + _totalColor + ';"><span>TOTAL</span><span>' + _totalDisp + '</span></div>'
     + (t.unweighedCount > 0 ? '<div style="color:var(--warn);margin-top:8px;font-size:12px;">⚠️ 계근 미입력 ' + t.unweighedCount + '건 — 발행 전 확인 필요</div>' : '')
     + '</div>';
 }
@@ -9275,24 +9263,39 @@ function viewInvoice(params) {
               <td class="num" style="font-weight:600;">$${fmtMoney(amt)}</td>
             </tr>`;
           }).join('')}
+          ${(() => {
+            // ⭐ (2026-08-05) 적용된 크레딧 노트를 품목 마지막 줄로 자동 추가 (음수 금액)
+            const _appliedForView = getAppliedCreditNotesForOrder(o.id);
+            return _appliedForView.map(function(cn){
+              const cnNo = cn.creditNo || cn.id.slice(0,8);
+              const cnDate = (cn.issuedAt || '').slice(0,10);
+              const cnAmt = computeCreditNoteTotals(cn).grand || 0;
+              const reasonInline = cn.reason ? ` <span style="color:#777;font-size:11px;">※ ${String(cn.reason).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
+              return `<tr style="background:#FDECEA;">
+                <td class="item-cell" style="color:#C0392B;"><b>크레딧 CN-${cnNo} (반품)</b>${reasonInline}</td>
+                <td style="color:#C0392B;">${cnDate}</td>
+                <td class="num" style="color:#C0392B;">—</td>
+                <td class="num" style="color:#C0392B;">—</td>
+                <td class="num" style="color:#C0392B; font-weight:700;">-$${fmtMoney(cnAmt)}</td>
+              </tr>`;
+            }).join('');
+          })()}
         </tbody>
       </table>
 
       <div class="tot-block">
         <div class="tot-box">
-          <div class="tot-row"><span>Total Weight / 총중량</span><span>${totals.totalKg.toFixed(2)} kg</span></div>
-          <div class="tot-row"><span>Subtotal (ex GST)</span><span>$${fmtMoney(totals.subtotal)}</span></div>
-          <div class="tot-row"><span>GST (${(DB.company.gstRate*100).toFixed(0)}%)</span><span>$${fmtMoney(totals.gst)}</span></div>
-          <div class="tot-row grand"><span>TOTAL</span><span>$${fmtMoney(totals.grand)}</span></div>
           ${(() => {
-            const applied = getAppliedCreditNotesForOrder(o.id);
-            if (applied.length === 0) return '';
-            const creditSum = applied.reduce((s,cn) => s + (computeCreditNoteTotals(cn).grand || 0), 0);
-            const amountDue = totals.grand - creditSum;
-            const creditList = applied.map(cn => 'CN-' + (cn.creditNo || cn.id.slice(0,8)) + ' (-$' + fmtMoney(computeCreditNoteTotals(cn).grand) + ')').join(', ');
-            return `<div class="tot-row" style="color:#C0392B;"><span>Applied Credits</span><span>-$${fmtMoney(creditSum)}</span></div>
-              <div class="tot-row grand" style="color:#1B5E20; border-top:2px solid #1B5E20;"><span>AMOUNT DUE</span><span>$${fmtMoney(amountDue)}</span></div>
-              <div style="font-size:10px; color:var(--muted); margin-top:4px; text-align:right;">${creditList}</div>`;
+            const _applied = getAppliedCreditNotesForOrder(o.id);
+            const _cSum = _applied.reduce(function(s,cn){ return s + (computeCreditNoteTotals(cn).grand || 0); }, 0);
+            const _net = totals.grand - _cSum;
+            const _color = _net < -0.001 ? '#C0392B' : '';
+            const _disp = _net < -0.001 ? '-$' + fmtMoney(Math.abs(_net)) : '$' + fmtMoney(_net);
+            return `<div class="tot-row"><span>Total Weight / 총중량</span><span>${totals.totalKg.toFixed(2)} kg</span></div>
+              <div class="tot-row"><span>Subtotal (ex GST)</span><span>$${fmtMoney(totals.subtotal)}</span></div>
+              <div class="tot-row"><span>GST (${(DB.company.gstRate*100).toFixed(0)}%)</span><span>$${fmtMoney(totals.gst)}</span></div>
+              ${_cSum > 0.001 ? `<div class="tot-row" style="color:#C0392B;"><span>Credits Applied</span><span>-$${fmtMoney(_cSum)}</span></div>` : ''}
+              <div class="tot-row grand"${_color ? ' style="color:'+_color+'"' : ''}><span>TOTAL</span><span>${_disp}</span></div>`;
           })()}
         </div>
       </div>
@@ -9538,6 +9541,17 @@ function getCreditNotesForOrder(orderId) {
   return (DB.creditNotes || []).filter(c => c && c.orderId === orderId);
 }
 
+// ⭐ (2026-08-05) 크레딧이 적용된 인보이스의 net 금액 계산.
+//   원본 grand 에서 적용된 크레딧들의 grand 합계를 뺌 (Q2=B: grand 단순 차감).
+//   subtotal/gst 는 원본 유지. 크레딧 > grand 이면 결과가 음수 (Q3=A: 마이너스 허용).
+//   반환: { subtotal, gst, grand: originalGrand, creditSum, net, totalKg, unweighedCount }
+function computeTotalsWithCredits(order) {
+  const t = computeTotals(order);
+  const applied = getAppliedCreditNotesForOrder(order.id);
+  const creditSum = applied.reduce(function(s, cn){ return s + (computeCreditNoteTotals(cn).grand || 0); }, 0);
+  return Object.assign({}, t, { creditSum: creditSum, net: t.grand - creditSum });
+}
+
 // ⭐ (2026-08-04) 거래처의 미사용(미적용) 크레딧 노트 조회
 //   applied 필드 없음 = 미사용 (기존 크레딧은 FIFO 로 처리 계속)
 //   applied 필드 있음 (appliedToOrderId 있음) = 이미 적용됨 (숨김)
@@ -9764,7 +9778,8 @@ function viewCreditIssue(params) {
     <div class="card">
       <div class="notice" style="border-left-color:#C0392B; background:#FDECEA;">
         <b>반품/취소 처리:</b> 원본 인보이스는 그대로 유지되고, 별도 <b>크레딧 노트</b>로 발행됩니다.
-        발행 후 매출일보/미수금에서 자동 차감됩니다.
+        발행 후 다음 인보이스 발행 시 사무원이 수동 선택하여 <b>품목 마지막 줄에 크레딧 라인</b>으로 추가됩니다.
+        (매출일보·스테이트먼트는 인보이스에 반영된 후 자동 차감됨)
       </div>
 
       <table class="t" id="creditTable" style="margin-top:12px;">
@@ -10428,6 +10443,28 @@ function buildInvoiceHTML(o, cust, totals) {
     </tr>`;
   }).join('');
 
+  // ⭐ (2026-08-05) 크레딧 노트 — 품목 마지막 줄로 자동 추가 (음수 금액)
+  //   Q1=B: 사무원이 인보이스 준비 화면에서 체크한 크레딧만 여기 표시됨.
+  //   Q2=B: grand 만 차감. subtotal/gst 는 원래 품목 기준 그대로.
+  const _appliedCreditsForInv = getAppliedCreditNotesForOrder(o.id);
+  const creditItemRows = _appliedCreditsForInv.map(function(cn){
+    const cnNo = cn.creditNo || cn.id.slice(0,8);
+    const cnDate = (cn.issuedAt || '').slice(0,10);
+    const cnAmt = computeCreditNoteTotals(cn).grand || 0;
+    const reasonInline = cn.reason ? ` <span style="color:#777;font-size:9px;">※ ${String(cn.reason).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
+    return `<tr style="border-bottom:1px solid #E5DCD3; background:#FDECEA;">
+      <td style="padding:3px 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#C0392B;"><b>크레딧 CN-${cnNo} (반품)</b>${reasonInline}</td>
+      <td style="padding:3px 6px; color:#C0392B;">${cnDate}</td>
+      <td style="padding:3px 6px; text-align:right; color:#C0392B;">—</td>
+      <td style="padding:3px 6px; text-align:right; color:#C0392B;">—</td>
+      <td style="padding:3px 6px; text-align:right; font-weight:700; color:#C0392B;">-$${fmtMoney(cnAmt)}</td>
+    </tr>`;
+  }).join('');
+  const _creditSum = _appliedCreditsForInv.reduce(function(s,cn){ return s + (computeCreditNoteTotals(cn).grand || 0); }, 0);
+  const _netTotal = totals.grand - _creditSum;
+  const _totalColor = _netTotal < -0.001 ? '#C0392B' : '#5C0F0F';
+  const _totalDisplay = _netTotal < -0.001 ? '-$' + fmtMoney(Math.abs(_netTotal)) : '$' + fmtMoney(_netTotal);
+
   return `
     <div style="font-family:'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue',Arial,sans-serif;
                 padding:24px 28px; background:#fff; color:#2A1A1A; width:740px;">
@@ -10487,7 +10524,7 @@ function buildInvoiceHTML(o, cust, totals) {
             <th style="text-align:right; padding:6px 6px; font-weight:800; border-top:2px solid #5C0F0F; border-bottom:2px solid #5C0F0F;">Amount</th>
           </tr>
         </thead>
-        <tbody>${itemRows}</tbody>
+        <tbody>${itemRows}${creditItemRows}</tbody>
       </table>
 
       <div style="display:flex; justify-content:flex-end;">
@@ -10495,19 +10532,10 @@ function buildInvoiceHTML(o, cust, totals) {
           <div style="display:flex; justify-content:space-between; padding:1px 0;"><span>Total Weight</span><b>${totals.totalKg.toFixed(2)} kg</b></div>
           <div style="display:flex; justify-content:space-between; padding:1px 0;"><span>Subtotal (ex GST)</span><span>$${fmtMoney(totals.subtotal)}</span></div>
           <div style="display:flex; justify-content:space-between; padding:1px 0;"><span>GST (${(DB.company.gstRate*100).toFixed(0)}%)</span><span>$${fmtMoney(totals.gst)}</span></div>
-          <div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1.5px solid #5C0F0F; margin-top:3px; font-weight:800; font-size:14px; color:#5C0F0F;">
-            <span>TOTAL</span><span>$${fmtMoney(totals.grand)}</span>
+          ${_creditSum > 0.001 ? `<div style="display:flex; justify-content:space-between; padding:1px 0; color:#C0392B;"><span>Credits Applied</span><span>-$${fmtMoney(_creditSum)}</span></div>` : ''}
+          <div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1.5px solid ${_totalColor}; margin-top:3px; font-weight:800; font-size:14px; color:${_totalColor};">
+            <span>TOTAL</span><span>${_totalDisplay}</span>
           </div>
-          ${(() => {
-            const applied = getAppliedCreditNotesForOrder(o.id);
-            if (applied.length === 0) return '';
-            const creditSum = applied.reduce((s,cn) => s + (computeCreditNoteTotals(cn).grand || 0), 0);
-            const amountDue = totals.grand - creditSum;
-            const creditList = applied.map(cn => 'CN-' + (cn.creditNo || cn.id.slice(0,8))).join(', ');
-            return `<div style="display:flex; justify-content:space-between; padding:2px 0; color:#C0392B;"><span>Applied Credits</span><span>-$${fmtMoney(creditSum)}</span></div>
-              <div style="display:flex; justify-content:space-between; padding:5px 0 0; border-top:1.5px solid #1B5E20; margin-top:3px; font-weight:800; font-size:14px; color:#1B5E20;"><span>AMOUNT DUE</span><span>$${fmtMoney(amountDue)}</span></div>
-              <div style="font-size:9px; color:#888; margin-top:2px; text-align:right;">${creditList}</div>`;
-          })()}
         </div>
       </div>
 
@@ -11138,10 +11166,13 @@ function viewStatement(params) {
     const cust = DB.customers.find(c => c.id === cid);
     if (!cust) return '<p style="color:var(--muted); padding:8px;">거래처를 선택하고 [조회]를 누르세요.</p>';
 
-    // ⭐ (2026-07-07 v3) 하이브리드 FIFO — 인보이스/크레딧/입금 각각 별도 행, 입금은 인보이스별로 분할.
-    //   - 인보이스 행: 발행 시점에 1행, 금액만 표시.
-    //   - 크레딧 행: 발행 시점에 1행, 크레딧 컬럼에 -금액.
-    //   - 입금 행: 발행 시점에 배분된 인보이스마다 별도 행 (예: $1000 → INV1 $500 + INV2 $450 + INV3 $50).
+    // ⭐ (2026-08-05) 크레딧 정책 재설계 — 크레딧은 스테이트먼트에 이벤트로 나타나지 않음.
+    //   대신 다음 인보이스 발행 시 사무원이 수동 선택 → 인보이스 품목 마지막 줄에 -금액 라인으로 반영됨.
+    //   그러므로 인보이스 event 의 amount 는 net (grand - 적용된 크레딧 grand) 사용.
+    //
+    // ⭐ (2026-07-07 v3) 하이브리드 FIFO — 인보이스/입금 각각 별도 행, 입금은 인보이스별로 분할.
+    //   - 인보이스 행: 발행 시점에 1행, net 금액 (크레딧 적용 후)만 표시.
+    //   - 입금 행: 발행 시점에 배분된 인보이스마다 별도 행.
     //   - 선입금 (excess): 별도 행 표시. 이후 인보이스가 들어오면 자동으로 적용.
     //   - 발란스: 누적. 하단 요약은 기존 형식 유지.
 
@@ -11153,20 +11184,7 @@ function viewStatement(params) {
         date: toLocalISODate(o.invoicedAt || o.orderDate || ''),
         invId: o.id,
         invNo: (o.invoiceNo || o.orderNo || '-'),
-        amount: computeTotals(o).grand
-      }))
-      .filter(x => x.date && x.date <= dateTo);
-
-    const cnEvents = (DB.creditNotes || [])
-      .filter(cn => cn && cn.customerId === cid)
-      .map(cn => ({
-        kind: 'cn',
-        date: toLocalISODate(cn.issuedAt),
-        invId: cn.orderId,
-        cnNo: cn.creditNo || '-',
-        refInvNo: cn.invoiceNo || '',
-        reason: cn.reason || '',
-        amount: computeCreditNoteTotals(cn).grand
+        amount: computeTotalsWithCredits(o).net    // ⭐ net = grand - 적용된 크레딧 합계
       }))
       .filter(x => x.date && x.date <= dateTo);
 
@@ -11174,9 +11192,9 @@ function viewStatement(params) {
       .filter(p => p && p.customerId === cid && p.date <= dateTo)
       .map(p => ({ kind: 'pay', date: p.date, amount: p.amount, method: p.method, ref: p.reference || '' }));
 
-    const allEvents = invEvents.concat(cnEvents, payEvents);
-    // 정렬: 날짜순 → 같은 날은 inv → cn → pay
-    const kindOrd = { inv: 0, cn: 1, pay: 2 };
+    const allEvents = invEvents.concat(payEvents);
+    // 정렬: 날짜순 → 같은 날은 inv → pay
+    const kindOrd = { inv: 0, pay: 1 };
     allEvents.sort((a,b) => {
       if (a.date !== b.date) return a.date < b.date ? -1 : 1;
       return kindOrd[a.kind] - kindOrd[b.kind];
@@ -11187,7 +11205,7 @@ function viewStatement(params) {
     const invMeta = {};           // invId -> { invNo, date }
     let bal = 0;
     let prepaymentPool = 0;       // 선입금 잔액 (미래 인보이스에 자동 적용)
-    let totInv = 0, totCredit = 0, totPay = 0;
+    let totInv = 0, totPay = 0;
     let rows = '';
     let openingBal = null;
 
@@ -11227,40 +11245,19 @@ function viewStatement(params) {
             + '<td class="num"><b>$' + fmtMoney(bal) + '</b></td>'
             + '</tr>';
         }
-        // 선입금 적용된 경우 별도 행
+        // 선입금 적용된 경우 별도 행 (정보 표시용 — 잔액은 이미 인보이스 행에서 반영됨, 이중차감 방지)
         if (preApply > 0.001) {
-          bal -= preApply;
           if (inPeriod) {
+            const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
             rows += '<tr style="background:#E8F5E9;">'
               + '<td>' + ev.date + '</td>'
-              + '<td style="color:var(--success);">선입금 적용 → ' + ev.invNo + '</td>'
+              + '<td style="color:var(--success);">선입금 적용 → ' + ev.invNo + ' <small style="color:var(--muted);">(정보)</small></td>'
               + '<td class="num">—</td>'
               + '<td class="num">—</td>'
               + '<td class="num" style="color:var(--success);">$' + fmtMoney(preApply) + '</td>'
-              + '<td class="num"><b>$' + fmtMoney(bal) + '</b></td>'
+              + '<td class="num"><b>' + balDisp + '</b></td>'
               + '</tr>';
           }
-        }
-      } else if (ev.kind === 'cn') {
-        // 크레딧 발행 — 잔액 감소, 연결 인보이스의 미결제도 감소
-        const invUnpaid = unpaidByInv[ev.invId] || 0;
-        const reduceUnpaid = Math.min(ev.amount, invUnpaid);
-        if (unpaidByInv[ev.invId] != null) unpaidByInv[ev.invId] -= reduceUnpaid;
-        const excess = ev.amount - reduceUnpaid;
-        if (excess > 0.001) prepaymentPool += excess;
-        bal -= ev.amount;
-        if (inPeriod) {
-          totCredit += ev.amount;
-          const refInvText = ev.refInvNo ? ' <small style="color:var(--muted);">(Ref ' + ev.refInvNo + ')</small>' : '';
-          const reasonText = ev.reason ? ' <small style="color:#C0392B;">' + ev.reason + '</small>' : '';
-          rows += '<tr style="background:#FDECEA;">'
-            + '<td>' + ev.date + '</td>'
-            + '<td style="color:#C0392B;">CN ' + ev.cnNo + refInvText + reasonText + '</td>'
-            + '<td class="num">—</td>'
-            + '<td class="num" style="color:#C0392B;">-$' + fmtMoney(ev.amount) + '</td>'
-            + '<td class="num">—</td>'
-            + '<td class="num"><b>$' + fmtMoney(bal) + '</b></td>'
-            + '</tr>';
         }
       } else if (ev.kind === 'pay') {
         // 입금 — FIFO로 미결제 인보이스에 배분, 각 인보이스별 별도 행
@@ -11313,25 +11310,19 @@ function viewStatement(params) {
     const balColor = bal > 0 ? 'var(--warn)' : (bal < -0.001 ? 'var(--success)' : 'var(--muted)');
     const balDisplay = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
 
-    // ⭐ (2026-07-07) Overdue 계산 — 매출일보와 동일 로직 (term + 5일 grace, delivered 만, 크레딧 반영)
-    //   기준일: dateTo (조회 종료일)
+    // ⭐ (2026-08-05) Overdue 계산 — 인보이스 net (크레딧 반영 후) 기준.
+    //   크레딧은 이미 인보이스 라인 아이템으로 반영되므로 별도 차감 불필요.
     const daysT = termsDays(cust.terms);
     const GRACE_DAYS = 5;
     const overdueCutoff = new Date(dateTo + 'T00:00:00');
     let overdue = 0;
     if (daysT > 0) {
-      const creditByOrderId = {};
-      (DB.creditNotes || []).forEach(cn => {
-        if (!cn || cn.customerId !== cust.id) return;
-        if (toLocalISODate(cn.issuedAt) > dateTo) return;
-        creditByOrderId[cn.orderId] = (creditByOrderId[cn.orderId] || 0) + (computeCreditNoteTotals(cn).grand || 0);
-      });
       const invoicesAsOf = DB.orders
         .filter(o => o.status === 'delivered' && o.customerId === cust.id)
         .map(o => ({
           orderId: o.id,
           dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
-          amount: computeTotals(o).grand
+          amount: computeTotalsWithCredits(o).net
         }))
         .filter(x => x.dateISO && x.dateISO <= dateTo)
         .sort((a,b) => a.dateISO.localeCompare(b.dateISO));
@@ -11339,7 +11330,7 @@ function viewStatement(params) {
         .filter(p => p.customerId === cust.id && (p.date||'') <= dateTo)
         .reduce((s,p)=>s+p.amount, 0);
       for (const inv of invoicesAsOf) {
-        let unpaid = inv.amount - (creditByOrderId[inv.orderId] || 0);
+        let unpaid = inv.amount;
         if (unpaid < 0) unpaid = 0;
         if (totalPaymentAsOf > 0 && unpaid > 0) {
           const applied = Math.min(totalPaymentAsOf, unpaid);
@@ -11371,8 +11362,7 @@ function viewStatement(params) {
       '</div>' +
       '<table class="t"><thead><tr><th>날짜 / Date</th><th>인보이스 번호 / Invoice No.</th><th class="num">금액 / Amount</th><th class="num">크레딧 / Credit</th><th class="num">입금 / Payment</th><th class="num">발란스 / Balance</th></tr></thead><tbody>' + rows + '</tbody></table>' +
       '<div style="margin-top:18px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
-        '<div><span style="color:var(--muted);font-size:12px;">총 인보이스 / Total Invoiced</span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
-        (totCredit > 0.001 ? '<div><span style="color:var(--muted);font-size:12px;">총 크레딧 / Total Credit</span><br><b style="font-size:18px;color:#C0392B;">-$' + fmtMoney(totCredit) + '</b></div>' : '') +
+        '<div><span style="color:var(--muted);font-size:12px;">총 인보이스 / Total Invoiced <small style="font-size:10px;">(크레딧 반영 후)</small></span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
         '<div><span style="color:var(--muted);font-size:12px;">총 입금 / Total Paid</span><br><b style="font-size:18px;color:var(--success);">$' + fmtMoney(totPay) + '</b></div>' +
         '<div><span style="color:var(--muted);font-size:12px;">현 미수금 / Balance Due</span><br><b style="font-size:20px;color:' + balColor + ';">' + balDisplay + '</b></div>' +
         '<div><span style="color:var(--muted);font-size:12px;">Overdue<br><small style="font-size:10px;">(결제일 + 5일 초과)</small></span><br><b style="font-size:20px;color:' + overdueColor + ';">' + (overdue > 0.001 ? '🔴 $' + fmtMoney(overdue) : '$0.00') + '</b></div>' +
