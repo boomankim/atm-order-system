@@ -1090,53 +1090,270 @@ function staffLogout() {
   route();
 }
 
+// ⭐ (2026-08-06) 직원 PIN 강화 — 6자리 숫자 PIN + PIN 패드 UI + 실패 잠금 + 4시간 세션 타임아웃
+//   기존 문자 비번은 배포 후 첫 접속 시 삭제되고 새 PIN 설정 강제됨.
+const STAFF_PIN_LENGTH = 6;
+const STAFF_LOCK_ATTEMPTS = 5;      // N회 실패 시 락아웃
+const STAFF_LOCK_SECONDS = 60;      // 락아웃 지속 시간
+const STAFF_SESSION_HOURS = 4;      // 미사용 자동 로그아웃 시간
+const STAFF_LOCK_UNTIL_KEY = 'atm_staff_lock_until';
+const STAFF_FAIL_COUNT_KEY = 'atm_staff_fail_count';
+const STAFF_LAST_ACTIVITY_KEY = 'atm_staff_last_activity';
+const STAFF_PIN_MIGRATED_KEY = 'atm_staff_pin_migrated_v1';  // localStorage 마이그레이션 마커
+
+// 기존 비번이 문자열이었는지 감지 (6자리 숫자 PIN 인지) → 마이그레이션 필요 여부
+function _isLegacyStaffPassword() {
+  // 마커 있으면 이미 새 PIN 체계로 이관됨
+  try { if (localStorage.getItem(STAFF_PIN_MIGRATED_KEY) === '1') return false; } catch(_){}
+  return !!DB.settings.staffPasswordHash;   // 기존 hash 있으면 legacy 로 간주
+}
+
+// PIN 잠금 상태 확인
+function _staffLockRemaining() {
+  try {
+    const until = parseInt(sessionStorage.getItem(STAFF_LOCK_UNTIL_KEY) || '0', 10);
+    if (!until) return 0;
+    const remain = Math.max(0, Math.ceil((until - Date.now()) / 1000));
+    return remain;
+  } catch(_){ return 0; }
+}
+
+function _incrementStaffFail() {
+  try {
+    const cnt = parseInt(sessionStorage.getItem(STAFF_FAIL_COUNT_KEY) || '0', 10) + 1;
+    sessionStorage.setItem(STAFF_FAIL_COUNT_KEY, String(cnt));
+    if (cnt >= STAFF_LOCK_ATTEMPTS) {
+      sessionStorage.setItem(STAFF_LOCK_UNTIL_KEY, String(Date.now() + STAFF_LOCK_SECONDS * 1000));
+      sessionStorage.setItem(STAFF_FAIL_COUNT_KEY, '0');
+    }
+    return cnt;
+  } catch(_){ return 0; }
+}
+
+function _resetStaffFail() {
+  try {
+    sessionStorage.removeItem(STAFF_FAIL_COUNT_KEY);
+    sessionStorage.removeItem(STAFF_LOCK_UNTIL_KEY);
+  } catch(_){}
+}
+
+// 세션 타임아웃 - 마지막 활동 시각 갱신
+function _touchStaffActivity() {
+  if (!STAFF_UNLOCKED) return;
+  try { sessionStorage.setItem(STAFF_LAST_ACTIVITY_KEY, String(Date.now())); } catch(_){}
+}
+
+// 세션 타임아웃 체크 — 4시간 미사용 시 로그아웃
+function _checkStaffSessionTimeout() {
+  if (!STAFF_UNLOCKED) return;
+  try {
+    const last = parseInt(sessionStorage.getItem(STAFF_LAST_ACTIVITY_KEY) || '0', 10);
+    if (!last) { _touchStaffActivity(); return; }
+    const elapsedMs = Date.now() - last;
+    if (elapsedMs > STAFF_SESSION_HOURS * 3600 * 1000) {
+      STAFF_UNLOCKED = false;
+      try {
+        sessionStorage.removeItem('atm_staff_unlocked');
+        sessionStorage.removeItem('atm_office_unlocked');
+        sessionStorage.removeItem('atm_admin_unlocked');
+        sessionStorage.removeItem(STAFF_LAST_ACTIVITY_KEY);
+      } catch(_){}
+      alert('🔒 ' + STAFF_SESSION_HOURS + '시간 미사용으로 자동 로그아웃되었습니다.');
+      location.hash = '#staff-login';
+      route();
+    }
+  } catch(_){}
+}
+// 활동 감지 (클릭·키입력) → 타임아웃 리셋
+document.addEventListener('click', _touchStaffActivity, { passive:true });
+document.addEventListener('keydown', _touchStaffActivity, { passive:true });
+// 1분마다 체크
+setInterval(_checkStaffSessionTimeout, 60 * 1000);
+
+let _staffPinBuffer = '';
+let _staffPinFirstEntry = null;   // 신규 설정 시 첫 입력 저장
+
 function showStaffLogin() {
   const app = document.getElementById('app');
-  const isFirstTime = !DB.settings.staffPasswordHash;
+  const isFirstTime = _isLegacyStaffPassword() || !DB.settings.staffPasswordHash;
+  const _forceReset = _isLegacyStaffPassword();
   updateNav();
+  _staffPinBuffer = '';
+  _staffPinFirstEntry = null;
+
+  const lockRemain = _staffLockRemaining();
+  const isLocked = lockRemain > 0;
+
+  const dotDisplay = (bufLen) => {
+    let dots = '';
+    for (let i = 0; i < STAFF_PIN_LENGTH; i++) {
+      dots += i < bufLen
+        ? '<span style="width:16px;height:16px;background:#5C0F0F;border-radius:50%;display:inline-block;margin:0 4px;"></span>'
+        : '<span style="width:16px;height:16px;border:2px solid #cbd5e1;border-radius:50%;display:inline-block;margin:0 4px;"></span>';
+    }
+    return dots;
+  };
+
+  const numBtnStyle = 'width:64px;height:64px;font-size:24px;font-weight:700;border:1px solid #cbd5e1;background:#fff;border-radius:12px;cursor:pointer;user-select:none;transition:all .1s;';
+  const numBtnHover = 'onmousedown="this.style.background=\'#e5e7eb\'" onmouseup="this.style.background=\'#fff\'" onmouseleave="this.style.background=\'#fff\'"';
+
+  const mkBtn = (label, onclick, extraStyle) => `<button style="${numBtnStyle}${extraStyle||''}" ${numBtnHover} onclick="${onclick}">${label}</button>`;
+
+  const setupHint = _forceReset
+    ? '<div class="notice" style="background:#FFF7E0;border-left-color:#B8860B;">🔄 <b>보안 강화</b>: 기존 비밀번호가 6자리 숫자 PIN 으로 업그레이드됩니다.<br>새 PIN 을 <b>2번</b> 입력해 주세요.</div>'
+    : (isFirstTime ? '<div class="notice">최초 사용 — 6자리 숫자 PIN을 <b>2번</b> 입력해 주세요.</div>' : '');
+
+  const stateLabel = isFirstTime
+    ? (_staffPinFirstEntry ? '2/2 — 확인 입력' : '1/2 — 새 PIN 입력')
+    : '';
+
   app.innerHTML = `
-    <h2 class="page-title">🔑 Staff Login
-      <span class="sub">${isFirstTime ? 'Set up staff password' : 'Authorised staff only'}</span></h2>
-    <div class="card" style="max-width:420px; margin:30px auto;">
-      ${isFirstTime ? `
-        <div class="notice">First time setup — please set a staff password. Staff will need this to access Orders, Warehouse, and Office.</div>
-      ` : `
-        <p style="font-size:13px; color:var(--muted); margin-top:0;">Enter the staff password to access the system.</p>
-      `}
-      <div class="field">
-        <label>Password (min 4 characters)</label>
-        <input type="password" id="staffPw" autofocus onkeydown="if(event.key==='Enter') submitStaffLogin(${isFirstTime})">
+    <h2 class="page-title">🔑 직원 로그인 / Staff PIN
+      <span class="sub">${isFirstTime ? '6자리 PIN 설정' : '6자리 PIN 입력'}</span></h2>
+    <div class="card" style="max-width:360px; margin:20px auto; text-align:center;">
+      ${setupHint}
+      <div id="pinStateLbl" style="font-size:13px; color:var(--muted); margin:8px 0 4px; font-weight:600;">${stateLabel}</div>
+      <div id="pinDots" style="margin:12px 0 20px;">${dotDisplay(0)}</div>
+      <div id="pinMsg" style="font-size:13px; color:var(--warn); min-height:20px; margin-bottom:10px;">
+        ${isLocked ? '⛔ 잠금 — ' + lockRemain + '초 후 재시도' : ''}
       </div>
-      ${isFirstTime ? `
-      <div class="field">
-        <label>Confirm Password</label>
-        <input type="password" id="staffPw2" onkeydown="if(event.key==='Enter') submitStaffLogin(${isFirstTime})">
-      </div>` : ''}
-      <div class="btn-row">
-        <button class="btn" onclick="submitStaffLogin(${isFirstTime})">${isFirstTime ? 'Set Password' : 'Login'}</button>
-        <button class="btn secondary" onclick="location.hash='#home'; route();">Cancel</button>
+      <div style="display:grid; grid-template-columns:repeat(3, 1fr); gap:10px; justify-items:center;">
+        ${mkBtn('1', "pinTap('1')")}
+        ${mkBtn('2', "pinTap('2')")}
+        ${mkBtn('3', "pinTap('3')")}
+        ${mkBtn('4', "pinTap('4')")}
+        ${mkBtn('5', "pinTap('5')")}
+        ${mkBtn('6', "pinTap('6')")}
+        ${mkBtn('7', "pinTap('7')")}
+        ${mkBtn('8', "pinTap('8')")}
+        ${mkBtn('9', "pinTap('9')")}
+        ${mkBtn('⌫', 'pinBackspace()', 'background:#fee2e2;border-color:#fca5a5;color:#dc2626;')}
+        ${mkBtn('0', "pinTap('0')")}
+        ${mkBtn('✓', 'pinSubmit()', 'background:#dcfce7;border-color:#86efac;color:#15803d;')}
+      </div>
+      <div style="margin-top:16px;">
+        <button class="btn secondary sm" onclick="location.hash='#home'; route();">취소</button>
       </div>
     </div>
   `;
+
+  // 물리 키보드 지원 (숫자·백스페이스·엔터)
+  if (!window._staffPinKeyBound) {
+    window._staffPinKeyBound = true;
+    document.addEventListener('keydown', function(e){
+      // staff-login 화면에서만
+      if (!location.hash.includes('staff-login') && !document.getElementById('pinDots')) return;
+      if (/^[0-9]$/.test(e.key)) { pinTap(e.key); e.preventDefault(); }
+      else if (e.key === 'Backspace') { pinBackspace(); e.preventDefault(); }
+      else if (e.key === 'Enter') { pinSubmit(); e.preventDefault(); }
+    });
+  }
 }
 
-async function submitStaffLogin(isFirstTime) {
-  const pw = (document.getElementById('staffPw')||{}).value || '';
-  if (pw.length < 4) return alert('Password must be at least 4 characters.');
-  if (isFirstTime === true || isFirstTime === 'true') {
-    const pw2 = (document.getElementById('staffPw2')||{}).value || '';
-    if (pw !== pw2) return alert('Passwords do not match.');
-    DB.settings.staffPasswordHash = await hashPw(pw);
-    saveDB();
-    alert('Staff password set successfully.');
-  } else {
-    const h = await hashPw(pw);
-    if (h !== DB.settings.staffPasswordHash) return alert('Incorrect password.');
+window.pinTap = function(d) {
+  if (_staffLockRemaining() > 0) return;
+  if (_staffPinBuffer.length >= STAFF_PIN_LENGTH) return;
+  _staffPinBuffer += String(d);
+  _updatePinDots();
+  // 6자리 채워지면 자동 제출
+  if (_staffPinBuffer.length === STAFF_PIN_LENGTH) {
+    setTimeout(pinSubmit, 100);
   }
+};
+
+window.pinBackspace = function() {
+  if (_staffLockRemaining() > 0) return;
+  _staffPinBuffer = _staffPinBuffer.slice(0, -1);
+  _updatePinDots();
+};
+
+function _updatePinDots() {
+  const el = document.getElementById('pinDots');
+  if (!el) return;
+  let html = '';
+  for (let i = 0; i < STAFF_PIN_LENGTH; i++) {
+    html += i < _staffPinBuffer.length
+      ? '<span style="width:16px;height:16px;background:#5C0F0F;border-radius:50%;display:inline-block;margin:0 4px;"></span>'
+      : '<span style="width:16px;height:16px;border:2px solid #cbd5e1;border-radius:50%;display:inline-block;margin:0 4px;"></span>';
+  }
+  el.innerHTML = html;
+}
+
+function _showPinMsg(msg, isError) {
+  const el = document.getElementById('pinMsg');
+  if (!el) return;
+  el.style.color = isError ? 'var(--warn)' : 'var(--success)';
+  el.textContent = msg;
+}
+
+window.pinSubmit = async function() {
+  const remain = _staffLockRemaining();
+  if (remain > 0) { _showPinMsg('⛔ 잠금 — ' + remain + '초 후 재시도', true); return; }
+  const pin = _staffPinBuffer;
+  if (pin.length !== STAFF_PIN_LENGTH || !/^\d{6}$/.test(pin)) {
+    _showPinMsg('숫자 6자리를 입력하세요.', true);
+    return;
+  }
+  const isFirstTime = _isLegacyStaffPassword() || !DB.settings.staffPasswordHash;
+
+  if (isFirstTime) {
+    if (!_staffPinFirstEntry) {
+      _staffPinFirstEntry = pin;
+      _staffPinBuffer = '';
+      _updatePinDots();
+      _showPinMsg('한 번 더 입력하여 확인해 주세요.', false);
+      const lbl = document.getElementById('pinStateLbl');
+      if (lbl) lbl.textContent = '2/2 — 확인 입력';
+      return;
+    }
+    if (_staffPinFirstEntry !== pin) {
+      _staffPinFirstEntry = null;
+      _staffPinBuffer = '';
+      _updatePinDots();
+      const lbl = document.getElementById('pinStateLbl');
+      if (lbl) lbl.textContent = '1/2 — 새 PIN 입력';
+      _showPinMsg('PIN 이 일치하지 않습니다. 처음부터 다시 입력.', true);
+      return;
+    }
+    // 새 PIN 저장
+    DB.settings.staffPasswordHash = await hashPw(pin);
+    saveDB();
+    try { localStorage.setItem(STAFF_PIN_MIGRATED_KEY, '1'); } catch(_){}
+    _resetStaffFail();
+    _touchStaffActivity();
+    STAFF_UNLOCKED = true;
+    try { sessionStorage.setItem('atm_staff_unlocked', '1'); } catch(_){}
+    _showPinMsg('✅ PIN 설정 완료 · 로그인 됨', false);
+    setTimeout(function(){ location.hash = '#home'; route(); }, 600);
+    return;
+  }
+
+  // 로그인
+  const h = await hashPw(pin);
+  if (h !== DB.settings.staffPasswordHash) {
+    const cnt = _incrementStaffFail();
+    const nowRemain = _staffLockRemaining();
+    if (nowRemain > 0) {
+      _showPinMsg('⛔ ' + STAFF_LOCK_ATTEMPTS + '회 실패 · ' + STAFF_LOCK_SECONDS + '초 잠금', true);
+    } else {
+      _showPinMsg('❌ PIN 이 틀렸습니다 (' + cnt + '/' + STAFF_LOCK_ATTEMPTS + ')', true);
+    }
+    _staffPinBuffer = '';
+    _updatePinDots();
+    return;
+  }
+  _resetStaffFail();
+  _touchStaffActivity();
   STAFF_UNLOCKED = true;
-  try { sessionStorage.setItem('atm_staff_unlocked', '1'); } catch(e){}
-  location.hash = '#home';
-  route();
+  try { sessionStorage.setItem('atm_staff_unlocked', '1'); } catch(_){}
+  _showPinMsg('✅ 로그인 성공', false);
+  setTimeout(function(){ location.hash = '#home'; route(); }, 300);
+};
+
+// 레거시 함수 (기존 코드에서 호출될 수 있음 · 신 시스템으로 라우팅)
+async function submitStaffLogin(isFirstTime) {
+  // 신 시스템으로 리다이렉트
+  showStaffLogin();
 }
 
 // -------- Office Auth (password gate for #office, invoicePrep, invoice, history, statement, payment) --------
@@ -2667,14 +2884,17 @@ function renderSecurityAdmin() {
       <button class="btn" onclick="changeAdminPassword()">관리자 비밀번호 변경</button>
     </div>
     <div class="card">
-      <h3>👷 직원(작업장) 비밀번호 변경 / Staff Password</h3>
+      <h3>👷 직원 PIN 변경 / Staff PIN</h3>
       <p style="font-size:12px; color:var(--muted); margin-top:-4px;">
-        <b>직원 단계</b>의 비밀번호입니다. 시스템 첫 진입(주문/작업장 접근)에 필요합니다.
-        ${DB.settings.staffPasswordHash ? '' : '<br><b style="color:var(--warn);">⚠️ 현재 직원 비밀번호가 설정되어 있지 않습니다.</b>'}
+        <b>6자리 숫자 PIN</b>. 시스템 첫 진입(주문/작업장 접근)에 필요합니다.
+        ${DB.settings.staffPasswordHash ? '' : '<br><b style="color:var(--warn);">⚠️ 현재 직원 PIN 이 설정되어 있지 않습니다.</b>'}
       </p>
-      <div class="field"><label>새 직원 비밀번호 (최소 4자)</label><input type="password" id="sec_staff_new"></div>
-      <div class="field"><label>새 직원 비밀번호 확인</label><input type="password" id="sec_staff_new2"></div>
-      <button class="btn" onclick="changeStaffPassword()">직원 비밀번호 변경</button>
+      <div class="field"><label>새 직원 PIN (숫자 6자리)</label><input type="password" id="sec_staff_new" inputmode="numeric" maxlength="6" placeholder="- - - - - -"></div>
+      <div class="field"><label>새 직원 PIN 확인 (숫자 6자리)</label><input type="password" id="sec_staff_new2" inputmode="numeric" maxlength="6" placeholder="- - - - - -"></div>
+      <button class="btn" onclick="changeStaffPassword()">직원 PIN 변경</button>
+      <div style="margin-top:8px; font-size:11px; color:var(--muted);">
+        💡 변경 후 즉시 로그아웃되어 새 PIN 으로 재로그인해야 합니다.
+      </div>
     </div>
     <div class="card">
       <h3>🧑‍💼 사무원(사무실) 비밀번호 변경 / Office Password</h3>
@@ -2726,15 +2946,24 @@ async function changeAdminPassword() {
   route();
 }
 
-// 스태프(작업장) 비밀번호 — 관리자 권한으로 재설정 (기존 스태프 비번 불필요)
+// 스태프 PIN — 관리자 권한으로 재설정 (기존 PIN 불필요). 6자리 숫자 강제.
 async function changeStaffPassword() {
   const newPw = val('sec_staff_new'), newPw2 = val('sec_staff_new2');
-  if (newPw.length < 4) return alert('새 스태프 비밀번호는 최소 4자입니다.');
-  if (newPw !== newPw2) return alert('새 스태프 비밀번호가 일치하지 않습니다.');
-  if (!confirm('스태프 비밀번호를 변경합니다.\n기존에 로그인된 직원은 다음 로그인부터 새 비밀번호가 필요합니다.\n진행할까요?')) return;
+  if (!/^\d{6}$/.test(newPw)) return alert('새 직원 PIN 은 숫자 6자리여야 합니다.');
+  if (newPw !== newPw2) return alert('새 직원 PIN 이 일치하지 않습니다.');
+  if (!confirm('직원 PIN 을 변경합니다.\n\n변경 후 모든 직원이 새 PIN 으로 재로그인해야 합니다.\n\n진행할까요?')) return;
   DB.settings.staffPasswordHash = await hashPw(newPw);
+  try { localStorage.setItem(STAFF_PIN_MIGRATED_KEY, '1'); } catch(_){}
   saveDB();
-  alert('스태프 비밀번호가 변경되었습니다.');
+  // 강제 로그아웃 (자기 자신 포함)
+  STAFF_UNLOCKED = false;
+  try {
+    sessionStorage.removeItem('atm_staff_unlocked');
+    sessionStorage.removeItem('atm_office_unlocked');
+    sessionStorage.removeItem('atm_admin_unlocked');
+  } catch(_){}
+  alert('✅ 직원 PIN 변경 완료. 로그아웃되었습니다. 새 PIN 으로 다시 로그인하세요.');
+  location.hash = '#staff-login';
   route();
 }
 
@@ -3002,8 +3231,8 @@ function normalizeProductName(rawName) {
 
 // =========================================================================
 
-// 분류(cut) 정렬 순서 — 와규부터 공산품까지 고정 순서
-const CUT_ORDER = ['와규','소고기','돼지고기','작업육','가공육','오리','양고기','공산품'];
+// 분류(cut) 정렬 순서 — ⭐ (2026-08-06) 오리·양이 작업육·가공육 앞으로 이동
+const CUT_ORDER = ['와규','소고기','돼지고기','오리','양고기','작업육','가공육','공산품'];
 // 분류 표시 라벨 — 한글 / English 병기
 const CUT_LABEL = {
   '와규': '와규 / Wagyu',
@@ -3670,17 +3899,12 @@ function renderFavoritesList(custId) {
   renderFavChips(custId);
 }
 
-// ⭐ (2026-07-30) 즐겨찾기 · 카탈로그 · 관리자 품목 목록 공용 정렬 헬퍼
-//   product.name 은 '[카테고리한글] [품목한글] [영문/MB]' 패턴 (예: '와규 볼라블레이드 WAGYU BOLAR BLADE MB6-7').
-//   접두어(첫 단어) 제거 후 남은 문자열을 한글 로케일로 비교 → 가나다 순 정렬.
-//   같은 이름이면 뒤 영문/MB 등급까지 자연 정렬.
+// ⭐ (2026-08-06) 정렬 로직 개정 — 전체 이름 기준 가나다 순 (스트립 없음)
+//   앵거스 등 접두어가 자연스럽게 그룹화됨. 화면에 보이는 대로 찾기 쉽게.
+//   product.name 은 '[품목한글] [영문/MB]' 패턴. 전체 이름으로 가나다 → 같은 이름은 영문·번호 tie-break.
 function _favSortNameAfterPrefix(a, b) {
-  const strip = (name) => {
-    const parts = String(name || '').trim().split(/\s+/);
-    return parts.length > 1 ? parts.slice(1).join(' ') : (parts[0] || '');
-  };
-  const sa = strip(a.name);
-  const sb = strip(b.name);
+  const sa = String(a.name || '').trim();
+  const sb = String(b.name || '').trim();
   return sa.localeCompare(sb, 'ko-KR', { numeric: true, sensitivity: 'base' });
 }
 
@@ -6816,18 +7040,23 @@ function dailyReportComputeRows(dateISO) {
     // 현잔액 = 전미수금 + 당일 매출 - 당일 입금
     const currentBalance = priorBalance + todaySales - todayPaid;
 
-    // Overdue 정책 (2026-07-07 변경: grace 7→5):
-    //   - 외상 거래처: due date(인보이스 발행일 + 결제텀일) 이후 추가로 5일 grace period가 지나야 Overdue
-    //     예) 7일 외상 → 발행일 + 12일 이후 미결제분, 14일 외상 → 발행일 + 19일 이후
-    //   - 현금/계좌이체(termsDays=0): Overdue 계산 자체에서 제외 (사용자 정책)
-    const GRACE_DAYS = 5;
-    let overdue = 0;
+    // ⭐ (2026-08-06) Overdue 2단계 정책:
+    //   경고 (WARN): 결제조건 + 7일 초과
+    //   심각 (SEVERE): 결제조건 + 14일 초과
+    //   현금/계좌이체(termsDays=0): 계산 제외
+    //   또한 심각 거래처의 세부 인보이스 리스트도 반환 (매출일보 상세 뷰용)
+    const WARN_GRACE = 7;
+    const SEVERE_GRACE = 14;
+    let overdue = 0;         // 경고+심각 합계 (하위 호환)
+    let overdueMild = 0;     // 경고만
+    let overdueSevere = 0;   // 심각만
+    const overdueInvoices = [];   // [{orderId, invNo, dateISO, unpaid, delayDays, status:'mild'|'severe'}]
     if (days > 0) {
-      // ⭐ (2026-08-05) 크레딧은 net 인보이스 금액에 이미 반영됨. 별도 매핑 불필요.
       const invoicesAsOf = DB.orders
         .filter(o => o.status === 'delivered' && o.customerId === c.id)
         .map(o => ({
           orderId: o.id,
+          invNo: o.invoiceNo || o.orderNo || '-',
           dateISO: toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || ''),
           amount: computeTotalsWithCredits(o).net
         }))
@@ -6846,13 +7075,23 @@ function dailyReportComputeRows(dateISO) {
         }
         if (unpaid > 0.001) {
           const invDate = new Date(inv.dateISO + 'T00:00:00');
-          const overdueDate = new Date(invDate.getTime());
-          overdueDate.setDate(overdueDate.getDate() + days + GRACE_DAYS);
-          if (overdueDate < todayCutoff) overdue += unpaid;
+          const dueDate = new Date(invDate.getTime());
+          dueDate.setDate(dueDate.getDate() + days);   // 결제 기한
+          const delayMs = todayCutoff.getTime() - dueDate.getTime();
+          const delayDays = Math.floor(delayMs / (86400000));
+          if (delayDays >= SEVERE_GRACE) {
+            overdueSevere += unpaid;
+            overdue += unpaid;
+            overdueInvoices.push({ orderId:inv.orderId, invNo:inv.invNo, dateISO:inv.dateISO, unpaid:unpaid, delayDays:delayDays, status:'severe' });
+          } else if (delayDays >= WARN_GRACE) {
+            overdueMild += unpaid;
+            overdue += unpaid;
+            overdueInvoices.push({ orderId:inv.orderId, invNo:inv.invNo, dateISO:inv.dateISO, unpaid:unpaid, delayDays:delayDays, status:'mild' });
+          }
         }
       }
     }
-    return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue, todayCredit };
+    return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue, overdueMild, overdueSevere, overdueInvoices, todayCredit };
   });
   // ⭐ (2026-07-25) 정렬 방식 사용자 선택 — 매출일보/스테이트먼트 상단 드롭다운.
   //   기본값 'alpha' (알파벳순). 화면 진입할 때마다 초기화 (마지막 선택 기억 X).
@@ -6861,6 +7100,14 @@ function dailyReportComputeRows(dateISO) {
     rows.sort((a,b) => (b.currentBalance - a.currentBalance) || a.c.name.localeCompare(b.c.name, 'en'));
   } else if (mode === 'overdue') {
     rows.sort((a,b) => (b.overdue - a.overdue) || (b.currentBalance - a.currentBalance) || a.c.name.localeCompare(b.c.name, 'en'));
+  } else if (mode === 'severe') {
+    // ⭐ (2026-08-06) 심각순 — 심각 있는 거래처만 (필터). 심각 큰순 → 경고 큰순 → 이름순.
+    rows = rows.filter(r => (r.overdueSevere||0) > 0.001);
+    rows.sort((a,b) =>
+      (b.overdueSevere - a.overdueSevere) ||
+      (b.overdueMild - a.overdueMild) ||
+      (a.c.name||'').localeCompare(b.c.name||'', 'en')
+    );
   } else {
     // alpha: 알파벳 순 (기본)
     rows.sort((a,b) => (a.c.name||'').localeCompare(b.c.name||'', 'en'));
@@ -6874,7 +7121,8 @@ function salesSortSelectHTML(currentMode, onChangeExpr) {
   return '<select onchange="' + onChangeExpr + '" style="padding:6px 10px;border:1px solid var(--line);border-radius:6px;font-size:12px;">' +
     '<option value="alpha"'  + (mode==='alpha'  ?' selected':'') + '>정렬: 알파벳순</option>' +
     '<option value="balance"'+ (mode==='balance'?' selected':'') + '>정렬: 현잔액 큰순</option>' +
-    '<option value="overdue"'+ (mode==='overdue'?' selected':'') + '>정렬: Overdue 큰순</option>' +
+    '<option value="overdue"'+ (mode==='overdue'?' selected':'') + '>정렬: Overdue 큰순 (경고+심각)</option>' +
+    '<option value="severe"' + (mode==='severe' ?' selected':'') + '>🔴 정렬: 심각 거래처만 (상세)</option>' +
     '</select>';
 }
 
@@ -6897,11 +7145,68 @@ function dailyReportTotals(rows) {
     todayPaid: t.todayPaid + r.todayPaid,
     currentBalance: t.currentBalance + r.currentBalance,
     overdue: t.overdue + r.overdue,
-  }), {priorBalance:0, todaySales:0, todayPaid:0, currentBalance:0, overdue:0});
+    overdueMild: (t.overdueMild||0) + (r.overdueMild||0),
+    overdueSevere: (t.overdueSevere||0) + (r.overdueSevere||0),
+  }), {priorBalance:0, todaySales:0, todayPaid:0, currentBalance:0, overdue:0, overdueMild:0, overdueSevere:0});
+}
+
+// ⭐ (2026-08-06) Overdue 컬럼 셀 렌더 — 심각 우선 색상, 단일 값
+function _overdueCellHTML(r, isTotal) {
+  const sev = r.overdueSevere || 0;
+  const mild = r.overdueMild || 0;
+  if (sev > 0.001) {
+    return '<td class="num" style="font-weight:700; color:#D32F2F;' + (isTotal?'font-size:14px;':'') + '">🔴 $' + fmtMoney(sev) + '</td>';
+  }
+  if (mild > 0.001) {
+    return '<td class="num" style="font-weight:700; color:#E8A317;' + (isTotal?'font-size:14px;':'') + '">🟡 $' + fmtMoney(mild) + '</td>';
+  }
+  return '<td class="num" style="color:var(--muted);' + (isTotal?'font-weight:700;font-size:14px;':'') + '">–</td>';
+}
+
+// ⭐ (2026-08-06) 심각순 상세 뷰 — 심각 거래처 리스트 + 인보이스 세부
+function _dailyReportSevereDetailHTML(rows) {
+  if (rows.length === 0) return '<div class="empty" style="text-align:center; padding:30px; color:var(--success);">✅ 심각 Overdue 거래처 없음</div>';
+  const grand = rows.reduce((s,r) => ({ sev: s.sev + (r.overdueSevere||0), mild: s.mild + (r.overdueMild||0) }), { sev:0, mild:0 });
+  const invCount = rows.reduce((s,r) => s + (r.overdueInvoices||[]).length, 0);
+  const sevInvCount = rows.reduce((s,r) => s + (r.overdueInvoices||[]).filter(x=>x.status==='severe').length, 0);
+  const mildInvCount = invCount - sevInvCount;
+  let html = '<div class="card" style="background:#FDECEA; border-left:4px solid #D32F2F; margin-bottom:14px;">'
+    + '<h3 style="margin:0; color:#D32F2F;">🔴 심각 Overdue 거래처 상세 (' + rows.length + '개 업체 · ' + sevInvCount + ' 건 심각 · ' + mildInvCount + ' 건 경고)</h3>'
+    + '<div style="font-size:12px; color:var(--muted); margin-top:4px;">기준: 결제조건 + 7일 → 경고 · + 14일 → 심각</div>'
+    + '</div>';
+  html += '<table class="t"><thead><tr>'
+    + '<th>거래처</th><th>결제조건</th><th class="num">심각 합계</th><th class="num">경고 합계</th>'
+    + '<th class="num">현잔액</th>'
+    + '</tr></thead><tbody>';
+  html += '<tr style="background:#FBF8F4; border-bottom:2px solid var(--brand);"><td colspan="2" style="font-weight:800; color:var(--brand);">📊 합계 (' + rows.length + '건)</td>'
+    + '<td class="num" style="font-weight:800; color:#D32F2F; font-size:14px;">🔴 $' + fmtMoney(grand.sev) + '</td>'
+    + '<td class="num" style="font-weight:800; color:#E8A317; font-size:14px;">🟡 $' + fmtMoney(grand.mild) + '</td>'
+    + '<td class="num">–</td></tr>';
+  rows.forEach(function(r){
+    const balColor = r.currentBalance > 0 ? 'var(--warn)' : (r.currentBalance < -0.001 ? 'var(--success)' : '#2A1A1A');
+    html += '<tr>'
+      + '<td><b><a href="#statement?cid=' + r.c.id + '" style="color:var(--brand-dark); text-decoration:none;">' + escapeHtmlSimple(r.c.name) + '</a></b>' + (r.c.contact ? '<br><small style="color:var(--muted);">' + escapeHtmlSimple(r.c.contact) + '</small>' : '') + '</td>'
+      + '<td><small style="color:var(--muted);">' + termsLabel(r.c.terms) + '</small></td>'
+      + '<td class="num" style="font-weight:700; color:#D32F2F;">🔴 $' + fmtMoney(r.overdueSevere||0) + '</td>'
+      + '<td class="num" style="font-weight:700; color:' + ((r.overdueMild||0)>0.001?'#E8A317':'var(--muted)') + ';">' + ((r.overdueMild||0)>0.001 ? '🟡 $' + fmtMoney(r.overdueMild) : '–') + '</td>'
+      + '<td class="num" style="font-weight:700; color:' + balColor + ';">$' + fmtMoney(r.currentBalance) + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table>';
+  return html;
+}
+
+// simple HTML escape helper (fallback if not defined elsewhere)
+function escapeHtmlSimple(s) {
+  return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
 }
 
 function dailyReportScreenTableHTML(rows) {
   if (rows.length === 0) return '<div class="empty">표시할 거래내역이 없습니다.</div>';
+  // ⭐ (2026-08-06) 심각순 모드일 때 상세 뷰 사용
+  if ((window._salesSortMode || 'alpha') === 'severe') {
+    return _dailyReportSevereDetailHTML(rows);
+  }
   const totals = dailyReportTotals(rows);
   const txt = '#2A1A1A';
   return `<table class="t">
@@ -6923,18 +7228,18 @@ function dailyReportScreenTableHTML(rows) {
         <td class="num" style="font-weight:700; font-size:14px; color:${totals.todaySales > 0.001 ? 'var(--brand)' : 'var(--muted)'};">${totals.todaySales > 0.001 ? '$' + fmtMoney(totals.todaySales) : '–'}</td>
         <td class="num" style="font-weight:700; font-size:14px; color:${totals.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${totals.todayPaid > 0.001 ? '$' + fmtMoney(totals.todayPaid) : '–'}</td>
         <td class="num" style="font-weight:700; font-size:14px; color:${totals.currentBalance > 0 ? 'var(--warn)' : (totals.currentBalance < -0.001 ? 'var(--success)' : txt)};">$${fmtMoney(totals.currentBalance)}</td>
-        <td class="num" style="font-weight:700; font-size:14px; color:${totals.overdue > 0.001 ? '#D32F2F' : 'var(--muted)'};">${totals.overdue > 0.001 ? '🔴 $' + fmtMoney(totals.overdue) : '–'}</td>
+        ${_overdueCellHTML(totals, true)}
       </tr>
       ${rows.map(r => {
         const balColor = r.currentBalance > 0 ? 'var(--warn)' : (r.currentBalance < -0.001 ? 'var(--success)' : txt);
         return `<tr>
-          <td><b>${r.c.name}</b>${r.c.contact ? `<br><small style="color:var(--muted);">${r.c.contact}</small>` : ''}</td>
+          <td><b><a href="#statement?cid=${r.c.id}" style="color:var(--brand-dark); text-decoration:none;" title="스테이트먼트 보기">${escapeHtmlSimple(r.c.name)}</a></b>${r.c.contact ? `<br><small style="color:var(--muted);">${escapeHtmlSimple(r.c.contact)}</small>` : ''}</td>
           <td><small style="color:var(--muted);">${termsLabel(r.c.terms)}</small></td>
           <td class="num">$${fmtMoney(r.priorBalance)}</td>
           <td class="num" style="color:${r.todaySales > 0.001 ? 'var(--brand)' : 'var(--muted)'};">${r.todaySales > 0.001 ? '$' + fmtMoney(r.todaySales) : '–'}</td>
           <td class="num" style="color:${r.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${r.todayPaid > 0.001 ? '$' + fmtMoney(r.todayPaid) : '–'}</td>
           <td class="num" style="font-weight:700; color:${balColor};">$${fmtMoney(r.currentBalance)}</td>
-          <td class="num" style="font-weight:700; color:${r.overdue > 0.001 ? '#D32F2F' : 'var(--muted)'};">${r.overdue > 0.001 ? '🔴 $' + fmtMoney(r.overdue) : '–'}</td>
+          ${_overdueCellHTML(r, false)}
         </tr>`;
       }).join('')}
     </tbody>
@@ -11203,6 +11508,35 @@ function viewStatement(params) {
       return kindOrd[a.kind] - kindOrd[b.kind];
     });
 
+    // ⭐ (2026-08-06) 인보이스별 미결제 잔액 (FIFO 배분) — 각 인보이스에 +N일 표시용
+    const _termsDaysCust = termsDays(cust.terms);
+    const _todayISO_stmt = toLocalISODate(new Date());
+    const _invUnpaidMap = {};
+    const _sortedInvEvents = invEvents.slice().sort((a,b) => a.date < b.date ? -1 : 1);
+    let _payPool = payEvents.reduce((s,p) => s + (p.amount || 0), 0);
+    _sortedInvEvents.forEach(function(inv){
+      const net = Math.max(0, inv.amount);
+      const applied = Math.min(_payPool, net);
+      _invUnpaidMap[inv.invId] = net - applied;
+      _payPool -= applied;
+    });
+    function _dateDiffDaysStmt(fromISO, toISO) {
+      const df = new Date(fromISO + 'T00:00:00');
+      const dt = new Date(toISO + 'T00:00:00');
+      return Math.floor((dt.getTime() - df.getTime()) / 86400000);
+    }
+    // 경고/심각 합계
+    let _overdueMildTotal = 0, _overdueSevereTotal = 0;
+    if (_termsDaysCust > 0) {
+      _sortedInvEvents.forEach(function(inv){
+        const unpaid = _invUnpaidMap[inv.invId] || 0;
+        if (unpaid < 0.001) return;
+        const delayDays = _dateDiffDaysStmt(inv.date, _todayISO_stmt) - _termsDaysCust;
+        if (delayDays >= 14) _overdueSevereTotal += unpaid;
+        else if (delayDays >= 7) _overdueMildTotal += unpaid;
+      });
+    }
+
     // ⭐ (2026-08-05) 선입금/선입금 적용 개념 완전 제거.
     //   입금은 부만님이 입력한 그대로 1행. 인보이스도 1행. 발란스는 자연스럽게 마이너스로 갈 수 있음.
     //   거래처에게 스테이트먼트 보낼 때 "선입금", "선입금 적용" 같은 혼동스러운 용어 없음.
@@ -11232,9 +11566,18 @@ function viewStatement(params) {
         if (inPeriod) {
           totInv += ev.amount;
           const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
+          // ⭐ (2026-08-06) 결제 지연일수 텍스트 (미결제 인보이스에만, 색상 없음)
+          let delayText = '';
+          const _unpaidForInv = _invUnpaidMap[ev.invId] || 0;
+          if (_unpaidForInv > 0.001 && _termsDaysCust > 0) {
+            const delayDays = _dateDiffDaysStmt(ev.date, _todayISO_stmt) - _termsDaysCust;
+            if (delayDays > 0) {
+              delayText = ' <small style="color:var(--muted); font-weight:400;">+' + delayDays + '일</small>';
+            }
+          }
           rows += '<tr>'
             + '<td>' + ev.date + '</td>'
-            + '<td><b>' + ev.invNo + '</b></td>'
+            + '<td><b>' + ev.invNo + '</b>' + delayText + '</td>'
             + '<td class="num">$' + fmtMoney(ev.amount) + '</td>'
             + '<td class="num">—</td>'
             + '<td class="num">—</td>'
@@ -11277,12 +11620,15 @@ function viewStatement(params) {
     const balColor = bal > 0 ? 'var(--warn)' : (bal < -0.001 ? 'var(--success)' : 'var(--muted)');
     const balDisplay = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
 
-    // ⭐ (2026-08-05) Overdue 계산 — 인보이스 net (크레딧 반영 후) 기준.
-    //   크레딧은 이미 인보이스 라인 아이템으로 반영되므로 별도 차감 불필요.
+    // ⭐ (2026-08-06) Overdue 계산 — WARN_GRACE=7, SEVERE_GRACE=14 (경고+심각 합계)
+    //   위에서 이미 _overdueMildTotal, _overdueSevereTotal 계산했음 (오늘 기준).
+    //   여기서는 dateTo 기준 (기간 조회 시 다를 수 있음) 재계산.
     const daysT = termsDays(cust.terms);
-    const GRACE_DAYS = 5;
+    const WARN_GRACE = 7;
+    const SEVERE_GRACE = 14;
     const overdueCutoff = new Date(dateTo + 'T00:00:00');
     let overdue = 0;
+    let overdueMildAsOf = 0, overdueSevereAsOf = 0;
     if (daysT > 0) {
       const invoicesAsOf = DB.orders
         .filter(o => o.status === 'delivered' && o.customerId === cust.id)
@@ -11306,9 +11652,12 @@ function viewStatement(params) {
         }
         if (unpaid > 0.001) {
           const invDate = new Date(inv.dateISO + 'T00:00:00');
-          const overdueDate = new Date(invDate.getTime());
-          overdueDate.setDate(overdueDate.getDate() + daysT + GRACE_DAYS);
-          if (overdueDate < overdueCutoff) overdue += unpaid;
+          const dueDate = new Date(invDate.getTime());
+          dueDate.setDate(dueDate.getDate() + daysT);
+          const delayMs = overdueCutoff.getTime() - dueDate.getTime();
+          const delayDays = Math.floor(delayMs / 86400000);
+          if (delayDays >= SEVERE_GRACE) { overdueSevereAsOf += unpaid; overdue += unpaid; }
+          else if (delayDays >= WARN_GRACE) { overdueMildAsOf += unpaid; overdue += unpaid; }
         }
       }
     }
@@ -11332,7 +11681,12 @@ function viewStatement(params) {
         '<div><span style="color:var(--muted);font-size:12px;">총 인보이스 / Total Invoiced <small style="font-size:10px;">(크레딧 반영 후)</small></span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
         '<div><span style="color:var(--muted);font-size:12px;">총 입금 / Total Paid</span><br><b style="font-size:18px;color:var(--success);">$' + fmtMoney(totPay) + '</b></div>' +
         '<div><span style="color:var(--muted);font-size:12px;">현 미수금 / Balance Due</span><br><b style="font-size:20px;color:' + balColor + ';">' + balDisplay + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">Overdue<br><small style="font-size:10px;">(결제일 + 5일 초과)</small></span><br><b style="font-size:20px;color:' + overdueColor + ';">' + (overdue > 0.001 ? '🔴 $' + fmtMoney(overdue) : '$0.00') + '</b></div>' +
+        '<div><span style="color:var(--muted);font-size:12px;">Overdue<br><small style="font-size:10px;">(결제일 + 7일 경고 / +14일 심각)</small></span><br>' +
+          (overdueSevereAsOf > 0.001 ? '<b style="font-size:16px;color:#D32F2F;">🔴 심각 $' + fmtMoney(overdueSevereAsOf) + '</b>' : '') +
+          (overdueSevereAsOf > 0.001 && overdueMildAsOf > 0.001 ? '<br>' : '') +
+          (overdueMildAsOf > 0.001 ? '<b style="font-size:16px;color:#E8A317;">🟡 경고 $' + fmtMoney(overdueMildAsOf) + '</b>' : '') +
+          (overdue < 0.001 ? '<b style="font-size:20px;color:var(--muted);">$0.00</b>' : '') +
+        '</div>' +
       '</div></div>' +
       '<div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap;" class="no-print">' +
         '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>' +
@@ -11417,11 +11771,12 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
     });
   }
 
-  // Overdue 계산 (net 기준)
+  // Overdue 계산 (net 기준) — 2단계 (경고 +7일, 심각 +14일)
   const daysT = termsDays(cust && cust.terms);
-  const GRACE_DAYS = 5;
+  const WARN_GRACE = 7;
+  const SEVERE_GRACE = 14;
   const cutoff = new Date(dateTo + 'T00:00:00');
-  let overdue = 0;
+  let overdue = 0, overdueMild = 0, overdueSevere = 0;
   if (cust && daysT > 0) {
     const invoicesAsOf = DB.orders
       .filter(function(o){ return o.status === 'delivered' && o.customerId === cid; })
@@ -11443,9 +11798,11 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
       }
       if (unpaid > 0.001) {
         const invDate = new Date(inv.dateISO + 'T00:00:00');
-        const overdueDate = new Date(invDate.getTime());
-        overdueDate.setDate(overdueDate.getDate() + daysT + GRACE_DAYS);
-        if (overdueDate < cutoff) overdue += unpaid;
+        const dueDate = new Date(invDate.getTime());
+        dueDate.setDate(dueDate.getDate() + daysT);
+        const delayDays = Math.floor((cutoff.getTime() - dueDate.getTime()) / 86400000);
+        if (delayDays >= SEVERE_GRACE) { overdueSevere += unpaid; overdue += unpaid; }
+        else if (delayDays >= WARN_GRACE) { overdueMild += unpaid; overdue += unpaid; }
       }
     }
   }
@@ -11453,7 +11810,8 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   txt += '\n총 입금 (기간): $' + fmtMoney(totalPaid);
   const balDisplayTxt = balance < -0.001 ? '-$' + fmtMoney(Math.abs(balance)) : '$' + fmtMoney(balance);
   txt += '\n현 미수금: ' + balDisplayTxt;
-  if (overdue > 0.001) txt += '\n🔴 Overdue: $' + fmtMoney(overdue) + ' (결제일 + 5일 초과)';
+  if (overdueSevere > 0.001) txt += '\n🔴 심각: $' + fmtMoney(overdueSevere) + ' (결제일 + 14일 초과)';
+  if (overdueMild > 0.001) txt += '\n🟡 경고: $' + fmtMoney(overdueMild) + ' (결제일 + 7일 초과)';
 
   if (navigator.clipboard) {
     navigator.clipboard.writeText(txt).then(function() {
@@ -13424,6 +13782,59 @@ function toggleAutoBackup() {
   showToast(DB.settings.autoBackupEnabled ? '✅ 자동 백업 ON' : '⏸️ 자동 백업 OFF');
   route();
 }
+
+// =========================================================================
+//  ⭐ (2026-08-06) 표 셀 키보드 네비게이션 (계근·인보이스 준비 등)
+//  Enter/방향키로 셀 이동. 텍스트 편집 중엔 방향키 자연 동작. 이동 시 자동 전체 선택.
+// =========================================================================
+(function(){
+  if (window._tableInputNavBound) return;
+  window._tableInputNavBound = true;
+
+  document.addEventListener('keydown', function(e) {
+    const el = e.target;
+    if (!el || !el.matches || !(el.matches('input') || el.matches('select'))) return;
+    // 표 안의 input 만 대상 (다이얼로그·모달·기타 폼은 브라우저 기본 유지)
+    const td = el.closest('td');
+    const tr = el.closest('tr');
+    const table = el.closest('table.t');   // 우리 표(class="t")에만 적용
+    if (!td || !tr || !table) return;
+
+    const colIdx = Array.from(tr.children).indexOf(td);
+    let next = null;
+
+    const isTextish = el.tagName === 'INPUT' && !['checkbox','radio','button','submit'].includes(el.type);
+    const atEnd = isTextish ? (el.selectionEnd === (el.value ? el.value.length : 0)) : true;
+    const atStart = isTextish ? (el.selectionStart === 0) : true;
+
+    if (e.key === 'Enter' || e.key === 'ArrowDown') {
+      // ⬇ 아래 행 같은 컬럼
+      const nextTr = tr.nextElementSibling;
+      if (nextTr) next = nextTr.children[colIdx] && nextTr.children[colIdx].querySelector('input, select');
+    } else if (e.key === 'ArrowUp') {
+      // ⬆ 위 행 같은 컬럼
+      const prevTr = tr.previousElementSibling;
+      if (prevTr) next = prevTr.children[colIdx] && prevTr.children[colIdx].querySelector('input, select');
+    } else if (e.key === 'ArrowRight' && atEnd) {
+      // ➡ 오른쪽 셀 (텍스트 끝일 때만)
+      let sib = td.nextElementSibling;
+      while (sib && !next) { next = sib.querySelector('input, select'); sib = sib.nextElementSibling; }
+    } else if (e.key === 'ArrowLeft' && atStart) {
+      // ⬅ 왼쪽 셀 (텍스트 시작일 때만)
+      let sib = td.previousElementSibling;
+      while (sib && !next) { next = sib.querySelector('input, select'); sib = sib.previousElementSibling; }
+    }
+
+    if (next) {
+      e.preventDefault();
+      next.focus();
+      // 이동 시 자동 전체 선택 → 바로 덮어쓰기 가능
+      if (next.select && next.tagName === 'INPUT' && !['checkbox','radio','button','submit'].includes(next.type)) {
+        setTimeout(function(){ try { next.select(); } catch(_){} }, 0);
+      }
+    }
+  });
+})();
 
 // =========================================================================
 //  TOAST NOTIFICATION
