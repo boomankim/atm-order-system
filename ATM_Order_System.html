@@ -7461,7 +7461,8 @@ window.saveInlinePayment = function() {
   const notes = document.getElementById('ipNotes').value.trim();
   if (!cid) { alert('거래처를 선택하세요.'); return; }
   if (!date) { alert('입금일을 입력하세요.'); return; }
-  if (isNaN(amount) || amount <= 0) { alert('올바른 금액을 입력하세요.'); return; }
+  // ⭐ (2026-08-06) 음수 허용 — 리펀드·환급 대응. 0만 거부. 사유는 메모란에 기재.
+  if (isNaN(amount) || Math.abs(amount) < 0.005) { alert('올바른 금액을 입력하세요 (0 아님).'); return; }
   const newPayment = { id: uid('pay'), customerId: cid, date, amount, method, reference: ref, notes, createdAt: new Date().toISOString() };
   DB.payments.push(newPayment);
   // Phase 2 동시성: 다른 매니저가 다른 거래처 입금 처리 중일 때 안전하게 push
@@ -11126,7 +11127,8 @@ window.savePayment = function() {
 
   if (!cid) { alert('거래처를 선택하세요.'); return; }
   if (!date) { alert('입금일을 입력하세요.'); return; }
-  if (isNaN(amount) || amount <= 0) { alert('올바른 금액을 입력하세요.'); return; }
+  // ⭐ (2026-08-06) 음수 허용 — 리펀드·환급. 0만 거부. 사유는 메모란에 기재.
+  if (isNaN(amount) || Math.abs(amount) < 0.005) { alert('올바른 금액을 입력하세요 (0 아님).'); return; }
 
   const payment = {
     id: uid('pay'),
