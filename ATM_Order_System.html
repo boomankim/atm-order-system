@@ -6374,12 +6374,116 @@ function viewWarehouse() {
     <h2 class="page-title">⚖️ 작업장 — 계근 입력
       <span class="sub">박스/팩 챙기고 실제 중량 입력</span></h2>
     <div class="card">
+      <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
+        <button class="btn sm" style="background:#5C0F0F; color:#fff;" onclick="openBulkDeliveryChange()">📅 배송일 일괄 변경</button>
+      </div>
       <div id="whPaletteBar"></div>
       <div id="whList"></div>
+    </div>
+    <!-- 배송일 일괄 변경 모달 -->
+    <div id="bulkDeliveryModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:100; align-items:center; justify-content:center; padding:20px;">
+      <div style="background:#fff; border-radius:10px; padding:20px 24px; max-width:640px; width:100%; max-height:90vh; overflow-y:auto; box-shadow:0 10px 30px rgba(0,0,0,0.25);">
+        <h3 style="margin:0 0 12px; font-size:16px; font-weight:800; color:var(--brand-dark);">📅 배송일 일괄 변경</h3>
+        <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
+          변경할 주문을 체크한 뒤 새 배송일 지정 → [일괄 저장]. 토요일·휴무일 제한 없음.
+        </div>
+        <div style="margin-bottom:12px; padding:8px 10px; background:#FAF6F1; border-radius:6px; font-size:12px;">
+          <label style="cursor:pointer; user-select:none;">
+            <input type="checkbox" id="bulkAllChk" onchange="_bulkToggleAll(this.checked)"> 전체 선택
+          </label>
+          <span style="margin-left:12px; color:var(--muted);" id="bulkSelCount">0 건 선택됨</span>
+        </div>
+        <div id="bulkOrderList" style="max-height:40vh; overflow-y:auto; border:1px solid var(--line); border-radius:6px; padding:6px;"></div>
+        <div style="margin-top:14px; padding:10px 12px; background:#FFFCF5; border:1px solid #E8A317; border-radius:6px;">
+          <div style="font-size:12px; font-weight:700; color:#7A4A00; margin-bottom:6px;">📅 새 배송일</div>
+          <input type="date" id="bulkNewDate" style="padding:8px 10px; font-size:14px; border:1px solid var(--line); border-radius:6px;">
+        </div>
+        <div style="margin-top:14px; display:flex; justify-content:flex-end; gap:8px;">
+          <button class="btn secondary sm" onclick="closeBulkDeliveryChange()">취소</button>
+          <button class="btn success sm" onclick="saveBulkDelivery()">💾 일괄 저장</button>
+        </div>
+      </div>
     </div>
   `;
   renderWarehouseList();
 }
+
+// ⭐ (2026-08-07) 계근 대기 - 배송일 일괄 변경
+window.openBulkDeliveryChange = function() {
+  const modal = document.getElementById('bulkDeliveryModal');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  // 오늘 기본값
+  const d = document.getElementById('bulkNewDate');
+  if (d) d.value = todayLocalISO();
+  const chk = document.getElementById('bulkAllChk');
+  if (chk) chk.checked = false;
+  _renderBulkOrderList();
+  _updateBulkSelCount();
+};
+
+window.closeBulkDeliveryChange = function() {
+  const modal = document.getElementById('bulkDeliveryModal');
+  if (modal) modal.style.display = 'none';
+};
+
+function _renderBulkOrderList() {
+  const box = document.getElementById('bulkOrderList');
+  if (!box) return;
+  const _custNameOf = function(o) {
+    const c = (DB.customers||[]).find(x => x.id === o.customerId);
+    return (c && c.name) || '';
+  };
+  const pending = (DB.orders||[]).filter(o => o.status === 'new' || o.status === 'weighing')
+    .sort((a,b) => _custNameOf(a).localeCompare(_custNameOf(b), 'ko-KR'));
+  if (pending.length === 0) {
+    box.innerHTML = '<div style="color:var(--muted); padding:12px; text-align:center;">계근 대기 주문 없음</div>';
+    return;
+  }
+  let html = '';
+  pending.forEach(o => {
+    const cn = _custNameOf(o) || '-';
+    const dd = o.deliveryDate || '미지정';
+    const safeName = cn.replace(/&/g,'&amp;').replace(/</g,'&lt;');
+    html += '<label style="display:flex; align-items:center; gap:10px; padding:8px 10px; border-bottom:1px solid #f1f5f9; cursor:pointer;">'
+      + '<input type="checkbox" class="bulkOrderChk" data-oid="' + o.id + '" onchange="_updateBulkSelCount()">'
+      + '<span style="flex:1;"><b>' + o.orderNo + '</b> · ' + safeName + '</span>'
+      + '<small style="color:var(--muted);">현재: ' + dd + '</small>'
+      + '</label>';
+  });
+  box.innerHTML = html;
+}
+
+window._bulkToggleAll = function(checked) {
+  document.querySelectorAll('.bulkOrderChk').forEach(chk => { chk.checked = !!checked; });
+  _updateBulkSelCount();
+};
+
+window._updateBulkSelCount = function() {
+  const cnt = document.querySelectorAll('.bulkOrderChk:checked').length;
+  const el = document.getElementById('bulkSelCount');
+  if (el) el.textContent = cnt + ' 건 선택됨';
+};
+
+window.saveBulkDelivery = function() {
+  const checks = document.querySelectorAll('.bulkOrderChk:checked');
+  const newDate = document.getElementById('bulkNewDate').value;
+  if (checks.length === 0) { alert('변경할 주문을 하나 이상 선택하세요.'); return; }
+  if (!newDate) { alert('새 배송일을 지정하세요.'); return; }
+  if (!confirm('선택한 ' + checks.length + '건의 배송일을 ' + newDate + ' 로 변경합니다.\n계속?')) return;
+  let ok = 0;
+  checks.forEach(chk => {
+    const oid = chk.getAttribute('data-oid');
+    const o = DB.orders.find(x => x.id === oid);
+    if (!o) return;
+    o.deliveryDate = newDate;
+    try { saveEntityField('orders', oid, 'deliveryDate'); ok++; } catch(e) { console.warn('배송일 저장 실패:', oid, e); }
+  });
+  try { saveLocalDB(); } catch(_){}
+  if (typeof showToast === 'function') showToast('📅 배송일 ' + ok + '건 변경 완료 → ' + newDate);
+  closeBulkDeliveryChange();
+  renderWarehouseList();
+};
 
 function renderWarehouseList() {
   const paletteEl = document.getElementById('whPaletteBar');
