@@ -11193,7 +11193,7 @@ function viewStatement(params) {
 
     const payEvents = (DB.payments || [])
       .filter(p => p && p.customerId === cid && p.date <= dateTo)
-      .map(p => ({ kind: 'pay', date: p.date, amount: p.amount, method: p.method, ref: p.reference || '' }));
+      .map(p => ({ kind: 'pay', date: p.date, amount: p.amount, method: p.method, ref: p.reference || '', notes: p.notes || '' }));
 
     const allEvents = invEvents.concat(payEvents);
     // 정렬: 날짜순 → 같은 날은 inv → pay
@@ -11243,17 +11243,29 @@ function viewStatement(params) {
         }
       } else if (ev.kind === 'pay') {
         // 입금 — 입력한 그대로 1행. 분할·선입금 개념 없음.
+        // ⭐ (2026-08-06) 음수 입금 (리펀드) 지원 — 라벨·색상·메모 표시.
         if (inPeriod) totPay += ev.amount;
         bal -= ev.amount;
         if (inPeriod) {
+          const isRefund = ev.amount < 0;
           const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
           const balColor = bal < -0.001 ? 'var(--success)' : (bal > 0 ? 'var(--warn)' : 'var(--muted)');
-          rows += '<tr style="background:#E8F5E9;">'
+          const amtDisp = isRefund ? '-$' + fmtMoney(Math.abs(ev.amount)) : '$' + fmtMoney(ev.amount);
+          const rowColor = isRefund ? 'var(--warn)' : 'var(--success)';
+          const bgColor = isRefund ? '#FDECEA' : '#E8F5E9';
+          const label = isRefund ? '입금 <b>(환급/리펀드)</b>' : '입금';
+          // 메모(notes)와 참조번호(ref) 표시 — 왜 이 입금인지 알 수 있게
+          const _esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+          const noteParts = [];
+          if (ev.notes) noteParts.push(_esc(ev.notes));
+          if (ev.ref) noteParts.push('참조: ' + _esc(ev.ref));
+          const noteInline = noteParts.length ? ' <small style="color:var(--muted);">— ' + noteParts.join(' · ') + '</small>' : '';
+          rows += '<tr style="background:' + bgColor + ';">'
             + '<td>' + ev.date + '</td>'
-            + '<td style="color:var(--success);">입금</td>'
+            + '<td style="color:' + rowColor + ';">' + label + noteInline + '</td>'
             + '<td class="num">—</td>'
             + '<td class="num">—</td>'
-            + '<td class="num" style="color:var(--success);">$' + fmtMoney(ev.amount) + '</td>'
+            + '<td class="num" style="color:' + rowColor + ';">' + amtDisp + '</td>'
             + '<td class="num" style="color:' + balColor + ';"><b>' + balDisp + '</b></td>'
             + '</tr>';
         }
@@ -11394,7 +11406,14 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   if (inPeriodPayments.length === 0) { txt += '(없음)\n'; }
   else {
     inPeriodPayments.forEach(function(p) {
-      txt += p.date + ' 입금 $' + fmtMoney(p.amount) + '\n';
+      const isRefund = p.amount < 0;
+      const amtStr = isRefund ? '-$' + fmtMoney(Math.abs(p.amount)) : '$' + fmtMoney(p.amount);
+      const label = isRefund ? '입금(환급)' : '입금';
+      const extras = [];
+      if (p.notes) extras.push(p.notes);
+      if (p.reference) extras.push('참조: ' + p.reference);
+      const noteSuffix = extras.length ? ' — ' + extras.join(' · ') : '';
+      txt += p.date + ' ' + label + ' ' + amtStr + noteSuffix + '\n';
     });
   }
 
