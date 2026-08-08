@@ -3333,26 +3333,45 @@ function updateProductField(prodId, field, value) {
 }
 function editProduct(id) {
   const p = id ? DB.products.find(x => x.id === id) : { id: uid('p'), name:'', cut:'와규', brand:'', boxKg:0, packKg:0, priceKg:0, active:true };
+  // ⭐ (2026-08-07) 인보이스 준비와 동일한 UX — onfocus 전체선택 + Enter 로 다음 필드 이동
+  const _saveCall = "saveProduct('" + p.id + "', " + (id?'false':'true') + ")";
   openModal(`
     <h3>${id?'품목 수정':'품목 추가'}</h3>
-    <div class="field"><label>품목명 * <small style="color:var(--muted); font-weight:400;">(한글 / English 병기 권장 — 예: 삼겹살 / Pork Belly)</small></label><input id="m_name" value="${p.name}"></div>
+    <div class="field"><label>품목명 * <small style="color:var(--muted); font-weight:400;">(한글 / English 병기 권장 — 예: 삼겹살 / Pork Belly)</small></label>
+      <input id="m_name" value="${p.name}"
+             onfocus="this.select()"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('m_cut').focus();}">
+    </div>
     <div class="grid-2">
       <div class="field"><label>분류</label>
-        <select id="m_cut">
+        <select id="m_cut"
+                onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('m_brand').focus();}">
           ${CUT_ORDER.map(c=>`<option value="${c}" ${c===p.cut?'selected':''}>${cutLabel(c)}</option>`).join('')}
         </select>
       </div>
       <div class="field"><label>브랜드 / 원산지</label>
-        <input id="m_brand" value="${p.brand}" placeholder="호주산 / 한국산 / ATM 등">
+        <input id="m_brand" value="${p.brand}" placeholder="호주산 / 한국산 / ATM 등"
+               onfocus="this.select()"
+               onkeydown="if(event.key==='Enter'){event.preventDefault();document.getElementById('m_price').focus();}">
       </div>
     </div>
-    <div class="field"><label>단가/kg (AUD)</label><input id="m_price" type="number" step="0.01" value="${(p.priceKg||0).toFixed(2)}" onblur="this.value=parseFloat(this.value||0).toFixed(2)"></div>
+    <div class="field"><label>단가/kg (AUD)</label>
+      <input id="m_price" type="number" step="0.01" value="${(p.priceKg||0).toFixed(2)}"
+             onfocus="this.select()"
+             onblur="this.value=parseFloat(this.value||0).toFixed(2)"
+             onkeydown="if(event.key==='Enter'){event.preventDefault();this.blur();${_saveCall};}">
+    </div>
     <div class="field"><label><input type="checkbox" id="m_active" ${p.active?'checked':''}> 활성</label></div>
     <div class="btn-row">
-      <button class="btn" onclick="saveProduct('${p.id}', ${id?'false':'true'})">저장</button>
+      <button class="btn" onclick="${_saveCall}">저장</button>
       <button class="btn secondary" onclick="closeModal()">취소</button>
     </div>
   `);
+  // 모달 열리면 첫 필드에 자동 포커스 + 전체선택
+  setTimeout(function(){
+    const el = document.getElementById('m_name');
+    if (el) { el.focus(); if (el.select) el.select(); }
+  }, 50);
 }
 function saveProduct(id, isNew) {
   const obj = {
@@ -8905,6 +8924,16 @@ function renderInvoiceChangeNotice(o) {
 function renderPrepTbody(o) {
   var tbody = document.getElementById('prepTbody');
   if (!tbody) return;
+  // ⭐ (2026-08-07) 재렌더 시 focus 유지 - Enter/방향키로 이동 직후 onchange 재렌더 시 focus 유실 방지
+  var _prepFocusKey = null;
+  var _prepFocusSelStart = null;
+  try {
+    var _ae = document.activeElement;
+    if (_ae && _ae.dataset && _ae.dataset.prepKey && tbody.contains(_ae)) {
+      _prepFocusKey = _ae.dataset.prepKey;
+      _prepFocusSelStart = _ae.selectionStart;
+    }
+  } catch(_){}
   window._prepOid = o.id;
   window._prepCustId = o.customerId;
   var items = getInvoiceItems(o);
@@ -8972,6 +9001,7 @@ function renderPrepTbody(o) {
     var wCell = isCancelled
       ? '<span style="color:#999;">0.00</span>'
       : '<input type="number" step="0.01" value="' + wDisplay + '"'
+      +   ' data-prep-key="w_' + i + '"'
       +   ' style="width:90px;padding:6px;border:1px solid var(--line);border-radius:4px;text-align:right;"'
       +   ' onfocus="this.select()"'
       +   ' oninput="livePrepWeightUpdate(' + i + ',this.value)"'
@@ -8982,6 +9012,7 @@ function renderPrepTbody(o) {
     var pCell = isCancelled
       ? '<span style="color:#999;">0.00</span>'
       : '<input type="number" step="0.01" value="' + lineP.toFixed(2) + '"'
+      +   ' data-prep-key="p_' + i + '"'
       +   ' style="width:78px;padding:6px;border:2px solid var(--warn);border-radius:4px;text-align:right;font-weight:600;"'
       +   ' onfocus="this.select()"'
       +   ' oninput="livePrepPriceUpdate(' + i + ',this.value)"'
@@ -9000,6 +9031,16 @@ function renderPrepTbody(o) {
       + '</tr>';
   }
   tbody.innerHTML = html;
+  // ⭐ (2026-08-07) 재렌더 후 focus 복원 - Enter 이동 후 onchange 재렌더 시 focus 유실 방지
+  if (_prepFocusKey) {
+    try {
+      var _target = tbody.querySelector('[data-prep-key="' + _prepFocusKey + '"]');
+      if (_target) {
+        _target.focus();
+        if (_target.select) _target.select();
+      }
+    } catch(_){}
+  }
 }
 
 function removeInvoiceItem(orderId, idx) {
