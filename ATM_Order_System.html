@@ -8924,16 +8924,22 @@ function renderInvoiceChangeNotice(o) {
 function renderPrepTbody(o) {
   var tbody = document.getElementById('prepTbody');
   if (!tbody) return;
-  // ⭐ (2026-08-07) 재렌더 시 focus 유지 - Enter/방향키로 이동 직후 onchange 재렌더 시 focus 유실 방지
+  // ⭐ (2026-08-08) 재렌더 시 focus 유지 - 2단 방어
+  //   1) window._pendingPrepFocusKey (keydown 핸들러가 next.focus() 직전 저장) — 최우선
+  //   2) document.activeElement 의 data-prep-key (일반 타이핑 시 유지)
+  //   focus 전환 중엔 activeElement 가 body 로 잡혀 캡처 실패 → pending 키가 대안
   var _prepFocusKey = null;
-  var _prepFocusSelStart = null;
-  try {
-    var _ae = document.activeElement;
-    if (_ae && _ae.dataset && _ae.dataset.prepKey && tbody.contains(_ae)) {
-      _prepFocusKey = _ae.dataset.prepKey;
-      _prepFocusSelStart = _ae.selectionStart;
-    }
-  } catch(_){}
+  if (window._pendingPrepFocusKey) {
+    _prepFocusKey = window._pendingPrepFocusKey;
+    window._pendingPrepFocusKey = null;
+  } else {
+    try {
+      var _ae = document.activeElement;
+      if (_ae && _ae.dataset && _ae.dataset.prepKey && tbody.contains(_ae)) {
+        _prepFocusKey = _ae.dataset.prepKey;
+      }
+    } catch(_){}
+  }
   window._prepOid = o.id;
   window._prepCustId = o.customerId;
   var items = getInvoiceItems(o);
@@ -13972,6 +13978,14 @@ function toggleAutoBackup() {
 
     if (next) {
       e.preventDefault();
+      // ⭐ (2026-08-08) 이동 대상의 data-prep-key 를 window 에 저장 → renderPrepTbody 재렌더 후 focus 복원용
+      //   (focus 전환 중엔 document.activeElement 가 body 로 잡혀 캡처 실패하는 문제 방어)
+      try {
+        if (next.dataset && next.dataset.prepKey) {
+          window._pendingPrepFocusKey = next.dataset.prepKey;
+          setTimeout(function(){ if (window._pendingPrepFocusKey === next.dataset.prepKey) window._pendingPrepFocusKey = null; }, 500);
+        }
+      } catch(_){}
       next.focus();
       // 이동 시 자동 전체 선택 → 바로 덮어쓰기 가능
       if (next.select && next.tagName === 'INPUT' && !['checkbox','radio','button','submit'].includes(next.type)) {
