@@ -5537,7 +5537,7 @@ function viewOrder(params) {
       </div>
     </div>
 
-    <div class="card" id="cartCard" style="position:sticky; top:52px; z-index:50; background:#F1EDE5; border:0.5px solid #D9D2C4;">
+    <div class="card" id="cartCard" style="position:sticky; top:52px; z-index:50; background:#E4EEF7; border:0.5px solid #BBD3E7;">
       <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--brand-dark); font-size:18px; font-weight:800;">0개</span></h3>
       <div id="cart"></div>
     </div>
@@ -10885,27 +10885,23 @@ function viewOrderDetail(params) {
         </div>
         <div class="notice" style="border-left-color: var(--info); background: #F0F5FB;">${statusMsg}</div>
 
-        <table class="t">
-          <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th>처리상태</th></tr></thead>
-          <tbody>
-            ${o.items.map(it => {
-              const p = DB.products.find(x => x.id === it.productId);
-              const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg <small style="color:var(--muted);">작업</small>` : `${it.quantity} ${it.unit}`;
-              const weightStatus = it.actualWeightKg != null
-                ? `<span style="color:var(--ok); font-weight:600;">✅ ${it.actualWeightKg.toFixed(2)} kg</span>`
-                : `<span style="color:var(--warn);">⏳ 작업 대기</span>`;
-              const itemNote = it.notes
-                ? `<br><small style="color:var(--brand-dark); font-weight:600;">📝 품목 요청사항: ${it.notes}</small>`
-                : '';
-              return `<tr>
-                <td><b>${p.name}</b>${itemNote}</td>
-                <td>${p.brand}</td>
-                <td>${orderDisplay}</td>
-                <td>${weightStatus}</td>
-              </tr>`;
-            }).join('')}
-          </tbody>
-        </table>
+        <!-- ⭐ (2026-08-10) 컴팩트 1줄 리스트 · 처리상태 제거 (거래처엔 무의미) · 요청사항 유지 -->
+        <div style="margin-top:4px;">
+          ${o.items.map(it => {
+            const p = DB.products.find(x => x.id === it.productId) || { name:'(품목없음)', brand:'' };
+            const orderDisplay = it.unit === '작업중량' ? `${it.quantity} kg` : `${it.quantity} ${it.unit}`;
+            const noteLine = it.notes
+              ? `<div style="margin-top:2px;"><small style="color:var(--brand-dark); font-weight:600; padding:1px 6px; background:#FFF5D6; border-radius:8px; font-size:10px;">📝 ${escapeHtmlSimple(it.notes)}</small></div>`
+              : '';
+            return `<div style="padding:6px 10px; margin-bottom:3px; background:#FFFCF3; border:0.5px solid #F0D89A; border-radius:5px;">
+              <div style="display:flex; align-items:center; gap:6px; min-height:22px;">
+                <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; font-size:13px; color:var(--ink);">${escapeHtmlSimple(p.name)}</span>
+                <span style="color:#5C0F0F; font-weight:700; font-size:13px; white-space:nowrap;">${orderDisplay}</span>
+              </div>
+              ${noteLine}
+            </div>`;
+          }).join('')}
+        </div>
 
         <div style="margin-top:16px; padding-top:14px; border-top:1px solid var(--line); font-size:12px; color:var(--muted);">
           ${o.deliveryDate ? '🚚 희망 배송일: <b>' + o.deliveryDate + '</b><br>' : ''}
