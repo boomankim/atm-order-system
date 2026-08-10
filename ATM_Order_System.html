@@ -393,6 +393,42 @@
     .card h3 { font-size: 13px; margin: 4px 0 6px 0; }
   }
 
+  /* ⭐ (2026-08-10) 모바일 세로 컴팩트 — 거래처 사용자 편의
+   *   고정 UI (nav + 하단 submit) 21% → 5% 축소.
+   *   실제 품목 카탈로그 공간 확보. */
+  @media (max-width: 640px) and (orientation: portrait) {
+    .nav {
+      padding: 6px 8px !important;
+      flex-wrap: nowrap !important;
+      gap: 4px !important;
+    }
+    .nav .logo { font-size: 13px !important; margin-right: 4px !important; letter-spacing: 0.5px; }
+    .nav .tab {
+      padding: 4px 8px !important;
+      font-size: 11px !important;
+      white-space: nowrap;
+    }
+    .nav .util { padding: 4px 8px !important; font-size: 11px !important; }
+    /* 거래처명 텍스트 — 넘치면 말줄임표 */
+    .nav .cust-name {
+      overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+      max-width: 40vw; font-size: 11px !important;
+    }
+    h2.page-title { font-size: 15px !important; margin: 6px 0 !important; }
+    h2.page-title .sub { font-size: 11px !important; margin-left: 6px !important; }
+    .card { padding: 10px 12px !important; margin-bottom: 8px !important; }
+    .card h3 { font-size: 12px !important; margin: 4px 0 6px 0 !important; }
+    /* 하단 summary bar 컴팩트 */
+    .summary-bar { padding: 6px 10px !important; }
+    .summary-bar .info { font-size: 12px !important; }
+    .summary-bar .info b { font-size: 14px !important; }
+    .summary-bar button {
+      padding: 6px 14px !important;
+      font-size: 13px !important;
+      border-radius: 20px !important;
+    }
+  }
+
   /* PWA install banner animation */
   @keyframes pwaSlideUp {
     from { transform: translateY(120px); opacity: 0; }
@@ -1508,12 +1544,14 @@ function updateNav() {
   const nav = document.querySelector('.nav');
   if (CUSTOMER_MODE) {
     const cust = DB.customers.find(c => c.id === CUSTOMER_MODE);
+    // ⭐ (2026-08-10) 모바일 컴팩트 — 로고·탭·거래처명·Logout 한 줄 배치
+    //   Desktop: 여유 · Mobile portrait: 폰트/여백 축소 (media query 처리)
     nav.innerHTML = `
-      <span class="logo">🥩 ALL THAT MEAT</span>
-      <button class="tab" data-route="#order?c=${CUSTOMER_MODE}" style="background:#fff; color:var(--brand-dark); font-size:15px; font-weight:800; padding:8px 18px; border-radius:8px; letter-spacing:0.5px; box-shadow:0 2px 6px rgba(0,0,0,0.18);">🛒 주문/ORDER</button>
-      <button class="tab" data-route="#myOrders">📋 주문내용/orders</button>
+      <span class="logo">🥩 ATM</span>
+      <button class="tab" data-route="#order?c=${CUSTOMER_MODE}" style="background:#fff; color:var(--brand-dark); font-weight:700; padding:6px 12px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.18);">🛒 주문</button>
+      <button class="tab" data-route="#myOrders">📋 내역</button>
       <span class="spacer"></span>
-      <span style="font-size:12px; color:rgba(255,255,255,0.85); margin-right:8px; white-space:nowrap;">👤 ${cust ? cust.name : '거래처'}</span>
+      <span class="cust-name" style="color:rgba(255,255,255,0.9); margin-right:6px; font-size:12px;">👤 ${cust ? cust.name : '거래처'}</span>
       <button class="util" onclick="exitCustomerMode()" style="background:#fff;">Logout</button>
     `;
   } else if (STAFF_UNLOCKED) {
@@ -3418,7 +3456,10 @@ function renderCustomersAdmin() {
   renderCustomerList('');
 }
 function renderCustomerList(q) {
-  const filt = DB.customers.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()));
+  // ⭐ (2026-08-10) 알파벳순 자동 정렬 (한글 로케일) — 신규 추가된 거래처가 하단 대신 이름 위치에 자동 배치.
+  const filt = DB.customers.filter(c => !q || c.name.toLowerCase().includes(q.toLowerCase()))
+    .slice()
+    .sort((a,b) => (a.name || '').localeCompare(b.name || '', 'ko-KR', { sensitivity: 'base' }));
   document.getElementById('custList').innerHTML = `
     <table class="t">
       <thead><tr>
@@ -3658,6 +3699,7 @@ function editCustomer(id) {
           ${['현금','계좌이체','7일 외상','14일 외상','30일 외상'].map(t=>`<option ${t===c.terms?'selected':''}>${t}</option>`).join('')}
         </select>
       </div>
+      <div class="field"><label>ABN <small style="font-weight:400; color:var(--muted); font-size:11px;">(Australian Business Number)</small></label><input id="m_abn" value="${c.abn||''}" placeholder="예: 12 345 678 901"></div>
     </div>
     <div class="field"><label>주소</label><textarea id="m_address">${c.address||''}</textarea></div>
     ${id ? `<div id="customPriceSection" style="margin-top:10px;">${renderCustomPriceSection(c.id)}</div>` : ''}
@@ -3779,6 +3821,7 @@ function saveCustomer(id, isNew, favs) {
   const obj = {
     id, code: combinedCode, name: val('m_name'), contact: val('m_contact'),
     phone: val('m_phone'), email: val('m_email'), terms: val('m_terms'),
+    abn: (val('m_abn') || '').trim(),
     address: val('m_address'),
     active: (isNew === 'true' || isNew === true) ? true
       : (DB.customers.find(c => c.id === id) || {}).active !== false,
@@ -5489,7 +5532,7 @@ function viewOrder(params) {
       </div>
     </div>
 
-    <div class="card">
+    <div class="card" id="cartCard" style="position:sticky; top:52px; z-index:50; background:#fff;">
       <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--brand-dark); font-size:18px; font-weight:800;">0개</span></h3>
       <div id="cart"></div>
     </div>
@@ -5695,6 +5738,26 @@ function addToCart(prodId, notes) {
   });
   renderCart();
   _autoSaveCurrentCartDraft();
+  // ⭐ (2026-08-10) 담자마자 수량 입력 필드 자동 focus + 카트 스크롤
+  //   사용자가 별도 클릭·스크롤 없이 즉시 수량 타이핑 가능.
+  setTimeout(function(){
+    const newIdx = CART.length - 1;
+    const qtyInput = document.querySelector('[data-cart-qty-idx="' + newIdx + '"]');
+    if (qtyInput) {
+      try {
+        // 카트 카드가 화면에 안 보이면 부드럽게 스크롤
+        const cartCard = document.getElementById('cart');
+        if (cartCard) {
+          const rect = cartCard.getBoundingClientRect();
+          if (rect.top < 0 || rect.bottom > window.innerHeight) {
+            cartCard.scrollIntoView({ behavior: 'smooth', block: 'start' });
+          }
+        }
+        qtyInput.focus();
+        qtyInput.select();
+      } catch(_){}
+    }
+  }, 80);
   // ⭐ (2026-07-28) 클릭 시각 피드백 — 클릭한 요소 우측에 초록 ✓ 아이콘 순간 표시 (900ms)
   try {
     const el = (window.event && window.event.currentTarget) || null;
@@ -5801,7 +5864,9 @@ function renderCart() {
               <label style="display:block; font-size:11px; color:var(--muted); margin-bottom:2px;">수량 / Quantity</label>
               <div style="display:flex; align-items:stretch; border:1px solid var(--line); border-radius:5px; background:#fff; overflow:hidden;">
                 <input type="number" min="0" step="${qtyStep}" value="${qtyDisp}" placeholder=""
+                  data-cart-qty-idx="${idx}"
                   style="flex:1; min-width:0; padding:6px 6px; font-size:14px; text-align:right; border:none; outline:none; background:transparent;"
+                  onfocus="this.select()"
                   onchange="CART[${idx}].quantity=(this.value===''?null:parseFloat(this.value)); renderCart(); _autoSaveCurrentCartDraft();"
                   onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)">
                 <div style="position:relative; display:flex; align-items:center; padding:0 22px 0 10px; background:#F2EEE8; color:#5C0F0F; font-size:12px; font-weight:700; border-left:1px solid var(--line); user-select:none; cursor:pointer;">
@@ -9654,7 +9719,7 @@ function viewInvoice(params) {
           <div style="font-size:11px; color:var(--muted);">BILL TO</div>
           <div style="font-weight:700; font-size:16px;">${cust.name||'-'}</div>
           <div style="font-size:12px; color:var(--muted);">
-            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}
+            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}${cust.abn ? '<br>ABN: '+cust.abn : ''}
           </div>
         </div>
         <div style="text-align:right;">
@@ -10491,7 +10556,7 @@ function viewCreditNote(params) {
           <div style="font-size:11px; color:var(--muted);">BILL TO</div>
           <div style="font-weight:700; font-size:16px;">${cust.name||'-'}</div>
           <div style="font-size:12px; color:var(--muted);">
-            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}
+            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}${cust.abn ? '<br>ABN: '+cust.abn : ''}
           </div>
         </div>
         <div style="text-align:right; font-size:13px;">
@@ -11071,7 +11136,7 @@ function buildOrderSheetHTML(o, cust) {
           <div style="font-size:9px; color:#aaa; text-transform:uppercase; margin-bottom:4px;">거래처 / Customer</div>
           <div style="font-weight:700; font-size:15px;">${cust.name||'-'}</div>
           <div style="font-size:11px; color:#6B5B5B; line-height:1.6;">
-            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}
+            ${cust.contact||''}<br>${cust.phone||''}<br>${cust.address||''}${cust.abn ? '<br>ABN: '+cust.abn : ''}
           </div>
         </div>
         <div style="text-align:right; font-size:12px; color:#6B5B5B; line-height:1.7;">
