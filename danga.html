@@ -4,10 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ATM 매입단가</title>
-<meta name="theme-color" content="#17352A">
-<link rel="icon" type="image/png" sizes="192x192" href="danga-icon-192.png">
-<link rel="apple-touch-icon" href="danga-icon-192.png">
-<link rel="manifest" href="danga.webmanifest">
+<noscript>
+  <meta http-equiv="refresh" content="0; url=https://claude.ai/public/artifacts/2c119526-f4b6-4519-90f1-57268dcf0652">
+</noscript>
 <style>
   body {
     margin: 0;
@@ -21,7 +20,7 @@
   }
   .card {
     text-align: center;
-    padding: 40px 28px;
+    padding: 40px 24px;
     max-width: 420px;
   }
   h1 {
@@ -32,9 +31,9 @@
   }
   p {
     font-size: 15px;
+    margin: 0 0 24px;
+    opacity: 0.75;
     line-height: 1.6;
-    margin: 0 0 20px;
-    opacity: 0.8;
   }
   .spinner {
     width: 36px;
@@ -57,78 +56,78 @@
     font-weight: 600;
   }
   a.manual:hover { opacity: 0.9; }
+  #install {
+    display: none;
+  }
+  .steps {
+    text-align: left;
+    background: #FFFFFF;
+    border: 1px solid rgba(23, 53, 42, 0.15);
+    border-radius: 12px;
+    padding: 20px 22px;
+    margin: 0 0 24px;
+    font-size: 15px;
+    line-height: 2;
+  }
+  .steps b { color: #17352A; }
   .badge {
     display: inline-block;
     background: #17352A;
     color: #F6F3EC;
-    font-size: 12px;
-    font-weight: 700;
-    letter-spacing: 1px;
-    padding: 6px 14px;
     border-radius: 999px;
-    margin-bottom: 18px;
+    padding: 2px 10px;
+    font-size: 13px;
+    font-weight: 700;
+    margin-bottom: 12px;
   }
-  .steps {
-    text-align: left;
-    background: #fff;
-    border-radius: 12px;
-    padding: 18px 20px;
-    font-size: 14px;
-    line-height: 1.8;
-    box-shadow: 0 2px 8px rgba(0,0,0,0.06);
-  }
-  .steps b { color: #17352A; }
-  #installView { display: none; }
 </style>
 </head>
 <body>
-
-  <!-- 평소 화면: 자동 이동 -->
-  <div class="card" id="redirectView">
+  <div class="card" id="redirecting">
     <div class="spinner"></div>
     <h1>ATM 매입단가</h1>
-    <p>매입단가 화면으로 이동 중입니다…</p>
-    <a class="manual" id="manualLink" href="#">바로 열기</a>
+    <p>매입단가 페이지로 이동 중입니다&hellip;<br>자동으로 이동하지 않으면 아래 버튼을 눌러주세요.</p>
+    <a class="manual" href="https://claude.ai/public/artifacts/2c119526-f4b6-4519-90f1-57268dcf0652" target="_blank" rel="noopener">매입단가 열기</a>
   </div>
 
-  <!-- 설치 모드 화면: ?stay=1 -->
-  <div class="card" id="installView">
-    <div class="badge">바로 가기 설치 모드</div>
+  <div class="card" id="install">
+    <span class="badge">바로 가기 설치 모드</span>
     <h1>ATM 매입단가</h1>
-    <p>자동 이동이 꺼져 있습니다.<br>아래 순서대로 홈 화면에 추가해 주세요.</p>
     <div class="steps">
-      1. 브라우저 오른쪽 위 <b>⋮ 메뉴</b>를 누르세요.<br>
-      2. <b>"홈 화면에 추가"</b> (또는 "설치 및 바로가기 만들기")를 누르세요.<br>
-      3. <b>"추가"</b>를 누르면 끝!<br><br>
-      홈 화면 아이콘을 누르면 앞으로는<br>바로 매입단가로 이동합니다.
+      지금 이 화면에서 그대로:<br>
+      ① 브라우저 오른쪽 위(또는 아래) <b>⋮ 메뉴</b> 누르기<br>
+      ② <b>"홈 화면에 추가"</b> 선택<br>
+      ③ 이름 확인 후 <b>추가</b>
     </div>
+    <p>이 화면은 자동 이동이 꺼져 있어서 천천히 추가하시면 됩니다.<br>홈 화면에 생긴 아이콘을 누르면 매입단가로 바로 이동해요.</p>
+    <a class="manual" href="https://claude.ai/public/artifacts/2c119526-f4b6-4519-90f1-57268dcf0652" target="_blank" rel="noopener">매입단가 열기</a>
   </div>
 
-<script>
-(function () {
-  var TARGET = "https://claude.ai/public/artifacts/a0b563bf-08f4-45f2-86df-aabc96b14466";
-  document.getElementById("manualLink").href = TARGET;
+  <script>
+    (function () {
+      var DEST = "https://claude.ai/public/artifacts/2c119526-f4b6-4519-90f1-57268dcf0652";
+      var stay = /(^|[?&])stay=/.test(window.location.search);
 
-  var params = new URLSearchParams(location.search);
-  var stay = params.get("stay") === "1" || location.hash === "#stay";
+      if (stay) {
+        // 설치 모드: 리다이렉트 중단 + 주소를 깨끗한 danga.html로 교체
+        // → "홈 화면에 추가" 시 바로 가기가 순수 danga.html을 가리키게 됨
+        try {
+          var clean = window.location.pathname;
+          window.history.replaceState(null, "", clean);
+        } catch (e) {}
+        document.getElementById("redirecting").style.display = "none";
+        document.getElementById("install").style.display = "block";
+        return;
+      }
 
-  // 깃허브 페이지(github.io)에서 열렸을 때만 자동 이동.
-  // 클로드 미리보기나 컴퓨터에서 직접 열 때는 이동하지 않음.
-  var onGitHub = location.hostname.indexOf("github.io") !== -1;
-
-  if (stay || !onGitHub) {
-    // 설치 모드: 이동하지 않고 안내 화면 표시
-    document.getElementById("redirectView").style.display = "none";
-    document.getElementById("installView").style.display = "block";
-    // 주소를 깨끗한 danga.html 로 바꿔서, 홈 화면 추가 시 ?stay=1 없이 저장되게 함
-    try {
-      history.replaceState(null, "", location.pathname);
-    } catch (e) {}
-  } else {
-    // 평소 모드: 매입단가 아티팩트로 자동 이동
-    location.replace(TARGET);
-  }
-})();
-</script>
+      // 일반 모드: meta refresh + location.replace 이중 적용
+      var meta = document.createElement("meta");
+      meta.httpEquiv = "refresh";
+      meta.content = "0; url=" + DEST;
+      document.head.appendChild(meta);
+      window.location.replace(DEST);
+      setTimeout(function () { window.location.href = DEST; }, 1500);
+    })();
+  </script>
 </body>
 </html>
