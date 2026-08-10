@@ -5743,15 +5743,13 @@ function addToCart(prodId, notes) {
   });
   // ⭐ (2026-08-10) B-2 방식: 담자마자 편집 모달 자동 오픈 → 수량 즉시 입력
   //   인덱스를 setTimeout 밖에서 캡처 (연속 담기 시 마지막 인덱스로 덮어쓰는 버그 방지)
-  //   CUSTOMER_MODE 에서만 자동 모달 (사무원·직원 전화주문 시엔 기존 흐름 유지)
+  //   거래처/사무원/직원 모두 자동 모달 (컴팩트 카트는 인라인 수량 입력 없음)
   const _capturedIdx = CART.length - 1;
   renderCart();
   _autoSaveCurrentCartDraft();
-  if (CUSTOMER_MODE) {
-    setTimeout(function(){
-      if (typeof openCartEditModal === 'function') openCartEditModal(_capturedIdx);
-    }, 80);
-  }
+  setTimeout(function(){
+    if (typeof openCartEditModal === 'function') openCartEditModal(_capturedIdx);
+  }, 80);
   // ⭐ (2026-07-28) 클릭 시각 피드백 — 클릭한 요소 우측에 초록 ✓ 아이콘 순간 표시 (900ms)
   try {
     const el = (window.event && window.event.currentTarget) || null;
@@ -5858,7 +5856,7 @@ function renderCart() {
       const rowBorder = isExpanded ? '#E8A317' : '#F0D89A';
       return `
         <div class="cart-row-compact"
-             onclick="toggleCartRowExpand(${idx})"
+             onclick="event.stopPropagation(); toggleCartRowExpand(${idx})"
              style="display:flex; align-items:center; gap:6px; padding:6px 8px; background:${rowBg}; border:0.5px solid ${rowBorder}; border-radius:5px; margin-bottom:3px; cursor:pointer; min-height:28px; transition:background 0.12s;">
           <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; font-size:13px; color:var(--ink);">${escapeHtmlSimple(pName)}${notesTag}</span>
           <span style="color:#5C0F0F; font-weight:700; font-size:13px; white-space:nowrap;">${qtyStr}</span>
