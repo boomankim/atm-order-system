@@ -2156,6 +2156,7 @@ function viewAdmin(params) {
         <button class="btn ${tab==='security'?'':'secondary'}" onclick="location.hash='#admin?tab=security'">🔑 보안</button>
         <button class="btn ${tab==='orphan'?'':'secondary'}" onclick="location.hash='#admin?tab=orphan'">🔧 진단</button>
         <button class="btn ${tab==='audit'?'':'secondary'}" onclick="location.hash='#admin?tab=audit'">🔒 감사 로그</button>
+        <button class="btn ${tab==='banklearn'?'':'secondary'}" onclick="location.hash='#admin?tab=banklearn'">📚 은행매칭 학습</button>
       </div>
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
         <button class="btn secondary" style="font-size:12px; padding:5px 10px;" onclick="importAll()">📂 복원</button>
@@ -2177,7 +2178,96 @@ function viewAdmin(params) {
   else if (tab === 'backup') renderBackupAdmin();
   else if (tab === 'orphan') renderOrphanAdmin();
   else if (tab === 'audit') renderAuditAdmin();
+  else if (tab === 'banklearn') renderBankLearnAdmin();
 }
+
+// ⭐ (2026-08-11) 은행매칭 학습 관리 — DB.bankSenderMap 조회/삭제
+function renderBankLearnAdmin() {
+  const body = document.getElementById('adminBody');
+  if (!body) return;
+  const map = DB.bankSenderMap || {};
+  const entries = Object.entries(map);
+  // 거래처ID → 이름 매핑
+  const cById = {};
+  (DB.customers || []).forEach(c => cById[c.id] = c);
+  // 거래처별로 그룹
+  const grouped = {};
+  entries.forEach(([key, cid]) => {
+    if (!grouped[cid]) grouped[cid] = [];
+    grouped[cid].push(key);
+  });
+  const groupList = Object.entries(grouped)
+    .sort((a,b) => {
+      const na = cById[a[0]] ? cById[a[0]].name : 'zzz';
+      const nb = cById[b[0]] ? cById[b[0]].name : 'zzz';
+      return na.localeCompare(nb);
+    });
+
+  let html = '<div class="card">'
+    + '<h3>📚 은행이름 → 거래처 학습 매핑 <span style="font-weight:400; font-size:12px; color:var(--muted);">CSV 등록 시 자동 학습 · 잘못된 매핑은 개별 삭제</span></h3>'
+    + '<div style="margin-bottom:10px; font-size:12px; color:var(--muted);">총 <b>' + entries.length + '</b> 개 키 · <b>' + groupList.length + '</b> 개 거래처</div>';
+
+  if (entries.length === 0) {
+    html += '<div class="empty"><div class="icon">📭</div>학습된 매핑이 없습니다. 매출일보 → 입금/수정 → 📥 은행 CSV 등록에서 자동 학습됩니다.</div>';
+  } else {
+    html += '<table class="t"><thead><tr>'
+      + '<th style="min-width:160px;">거래처</th>'
+      + '<th>학습된 은행 이름 (클릭 → 삭제)</th>'
+      + '<th style="width:80px; text-align:center;">전체 삭제</th>'
+      + '</tr></thead><tbody>';
+    groupList.forEach(([cid, keys]) => {
+      const c = cById[cid];
+      const custName = c ? c.name : '<span style="color:var(--danger);">(삭제된 거래처 · ' + cid + ')</span>';
+      const chips = keys.map(k =>
+        // ⭐ L1 fix: JSON.stringify 로 안전 인용 (HTML 속성 안에서도 안전)
+        '<span style="display:inline-block; margin:2px; padding:3px 8px; background:#EDE7F6; border:1px solid #5E35B1; border-radius:12px; font-size:11px; cursor:pointer;" onclick=\'deleteBankLearnKey(' + escapeHtmlSimple(JSON.stringify(k)) + ')\' title="클릭하면 이 매핑 삭제">' + escapeHtmlSimple(k) + ' ✕</span>'
+      ).join(' ');
+      html += '<tr>'
+        + '<td><b>' + custName + '</b></td>'
+        + '<td>' + chips + '</td>'
+        + '<td class="act"><button class="btn sm secondary" onclick="deleteBankLearnByCustomer(\'' + cid + '\')">전체삭제</button></td>'
+        + '</tr>';
+    });
+    html += '</tbody></table>';
+  }
+  html += '</div>';
+  body.innerHTML = html;
+}
+window.deleteBankLearnKey = function(key) {
+  if (!DB.bankSenderMap || !DB.bankSenderMap[key]) return;
+  if (!confirm('학습 매핑 삭제:\n"' + key + '"\n\n다음 CSV 등록에선 자동매칭 안 됨.')) return;
+  delete DB.bankSenderMap[key];
+  saveLocalDB();
+  // Firebase: 삭제는 patch{key:null} 로 (map 전체 덮어쓰기 방지)
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try {
+      _lastSaveTime = Date.now();
+      const patch = {}; patch[key] = null;
+      DB_REF.child('bankSenderMap').update(patch).catch(function(){});
+    } catch(_){}
+  }
+  try { auditLogAdd('은행매칭 학습 삭제: "' + key + '"'); } catch(_){}
+  renderBankLearnAdmin();
+};
+window.deleteBankLearnByCustomer = function(cid) {
+  if (!DB.bankSenderMap) return;
+  const keys = Object.keys(DB.bankSenderMap).filter(k => DB.bankSenderMap[k] === cid);
+  if (keys.length === 0) return;
+  if (!confirm('이 거래처의 학습 매핑 ' + keys.length + '개를 삭제합니다.\n계속?')) return;
+  keys.forEach(k => delete DB.bankSenderMap[k]);
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try {
+      _lastSaveTime = Date.now();
+      const patch = {};
+      keys.forEach(k => { patch[k] = null; });
+      DB_REF.child('bankSenderMap').update(patch).catch(function(){});
+    } catch(_){}
+  }
+  const c = (DB.customers || []).find(x => x.id === cid);
+  try { auditLogAdd('은행매칭 학습 전체삭제: ' + (c ? c.name : cid) + ' (' + keys.length + '개)'); } catch(_){}
+  renderBankLearnAdmin();
+};
 
 // ⭐ (2026-08-04) 감사 로그 조회 — 보스 비번 필요
 window._auditUnlocked = false;
@@ -7103,7 +7193,10 @@ function viewOffice() {
             </div>
           </div>
           <!-- 섹션 2: 신규 등록 -->
-          <div style="font-size:13px; font-weight:700; color:var(--brand-dark); margin-bottom:8px;">➕ 새 입금 등록</div>
+          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+            <div style="font-size:13px; font-weight:700; color:var(--brand-dark);">➕ 새 입금 등록</div>
+            <button class="btn sm" style="background:#0EA5E9; color:#fff;" onclick="openBankCsvImportModal()" title="은행 CSV(ANZ/Suncorp) 파일에서 입금을 일괄 등록">📥 은행 CSV 등록</button>
+          </div>
           <div class="grid-3">
             <div class="field"><label>거래처</label>
               ${renderCustomerSearchSelect({ selectId: 'ipCustomer', placeholder: '— 선택하세요 —', onChange: 'renderPaymentHistoryList(this.value)' })}
@@ -8102,6 +8195,652 @@ window.saveInlinePayment = function() {
   const notesEl = document.getElementById('ipNotes'); if (notesEl) notesEl.value = '';
   showToast('✅ 입금이 기록됐습니다.');
 };
+
+// =========================================================================
+// ⭐ (2026-08-11) 은행 CSV 입금 일괄 등록 — ANZ / Suncorp
+//   매출일보 → [💳 입금/수정] 패널 → [📥 은행 CSV 등록] 버튼으로 진입.
+//   1) 은행 CSV 파싱 (ANZ 3컬럼 / Suncorp 4컬럼 자동감지)
+//   2) 입금(양수)만 추림 · 지출 자동 제외
+//   3) description에서 이름·상호·REF NO·인보이스번호(AT2026-XXXXX) 추출
+//   4) 거래처 자동매칭 (인보이스 → 상호 → 이름 → 부분매칭)
+//   5) bankRef 중복 방지 · 배치ID로 감사로그 · 롤백 가능
+// =========================================================================
+window.BANK_CSV = window.BANK_CSV || {};
+BANK_CSV.parseCsvLine = function(line) {
+  // 간단 CSV 파서 — 큰따옴표 · 내부 콤마 처리
+  const out = [];
+  let cur = '', inQ = false;
+  for (let i = 0; i < line.length; i++) {
+    const ch = line[i];
+    if (inQ) {
+      if (ch === '"' && line[i+1] === '"') { cur += '"'; i++; }
+      else if (ch === '"') inQ = false;
+      else cur += ch;
+    } else {
+      if (ch === '"') inQ = true;
+      else if (ch === ',') { out.push(cur); cur = ''; }
+      else cur += ch;
+    }
+  }
+  out.push(cur);
+  return out;
+};
+
+BANK_CSV.detectBank = function(text) {
+  // ⭐ M1 fix: BOM(UTF-8 BOM) 제거
+  if (text && text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const firstLine = (text.split(/\r?\n/)[0] || '').trim();
+  const secondLine = (text.split(/\r?\n/)[1] || '').trim();
+  if (/^"?Account History for Account/i.test(firstLine)) return 'suncorp';
+  // Suncorp: 4컬럼 · $ 심볼
+  const cols = BANK_CSV.parseCsvLine(text.split(/\r?\n/).find(l => l && !/^"?Account|^"?\d+ items/i.test(l)) || '');
+  if (cols.length === 4 && /\$/.test(cols[2] || '')) return 'suncorp';
+  // ANZ: 3컬럼 · 첫 컬럼 DD/MM/YYYY
+  if (cols.length === 3 && /^\d{2}\/\d{2}\/\d{4}$/.test((cols[0] || '').trim())) return 'anz';
+  return 'unknown';
+};
+
+BANK_CSV.dmyToISO = function(dmy) {
+  // "10/08/2026" → "2026-08-10"
+  const m = /^(\d{2})\/(\d{2})\/(\d{4})$/.exec((dmy || '').trim());
+  if (!m) return null;
+  return m[3] + '-' + m[2] + '-' + m[1];
+};
+
+BANK_CSV.parseAmount = function(s) {
+  // "$1,234.56" · "-$1,234.56" · "1234.56" · "-61.60" · "(123.45)" (회계용 음수)
+  if (s == null) return NaN;
+  let str = String(s).trim();
+  // ⭐ H1 fix: "(123.45)" 은 회계 음수 표기 — 부호 뒤집기
+  let negParen = false;
+  if (/^\(.+\)$/.test(str)) { negParen = true; str = str.slice(1, -1); }
+  str = str.replace(/[\$,\s]/g, '');
+  const n = parseFloat(str);
+  if (isNaN(n)) return NaN;
+  return negParen ? -Math.abs(n) : n;
+};
+
+// ⭐ H2 fix: 시드니 로컬 날짜에서 N일 더하기 (UTC 변환 없이 로컬 컴포넌트 사용)
+BANK_CSV.localISOAfterDays = function(baseISO, days) {
+  const d = new Date(baseISO + 'T12:00:00');
+  d.setDate(d.getDate() + days);
+  return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
+};
+
+BANK_CSV.parseFile = function(text, bankHint) {
+  // ⭐ M1 fix: BOM 제거
+  if (text && text.charCodeAt(0) === 0xFEFF) text = text.slice(1);
+  const bank = bankHint || BANK_CSV.detectBank(text);
+  const lines = text.split(/\r?\n/).filter(l => l.trim());
+  const rows = [];
+  for (const line of lines) {
+    if (/^"?Account History|^"?\d+ items/i.test(line)) continue; // Suncorp 메타
+    const cols = BANK_CSV.parseCsvLine(line);
+    let dateISO, amount, descr;
+    if (bank === 'suncorp' && cols.length >= 3) {
+      dateISO = BANK_CSV.dmyToISO(cols[0]);
+      descr = (cols[1] || '').trim();
+      amount = BANK_CSV.parseAmount(cols[2]);
+    } else if (bank === 'anz' && cols.length >= 3) {
+      dateISO = BANK_CSV.dmyToISO(cols[0]);
+      amount = BANK_CSV.parseAmount(cols[1]);
+      descr = (cols[2] || '').trim();
+    } else continue;
+    if (!dateISO || isNaN(amount)) continue;
+    rows.push({ dateISO, amount, descr, bank });
+  }
+  return { bank, rows };
+};
+
+BANK_CSV.extractDescriptionFields = function(descr) {
+  // 리턴: { type, senderName, businessGuess, refNo, invoiceHints:[], cleaned }
+  let d = ' ' + (descr || '') + ' ';
+  const out = { type: '', senderName: '', businessGuess: '', refNo: '', invoiceHints: [], cleaned: '' };
+
+  // 1) REF NO 추출
+  const mRef = /\bREF\s*NO\s+(\d+)/i.exec(d);
+  if (mRef) { out.refNo = mRef[1]; d = d.replace(mRef[0], ' '); }
+
+  // 2) EFFECTIVE DATE 제거
+  d = d.replace(/\bEFFECTIVE\s+DATE\s+\d{2}\/\d{2}\/\d{4}\b/ig, ' ');
+
+  // 3) 인보이스 번호 (AT2026-XXXXX / AT202603932 / AT 2026 02579 / 쉼표로 여러 개)
+  //    5자리 형태로 통일 (선행 0 유지)
+  //    ⭐ 반드시 "AT" 접두 뒤 "2026" 을 스킵하고 그 뒤 4~5자리만 잡아야 함
+  const addInv = (n) => {
+    if (!n) return;
+    if (n === '2026') return;
+    let norm = n;
+    if (n.length > 5) norm = n.slice(-5);
+    if (n.length < 5) norm = n.padStart(5, '0');
+    if (!out.invoiceHints.includes(norm)) out.invoiceHints.push(norm);
+  };
+  const invRe = /\bAT[\s\-]?2026[\s\-]?(\d{4,5})((?:\s*,\s*\d{4,5})*)/ig;
+  let mInv;
+  while ((mInv = invRe.exec(d))) {
+    addInv(mInv[1]);
+    const trail = mInv[2] || '';
+    const trailNums = trail.match(/\d{4,5}/g) || [];
+    trailNums.forEach(addInv);
+  }
+  d = d.replace(invRe, ' ');
+  // 4b) 별도 형태: "AT-05704" or "ATM AT202605704" 는 위 regex 로 잡히지만
+  //     "INV 843" 같은 옛 형식은 무시.
+
+  // 4) 유형 (OSKO / NPP / DIRECT CREDIT / TRANSFER)
+  const mType = /\b(OSKO PAYMENT|NPP PAYMENT|DIRECT CREDIT|TRANSFER)\s+FROM\s+/i.exec(d);
+  if (mType) {
+    out.type = mType[1].toUpperCase().replace(/\s+/g, '_');
+    d = d.slice((d.indexOf(mType[0]) + mType[0].length));
+  } else {
+    // ANZ style: "TRANSFER FROM XXX", "DEPOSIT", "PAYMENT TO ..." (지출)
+    const mAlt = /\b(TRANSFER FROM|DEPOSIT|CREDIT INTEREST)\b\s*/i.exec(d);
+    if (mAlt) {
+      out.type = mAlt[1].toUpperCase().replace(/\s+/g, '_');
+      d = d.slice(d.indexOf(mAlt[0]) + mAlt[0].length);
+    }
+  }
+
+  // 5) REFERENCE ... 앞 부분 만 남기고 뒤는 상호/부가설명
+  //    "REFERENCE <text>" 를 별도로 뽑아 businessGuess 후보로
+  const mReference = /\bREFERENCE\s+(.+?)$/i.exec(d);
+  let referenceText = '';
+  if (mReference) { referenceText = mReference[1].trim(); d = d.replace(mReference[0], ' '); }
+
+  // 5b) 흔한 노이즈 토큰 제거 — 은행 앱이 붙이는 것들
+  //     " ATM " (수신은행 ATM 접미), "MS ", "MR ", "MRS " (경칭), 날짜 조각 등
+  d = d.replace(/\bATM\b/g, ' ');
+  d = d.replace(/\b(MS|MR|MRS|DR)\s+/g, ' ');
+  d = d.replace(/\b\d{2}\/\d{2}\/\d{2,4}\b/g, ' '); // 날짜 조각
+  d = d.replace(/\b\d{1,2}\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b/ig, ' ');
+  d = d.replace(/\s+/g, ' ').trim();
+  d = d.replace(/[,;]\s*$/, ''); // 트레일링 콤마
+  out.cleaned = d;
+
+  // 6) sender / business 분리
+  //    "JIHYE MUN Obongzip" → senderName="JIHYE MUN", businessGuess="Obongzip"
+  //    "LIDCOMBE MEAT PTY LTD" → senderName=""(대문자 회사), businessGuess=whole
+  //    "stra dondon" → 전체를 businessGuess
+  //    "JAE JANG" (사람이름만) → senderName=whole
+  const words = d.split(/\s+/).filter(Boolean);
+  const isCorpToken = t => /^(PTY|LTD|LTD\.|CO|CO\.|INC|T\/AS)$/i.test(t);
+  const isAllUpperName = t => t.length >= 2 && /^[A-Z]+$/.test(t);
+  // 첫 대문자 이름 뭉치를 sender 로, 그 뒤를 business 로
+  let cutIdx = -1;
+  for (let i = 0; i < words.length; i++) {
+    if (!isAllUpperName(words[i])) { cutIdx = i; break; }
+    // 회사 표기 만나면 sender 전체가 회사
+    if (i > 0 && isCorpToken(words[i])) { cutIdx = -1; break; }
+  }
+  if (words.some(isCorpToken)) {
+    // PTY/LTD 포함 → 회사 이름 전체를 business (T/AS 뒤가 있으면 그것도 business)
+    out.senderName = '';
+    out.businessGuess = d;
+  } else if (cutIdx > 0) {
+    out.senderName = words.slice(0, cutIdx).join(' ');
+    out.businessGuess = words.slice(cutIdx).join(' ');
+  } else if (cutIdx === 0) {
+    // 첫 단어부터 대문자 아님 → 전부 business
+    out.senderName = '';
+    out.businessGuess = d;
+  } else {
+    // 전부 대문자 사람 이름
+    out.senderName = d;
+    out.businessGuess = '';
+  }
+
+  // REFERENCE 텍스트가 상호처럼 보이면 businessGuess 로 승격
+  if (referenceText && !out.businessGuess) {
+    out.businessGuess = referenceText;
+  } else if (referenceText && out.businessGuess &&
+             referenceText.toLowerCase() !== out.businessGuess.toLowerCase()) {
+    out.businessGuess = out.businessGuess + ' / ' + referenceText;
+  }
+  return out;
+};
+
+// ⭐ (2026-08-11) 학습된 은행이름 → 거래처 매핑 조회
+BANK_CSV.normKey = function(s) {
+  return String(s || '').toLowerCase()
+    .replace(/[^\w\s가-힣]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+};
+BANK_CSV.lookupLearnedMap = function(fields) {
+  const map = (DB && DB.bankSenderMap) || {};
+  const senderKey = BANK_CSV.normKey(fields.senderName);
+  const bizKey = BANK_CSV.normKey(fields.businessGuess);
+  const fullKey = BANK_CSV.normKey((fields.senderName||'') + ' ' + (fields.businessGuess||''));
+  // 우선순위: full > sender > biz (풀 매칭이 가장 구체적)
+  for (const k of [fullKey, senderKey, bizKey]) {
+    if (k && map[k]) {
+      const c = (DB.customers || []).find(x => x.id === map[k]);
+      if (c && c.active !== false) return { cid: c.id, custName: c.name, reason: '학습된 매핑 (' + k + ')' };
+    }
+  }
+  return null;
+};
+
+BANK_CSV.matchCustomer = function(fields) {
+  // ⭐ 0. 학습된 매핑 우선 (score 100)
+  const learned = BANK_CSV.lookupLearnedMap(fields);
+  if (learned) return { cid: learned.cid, custName: learned.custName, score: 100, reason: learned.reason };
+
+  // 매칭 확률 (0~100). 결과: { cid, score, reason, custName }
+  const customers = (DB.customers || []).filter(c => c && c.active !== false);
+  if (customers.length === 0) return null;
+  const norm = s => String(s || '').toLowerCase().replace(/\s+/g, ' ').replace(/[.,'"]/g, '').trim();
+  const sender = norm(fields.senderName);
+  const biz = norm(fields.businessGuess);
+  const full = norm((fields.senderName || '') + ' ' + (fields.businessGuess || ''));
+
+  let best = null;
+  for (const c of customers) {
+    const name = norm(c.name);
+    const contact = norm(c.contact);
+    const code = norm(c.code);
+    let score = 0;
+    let reasons = [];
+    // 정확 일치 (상호)
+    if (biz && name && biz === name) { score = Math.max(score, 100); reasons.push('상호 정확'); }
+    else if (full && name && full === name) { score = Math.max(score, 100); reasons.push('상호 정확'); }
+    // 상호가 포함
+    else if (biz && name && (biz.includes(name) || name.includes(biz))) { score = Math.max(score, 85); reasons.push('상호 포함'); }
+    else if (full && name && (full.includes(name) || name.includes(full))) { score = Math.max(score, 80); reasons.push('상호 부분'); }
+    // 담당자 이름 일치
+    if (sender && contact && (sender === contact || sender.includes(contact) || contact.includes(sender))) {
+      score = Math.max(score, 90); reasons.push('담당자 일치');
+    }
+    // 코드 일치
+    if (code && (biz === code || sender === code || full === code)) {
+      score = Math.max(score, 95); reasons.push('코드 일치');
+    }
+    // 단어 단위 부분 매칭 (2단어 이상 겹치면)
+    if (score < 60 && name) {
+      const nameWords = name.split(' ').filter(w => w.length >= 3);
+      const searchStr = (biz + ' ' + sender).trim();
+      const hits = nameWords.filter(w => searchStr.includes(w)).length;
+      if (hits >= 2) { score = Math.max(score, 70); reasons.push('단어 2+개'); }
+      else if (hits === 1 && nameWords.length === 1) { score = Math.max(score, 60); reasons.push('단일단어'); }
+    }
+    if (score > 0 && (!best || score > best.score)) {
+      best = { cid: c.id, custName: c.name, score, reason: reasons.join(', ') };
+    }
+  }
+  return best;
+};
+
+BANK_CSV.matchInvoice = function(fields, cidHint, amount) {
+  // 인보이스 번호 힌트가 있으면 매칭 시도. cidHint 있으면 우선 그 거래처 인보이스만.
+  const orders = (DB.orders || []).filter(o => o && (o.status === 'delivered' || o.status === 'invoiced'));
+  if (fields.invoiceHints && fields.invoiceHints.length > 0) {
+    for (const hint of fields.invoiceHints) {
+      // invoiceNo가 hint로 끝나는지 (뒤 5자리 매칭)
+      const cand = orders.filter(o => {
+        const inv = String(o.invoiceNo || '');
+        if (!inv) return false;
+        return inv === hint || inv.endsWith(hint) || inv.padStart(5,'0') === hint;
+      });
+      if (cand.length === 1) return { orderId: cand[0].id, invNo: cand[0].invoiceNo || cand[0].orderNo, cid: cand[0].customerId, reason: '인보이스# 매칭' };
+      if (cand.length > 1 && cidHint) {
+        const narrow = cand.find(o => o.customerId === cidHint);
+        if (narrow) return { orderId: narrow.id, invNo: narrow.invoiceNo || narrow.orderNo, cid: narrow.customerId, reason: '인보이스# + 거래처' };
+      }
+    }
+  }
+  return null;
+};
+
+// 파일 로드 → 파싱 → 미리보기 렌더링용 데이터 생성
+BANK_CSV.buildPreview = function(text, opts) {
+  opts = opts || {};
+  const { bank, rows } = BANK_CSV.parseFile(text, opts.bankHint);
+  // ⭐ 중복 방지: bankRef 셋 + composite 키 셋 (bankRef 없는 건 대비)
+  const existingRefs = new Set();
+  const existingComposites = new Set();
+  const _mkComposite = (bnk, dISO, amt, dscr) =>
+    (bnk||'') + '|' + (dISO||'') + '|' + Math.round((amt||0)*100) + '|' + String(dscr||'').slice(0,30).toLowerCase();
+  (DB.payments || []).forEach(p => {
+    if (!p) return;
+    if (p.bankRef) existingRefs.add(String(p.bankRef));
+    if (p.bankSource) existingComposites.add(_mkComposite(p.bankSource, p.bankDate || p.date, p.amount, p.notes || ''));
+  });
+
+  // 날짜 필터 (기본: 마지막 bank payment 다음날 · 없으면 2주 전)
+  // ⭐ H2 fix: 시드니 로컬 시간대에서 정확히 계산 (toISOString 사용 안 함)
+  let sinceISO = opts.sinceISO || null;
+  if (!sinceISO && DB.payments && DB.payments.length) {
+    const lastBank = DB.payments.filter(p => p && p.bankSource).map(p => p.bankDate || p.date).sort().pop();
+    if (lastBank) sinceISO = BANK_CSV.localISOAfterDays(lastBank, 1);
+  }
+  if (!sinceISO) {
+    // 첫 사용: 오늘 - 14일
+    sinceISO = BANK_CSV.localISOAfterDays(todayLocalISO(), -14);
+  }
+
+  const items = [];
+  rows.forEach((r, idx) => {
+    if (r.amount <= 0) return; // 지출 스킵
+    if (sinceISO && r.dateISO < sinceISO) return;
+    const fields = BANK_CSV.extractDescriptionFields(r.descr);
+    const compKey = _mkComposite(bank, r.dateISO, r.amount, '[' + (bank||'').toUpperCase() + ' CSV] ' + (fields.senderName||'') + (fields.businessGuess ? ' / ' + fields.businessGuess : ''));
+    const isDup = (fields.refNo && existingRefs.has(String(fields.refNo))) || existingComposites.has(compKey);
+    const custMatch = BANK_CSV.matchCustomer(fields);
+    const invMatch = BANK_CSV.matchInvoice(fields, custMatch && custMatch.cid, r.amount);
+    // 인보이스 매칭이 거래처를 확정해줄 수도 있음
+    let finalCid = null, finalCustName = '', matchConfidence = 0, matchNote = '';
+    if (invMatch) {
+      finalCid = invMatch.cid;
+      const c = (DB.customers || []).find(x => x.id === finalCid);
+      finalCustName = c ? c.name : '(?)';
+      matchConfidence = 100;
+      matchNote = invMatch.reason;
+    } else if (custMatch) {
+      finalCid = custMatch.cid;
+      finalCustName = custMatch.custName;
+      matchConfidence = custMatch.score;
+      matchNote = custMatch.reason;
+    }
+    items.push({
+      idx,
+      dateISO: r.dateISO,
+      amount: r.amount,
+      descr: r.descr,
+      fields,
+      cid: finalCid,
+      custName: finalCustName,
+      confidence: matchConfidence,
+      note: matchNote,
+      invMatch: invMatch,
+      isDup,
+      selected: !isDup && matchConfidence >= 70,
+    });
+  });
+  return { bank, sinceISO, items, dupCount: items.filter(x => x.isDup).length };
+};
+
+// =========== UI: CSV 등록 모달 ===========
+window.openBankCsvImportModal = function() {
+  const bg = document.createElement('div');
+  bg.className = 'modal-bg';
+  bg.id = 'bankCsvModalBg';
+  bg.style.cssText = 'position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:9999; display:flex; align-items:center; justify-content:center; padding:10px;';
+  bg.innerHTML = `
+    <div style="background:#fff; width:100%; max-width:1200px; max-height:92vh; border-radius:10px; display:flex; flex-direction:column; overflow:hidden;">
+      <div style="padding:14px 18px; border-bottom:1px solid var(--line); display:flex; justify-content:space-between; align-items:center;">
+        <div style="font-weight:800; font-size:16px;">📥 은행 CSV 입금 일괄 등록 <span style="font-weight:400; font-size:12px; color:var(--muted);">ANZ · Suncorp 자동감지</span></div>
+        <button class="btn sm secondary" onclick="closeBankCsvImportModal()">✕ 닫기</button>
+      </div>
+      <div style="padding:12px 18px; border-bottom:1px solid var(--line); display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <input type="file" id="bankCsvFile" accept=".csv,text/csv" style="padding:6px; border:1px solid var(--line); border-radius:6px;">
+        <label style="font-size:12px; color:var(--muted);">은행:</label>
+        <select id="bankCsvBankHint" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+          <option value="">자동감지</option>
+          <option value="suncorp">Suncorp</option>
+          <option value="anz">ANZ</option>
+        </select>
+        <label style="font-size:12px; color:var(--muted);">이후 날짜:</label>
+        <input type="date" id="bankCsvSince" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
+        <button class="btn sm" onclick="bankCsvLoadFile()" style="background:var(--brand);">🔍 파싱 & 미리보기</button>
+        <span style="flex:1;"></span>
+        <span id="bankCsvStat" style="font-size:11px; color:var(--muted);"></span>
+      </div>
+      <div id="bankCsvPreview" style="flex:1; overflow:auto; padding:10px 18px;">
+        <div style="text-align:center; padding:60px 20px; color:var(--muted); font-size:13px;">
+          📁 CSV 파일 선택 후 [🔍 파싱 & 미리보기] 를 눌러주세요.<br><br>
+          <b>사용법</b><br>
+          1. 인터넷뱅킹에서 거래내역 CSV 다운로드<br>
+          2. 위에서 파일 선택 · [파싱] 클릭<br>
+          3. 자동 매칭 결과 확인 → 필요시 거래처 수정<br>
+          4. 하단 [일괄 저장] 클릭
+        </div>
+      </div>
+      <div style="padding:12px 18px; border-top:1px solid var(--line); display:flex; gap:10px; align-items:center;">
+        <label style="font-size:12px;"><input type="checkbox" id="bankCsvSelectAll" onchange="bankCsvToggleAll(this.checked)"> 전체 선택/해제</label>
+        <span style="flex:1;"></span>
+        <span id="bankCsvSaveInfo" style="font-size:12px; color:var(--muted);"></span>
+        <button class="btn sm secondary" onclick="closeBankCsvImportModal()">취소</button>
+        <button class="btn sm success" onclick="bankCsvSaveBatch()" id="bankCsvSaveBtn" disabled>💾 일괄 저장</button>
+      </div>
+    </div>
+  `;
+  bg.onclick = e => { if (e.target === bg) closeBankCsvImportModal(); };
+  document.body.appendChild(bg);
+  // 마지막 payment 다음날 프리셋 (⭐ H2 fix: 로컬 날짜 계산)
+  try {
+    const lastBank = (DB.payments || []).filter(p => p && p.bankSource).map(p => p.bankDate || p.date).sort().pop();
+    const el = document.getElementById('bankCsvSince');
+    if (el) {
+      if (lastBank) el.value = BANK_CSV.localISOAfterDays(lastBank, 1);
+      else el.value = BANK_CSV.localISOAfterDays(todayLocalISO(), -14);
+    }
+  } catch(_){}
+};
+window.closeBankCsvImportModal = function() {
+  const bg = document.getElementById('bankCsvModalBg');
+  if (bg) bg.remove();
+  BANK_CSV._preview = null;
+};
+
+window.bankCsvLoadFile = function() {
+  const fi = document.getElementById('bankCsvFile');
+  if (!fi || !fi.files || !fi.files[0]) { alert('CSV 파일을 먼저 선택하세요.'); return; }
+  const reader = new FileReader();
+  reader.onload = function(e) {
+    try {
+      const text = e.target.result;
+      const hint = document.getElementById('bankCsvBankHint').value || '';
+      const since = document.getElementById('bankCsvSince').value || '';
+      const preview = BANK_CSV.buildPreview(text, { bankHint: hint, sinceISO: since });
+      BANK_CSV._preview = preview;
+      if (preview.items.length > 300) {
+        if (!confirm('⚠️ ' + preview.items.length + '건이 감지되었습니다. 화면이 무거울 수 있습니다.\n[이후 날짜]를 최근으로 조정하여 다시 파싱하시는 걸 권장합니다.\n\n그래도 계속 표시할까요?')) {
+          BANK_CSV._preview = null;
+          return;
+        }
+      }
+      bankCsvRenderPreview();
+    } catch(err) {
+      console.error('CSV 파싱 실패:', err);
+      alert('CSV 파싱 실패: ' + err.message + '\n\n파일 형식(ANZ 3컬럼 · Suncorp 4컬럼)을 확인하세요.');
+    }
+  };
+  reader.onerror = function() { alert('파일 읽기 실패'); };
+  reader.readAsText(fi.files[0]);
+};
+
+window.bankCsvRenderPreview = function() {
+  const wrap = document.getElementById('bankCsvPreview');
+  const preview = BANK_CSV._preview;
+  if (!wrap || !preview) return;
+  const items = preview.items;
+  const stat = document.getElementById('bankCsvStat');
+  const totalAmt = items.reduce((s,i) => s + i.amount, 0);
+  const selCnt = items.filter(i => i.selected).length;
+  const selAmt = items.filter(i => i.selected).reduce((s,i) => s + i.amount, 0);
+  if (stat) stat.innerHTML = '은행: <b>' + (preview.bank || '?').toUpperCase() + '</b> · 입금 ' + items.length + '건 · $' + fmtMoney(totalAmt) + (preview.dupCount ? ' · 중복 ' + preview.dupCount + '건 (자동스킵)' : '');
+  const saveInfo = document.getElementById('bankCsvSaveInfo');
+  if (saveInfo) saveInfo.innerHTML = '선택 <b>' + selCnt + '건</b> · $' + fmtMoney(selAmt);
+  const saveBtn = document.getElementById('bankCsvSaveBtn');
+  if (saveBtn) saveBtn.disabled = selCnt === 0;
+
+  if (items.length === 0) {
+    wrap.innerHTML = '<div style="text-align:center; padding:40px; color:var(--muted);">입금 항목이 없습니다. 날짜 범위 · 은행 선택을 확인해 주세요.</div>';
+    return;
+  }
+  // 거래처 옵션 (수동 지정용)
+  const custOptions = (DB.customers || []).filter(c => c.active !== false)
+    .sort((a,b) => (a.name || '').localeCompare(b.name || ''))
+    .map(c => '<option value="' + c.id + '">' + escapeHtmlSimple(c.name) + '</option>')
+    .join('');
+
+  const rowHtml = items.map((it, i) => {
+    let bg = '#fff', tag = '', tagColor = '';
+    if (it.isDup) { bg = '#F5F5F5'; tag = '중복'; tagColor = '#999'; }
+    else if (it.confidence >= 100) { bg = '#E8F5E9'; tag = '완벽매칭'; tagColor = '#2E7D32'; }
+    else if (it.confidence >= 85) { bg = '#F1F8E9'; tag = '고신뢰(' + it.confidence + '%)'; tagColor = '#558B2F'; }
+    else if (it.confidence >= 60) { bg = '#FFF9C4'; tag = '중신뢰(' + it.confidence + '%)'; tagColor = '#F57F17'; }
+    else if (it.confidence > 0) { bg = '#FFF3E0'; tag = '저신뢰(' + it.confidence + '%)'; tagColor = '#E65100'; }
+    else { bg = '#FFEBEE'; tag = '매칭실패'; tagColor = '#C62828'; }
+    const invHint = it.fields.invoiceHints.length ? ' <span style="color:#5E35B1; font-size:10px;">AT' + it.fields.invoiceHints.join(',') + '</span>' : '';
+    const refHint = it.fields.refNo ? ' <span style="color:var(--muted); font-size:10px;">R:' + it.fields.refNo + '</span>' : '';
+    const selValue = it.cid || '';
+    return '<tr style="background:' + bg + ';">'
+      + '<td style="padding:4px 6px; text-align:center;"><input type="checkbox" ' + (it.selected ? 'checked' : '') + ' ' + (it.isDup ? 'disabled' : '') + ' onchange="bankCsvToggleRow(' + i + ', this.checked)"></td>'
+      + '<td style="padding:4px 6px; font-size:11px; white-space:nowrap;">' + it.dateISO + '</td>'
+      + '<td style="padding:4px 6px; text-align:right; font-weight:700; white-space:nowrap;">$' + fmtMoney(it.amount) + '</td>'
+      + '<td style="padding:4px 6px; font-size:11px; max-width:280px; word-break:break-word;">'
+        + '<div style="color:#333;">' + escapeHtmlSimple(it.fields.senderName || '') + (it.fields.businessGuess ? ' <b>' + escapeHtmlSimple(it.fields.businessGuess) + '</b>' : '') + '</div>'
+        + '<div style="color:#999; font-size:10px;">' + escapeHtmlSimple((it.descr || '').substring(0, 100)) + refHint + invHint + '</div>'
+      + '</td>'
+      + '<td style="padding:4px 6px; min-width:220px;">'
+        + '<select onchange="bankCsvSetCustomer(' + i + ', this.value)" style="width:100%; padding:4px; font-size:11px; border:1px solid var(--line); border-radius:4px;">'
+        + '<option value="">— 매칭 없음 —</option>'
+        + custOptions.replace('value="' + selValue + '"', 'value="' + selValue + '" selected')
+        + '</select>'
+        + (it.note ? '<div style="font-size:10px; color:var(--muted); margin-top:2px;">' + escapeHtmlSimple(it.note) + '</div>' : '')
+      + '</td>'
+      + '<td style="padding:4px 6px; text-align:center;"><span style="background:' + tagColor + '; color:#fff; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700;">' + tag + '</span></td>'
+      + '</tr>';
+  }).join('');
+
+  wrap.innerHTML = '<table style="width:100%; border-collapse:collapse; font-size:12px;">'
+    + '<thead style="position:sticky; top:0; background:#FAFAFA; z-index:1;"><tr style="border-bottom:2px solid var(--line);">'
+    + '<th style="padding:6px 4px; width:40px;">✓</th>'
+    + '<th style="padding:6px 4px;">날짜</th>'
+    + '<th style="padding:6px 4px; text-align:right;">금액</th>'
+    + '<th style="padding:6px 4px; text-align:left;">파싱된 내용 · 원본</th>'
+    + '<th style="padding:6px 4px;">매칭 거래처 (수정 가능)</th>'
+    + '<th style="padding:6px 4px;">상태</th>'
+    + '</tr></thead>'
+    + '<tbody>' + rowHtml + '</tbody></table>';
+};
+
+window.bankCsvToggleRow = function(idx, checked) {
+  const p = BANK_CSV._preview;
+  if (!p || !p.items[idx]) return;
+  p.items[idx].selected = !!checked;
+  // 통계만 갱신
+  const items = p.items;
+  const selCnt = items.filter(i => i.selected).length;
+  const selAmt = items.filter(i => i.selected).reduce((s,i) => s + i.amount, 0);
+  const saveInfo = document.getElementById('bankCsvSaveInfo');
+  if (saveInfo) saveInfo.innerHTML = '선택 <b>' + selCnt + '건</b> · $' + fmtMoney(selAmt);
+  const saveBtn = document.getElementById('bankCsvSaveBtn');
+  if (saveBtn) saveBtn.disabled = selCnt === 0;
+};
+window.bankCsvToggleAll = function(checked) {
+  const p = BANK_CSV._preview;
+  if (!p) return;
+  p.items.forEach(it => { if (!it.isDup) it.selected = !!checked; });
+  bankCsvRenderPreview();
+};
+window.bankCsvSetCustomer = function(idx, cid) {
+  const p = BANK_CSV._preview;
+  if (!p || !p.items[idx]) return;
+  p.items[idx].cid = cid || null;
+  const c = (DB.customers || []).find(x => x.id === cid);
+  p.items[idx].custName = c ? c.name : '';
+  // 수동 지정 시 자동 체크 (매칭실패였을 것)
+  if (cid && !p.items[idx].selected && !p.items[idx].isDup) {
+    p.items[idx].selected = true;
+    bankCsvRenderPreview();
+  } else {
+    // 통계 갱신
+    const selCnt = p.items.filter(i => i.selected).length;
+    const selAmt = p.items.filter(i => i.selected).reduce((s,i) => s + i.amount, 0);
+    const saveInfo = document.getElementById('bankCsvSaveInfo');
+    if (saveInfo) saveInfo.innerHTML = '선택 <b>' + selCnt + '건</b> · $' + fmtMoney(selAmt);
+  }
+};
+
+window.bankCsvSaveBatch = async function() {
+  const p = BANK_CSV._preview;
+  if (!p) return;
+  const toSave = p.items.filter(it => it.selected && it.cid && !it.isDup);
+  if (toSave.length === 0) { alert('저장할 항목이 없습니다.'); return; }
+  // 저장 전 최종 검증 — cid 없는 것 제외 재확인
+  const withoutCid = p.items.filter(it => it.selected && !it.cid);
+  if (withoutCid.length > 0) {
+    if (!confirm(withoutCid.length + '건은 거래처가 지정되지 않아 저장에서 제외됩니다. 계속하시겠습니까?')) return;
+  }
+  if (!confirm('선택된 ' + toSave.length + '건을 매출일보에 등록합니다. 계속?')) return;
+
+  const batchId = 'bnkbatch_' + Date.now();
+  const bank = p.bank || 'unknown';
+  const now = new Date().toISOString();
+  let saved = 0, failed = 0, learned = 0;
+  // ⭐ 학습맵 준비 (없으면 초기화)
+  if (!DB.bankSenderMap) DB.bankSenderMap = {};
+
+  // ⭐ H4 fix: 같은 배치 안에서 같은 키 → 다른 거래처 충돌 감지
+  //   (예: JAE JANG 이름으로 오늘 A거래처·B거래처 결제) → 충돌 키는 학습 스킵
+  const proposedMap = {};   // key → cid (첫 등장)
+  const conflictKeys = new Set();
+  for (const it of toSave) {
+    const keys = [BANK_CSV.normKey(it.fields.senderName), BANK_CSV.normKey(it.fields.businessGuess),
+                  BANK_CSV.normKey((it.fields.senderName||'') + ' ' + (it.fields.businessGuess||''))].filter(k => k && k.length >= 2);
+    for (const k of keys) {
+      if (proposedMap[k] && proposedMap[k] !== it.cid) conflictKeys.add(k);
+      else proposedMap[k] = it.cid;
+    }
+  }
+  if (conflictKeys.size > 0) {
+    console.warn('[BANK_CSV] 학습 키 충돌 (자동 스킵):', Array.from(conflictKeys));
+  }
+
+  const newlyLearnedKeys = new Set();
+  for (const it of toSave) {
+    try {
+      const pay = {
+        id: uid('pay'),
+        customerId: it.cid,
+        date: it.dateISO,
+        amount: it.amount,
+        method: 'bank',
+        reference: it.invMatch ? ('INV ' + it.invMatch.invNo) : (it.fields.refNo ? ('REF ' + it.fields.refNo) : ''),
+        notes: '[' + bank.toUpperCase() + ' CSV] ' + (it.fields.senderName || '') + (it.fields.businessGuess ? ' / ' + it.fields.businessGuess : ''),
+        createdAt: now,
+        bankRef: it.fields.refNo || null,
+        bankDate: it.dateISO,
+        bankSource: bank,
+        bankImportBatchId: batchId,
+      };
+      DB.payments.push(pay);
+      pushEntityToFirebase('payments', pay);
+      saved++;
+      // ⭐ 학습: 은행 이름 → 거래처 매핑을 자동 저장 (3가지 키 형태)
+      //    - sender 단독 · biz 단독 · sender+biz 결합
+      //    다음 CSV에선 이 매핑이 있으면 score 100으로 즉시 매칭됨
+      const senderKey = BANK_CSV.normKey(it.fields.senderName);
+      const bizKey = BANK_CSV.normKey(it.fields.businessGuess);
+      const fullKey = BANK_CSV.normKey((it.fields.senderName||'') + ' ' + (it.fields.businessGuess||''));
+      const keys = [senderKey, bizKey, fullKey].filter(k => k && k.length >= 2);
+      let anyNew = false;
+      for (const k of keys) {
+        if (conflictKeys.has(k)) continue;   // ⭐ H4: 충돌 키는 학습 스킵
+        if (DB.bankSenderMap[k] !== it.cid) { DB.bankSenderMap[k] = it.cid; newlyLearnedKeys.add(k); anyNew = true; }
+      }
+      if (anyNew) learned++;
+    } catch(e) { console.warn('CSV 입금 저장 실패:', e); failed++; }
+  }
+  // ⭐ 학습맵 Firebase 동기화 (patch 방식 — 실제로 새로 학습된 키만 · 동시 편집 안전)
+  if (newlyLearnedKeys.size > 0 && typeof DB_REF !== 'undefined' && DB_REF) {
+    try {
+      const patch = {};
+      newlyLearnedKeys.forEach(k => { patch[k] = DB.bankSenderMap[k]; });
+      _lastSaveTime = Date.now();
+      DB_REF.child('bankSenderMap').update(patch).catch(function(e){ console.warn('bankSenderMap Firebase update 실패:', e); });
+    } catch(_){}
+  }
+  try { auditLogAdd('은행 CSV 일괄 등록: ' + bank.toUpperCase() + ' · ' + saved + '건' + (learned ? ' · 학습 ' + learned + '건' : '') + ' · 배치ID ' + batchId); } catch(_){}
+  saveLocalDB();
+  alert('✅ ' + saved + '건 등록 완료' + (failed ? ' · ' + failed + '건 실패' : '') + (learned ? '\n📚 ' + learned + '건 학습됨 (다음 CSV부터 자동 매칭)' : '') + '\n\n배치ID: ' + batchId + '\n(감사 로그에서 이 ID로 롤백 가능)');
+  closeBankCsvImportModal();
+  // 매출일보 새로고침
+  if (typeof viewOffice === 'function' && location.hash.includes('#office')) viewOffice();
+};
+
 function lineUnitPrice(it, p, cust) {
   // 우선순위: 1) 라인별 명시 (인보이스 준비 시 사장님이 수정한 값)
   //          2) 거래처 맞춤 단가 (customPrices — 품목+요청사항 짝별)
