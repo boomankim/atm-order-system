@@ -8506,22 +8506,12 @@ BANK_CSV.buildPreview = function(text, opts) {
     if (p.bankSource) existingComposites.add(_mkComposite(p.bankSource, p.bankDate || p.date, p.amount, p.notes || ''));
   });
 
-  // 날짜 필터 (기본: 마지막 bank payment 다음날 · 없으면 2주 전)
-  // ⭐ H2 fix: 시드니 로컬 시간대에서 정확히 계산 (toISOString 사용 안 함)
-  let sinceISO = opts.sinceISO || null;
-  if (!sinceISO && DB.payments && DB.payments.length) {
-    const lastBank = DB.payments.filter(p => p && p.bankSource).map(p => p.bankDate || p.date).sort().pop();
-    if (lastBank) sinceISO = BANK_CSV.localISOAfterDays(lastBank, 1);
-  }
-  if (!sinceISO) {
-    // 첫 사용: 오늘 - 14일
-    sinceISO = BANK_CSV.localISOAfterDays(todayLocalISO(), -14);
-  }
+  // ⭐ (2026-08-12) 날짜 필터 제거 — CSV는 매번 7일치 정도만 다운로드해서 올림.
+  //   중복은 bankRef + composite 키로 자동 감지 → 필터 없이도 안전.
 
   const items = [];
   rows.forEach((r, idx) => {
     if (r.amount <= 0) return; // 지출 스킵
-    if (sinceISO && r.dateISO < sinceISO) return;
     const fields = BANK_CSV.extractDescriptionFields(r.descr);
     const compKey = _mkComposite(bank, r.dateISO, r.amount, '[' + (bank||'').toUpperCase() + ' CSV] ' + (fields.senderName||'') + (fields.businessGuess ? ' / ' + fields.businessGuess : ''));
     const isDup = (fields.refNo && existingRefs.has(String(fields.refNo))) || existingComposites.has(compKey);
@@ -8556,7 +8546,7 @@ BANK_CSV.buildPreview = function(text, opts) {
       selected: !isDup && matchConfidence >= 70,
     });
   });
-  return { bank, sinceISO, items, dupCount: items.filter(x => x.isDup).length };
+  return { bank, items, dupCount: items.filter(x => x.isDup).length };
 };
 
 // =========== UI: CSV 등록 모달 ===========
@@ -8579,8 +8569,6 @@ window.openBankCsvImportModal = function() {
           <option value="suncorp">Suncorp</option>
           <option value="anz">ANZ</option>
         </select>
-        <label style="font-size:12px; color:var(--muted);">이후 날짜:</label>
-        <input type="date" id="bankCsvSince" style="padding:6px 10px; border:1px solid var(--line); border-radius:6px; font-size:12px;">
         <button class="btn sm" onclick="bankCsvLoadFile()" style="background:var(--brand);">🔍 파싱 & 미리보기</button>
         <span style="flex:1;"></span>
         <span id="bankCsvStat" style="font-size:11px; color:var(--muted);"></span>
@@ -8606,15 +8594,6 @@ window.openBankCsvImportModal = function() {
   `;
   bg.onclick = e => { if (e.target === bg) closeBankCsvImportModal(); };
   document.body.appendChild(bg);
-  // 마지막 payment 다음날 프리셋 (⭐ H2 fix: 로컬 날짜 계산)
-  try {
-    const lastBank = (DB.payments || []).filter(p => p && p.bankSource).map(p => p.bankDate || p.date).sort().pop();
-    const el = document.getElementById('bankCsvSince');
-    if (el) {
-      if (lastBank) el.value = BANK_CSV.localISOAfterDays(lastBank, 1);
-      else el.value = BANK_CSV.localISOAfterDays(todayLocalISO(), -14);
-    }
-  } catch(_){}
 };
 window.closeBankCsvImportModal = function() {
   const bg = document.getElementById('bankCsvModalBg');
@@ -8630,11 +8609,10 @@ window.bankCsvLoadFile = function() {
     try {
       const text = e.target.result;
       const hint = document.getElementById('bankCsvBankHint').value || '';
-      const since = document.getElementById('bankCsvSince').value || '';
-      const preview = BANK_CSV.buildPreview(text, { bankHint: hint, sinceISO: since });
+      const preview = BANK_CSV.buildPreview(text, { bankHint: hint });
       BANK_CSV._preview = preview;
-      if (preview.items.length > 300) {
-        if (!confirm('⚠️ ' + preview.items.length + '건이 감지되었습니다. 화면이 무거울 수 있습니다.\n[이후 날짜]를 최근으로 조정하여 다시 파싱하시는 걸 권장합니다.\n\n그래도 계속 표시할까요?')) {
+      if (preview.items.length > 500) {
+        if (!confirm('⚠️ ' + preview.items.length + '건이 감지되었습니다. 화면이 무거울 수 있습니다.\n최근 7일치 CSV만 다운로드하는 걸 권장합니다.\n\n그래도 계속 표시할까요?')) {
           BANK_CSV._preview = null;
           return;
         }
