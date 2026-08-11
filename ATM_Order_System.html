@@ -5539,7 +5539,8 @@ function viewOrder(params) {
 
     <div class="card" id="cartCard" style="position:sticky; top:52px; z-index:50; background:#E4EEF7; border:0.5px solid #BBD3E7;">
       <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--brand-dark); font-size:18px; font-weight:800;">0개</span></h3>
-      <div id="cart"></div>
+      <!-- ⭐ (2026-08-10) 최대 8개 (~260px) 노출, 초과 시 카트 내부 스크롤. 8개 이하는 스크롤바 안 뜸 -->
+      <div id="cart" style="max-height:260px; overflow-y:auto;"></div>
     </div>
 
     <div class="card" id="favCard">
@@ -5748,6 +5749,13 @@ function addToCart(prodId, notes) {
   const _capturedIdx = CART.length - 1;
   renderCart();
   _autoSaveCurrentCartDraft();
+  // 카트 스크롤: 9개 이상일 때 최신 항목이 보이도록 자동으로 하단으로 스크롤
+  try {
+    const _cartEl = document.getElementById('cart');
+    if (_cartEl && _cartEl.scrollHeight > _cartEl.clientHeight) {
+      _cartEl.scrollTop = _cartEl.scrollHeight;
+    }
+  } catch(_){}
   setTimeout(function(){
     if (typeof openCartEditModal === 'function') openCartEditModal(_capturedIdx);
   }, 80);
