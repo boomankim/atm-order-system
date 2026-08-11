@@ -1450,8 +1450,78 @@ window.closeHistoryModal = function(){
 
 // =========== PDF 저장·인쇄 ===========
 let _folderHandle = null;
+let _masterDirHandle = null;  // ⭐ (2026-08-11) Order System과 공유하는 마스터 폴더
+
+// ⭐ (2026-08-11) Order System (ATM_Order_System.html) 이 저장한 통합 폴더 핸들을
+//    같은 origin 의 IndexedDB (atm_app_meta.kv.masterDirHandle) 에서 읽어온다.
+async function loadMasterHandle(){
+  return new Promise(function(resolve){
+    try {
+      if (!('indexedDB' in window)) return resolve(null);
+      const req = indexedDB.open('atm_app_meta', 1);
+      req.onupgradeneeded = function(e){
+        try { e.target.result.createObjectStore('kv'); } catch(_){}
+      };
+      req.onsuccess = function(e){
+        try {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('kv')) return resolve(null);
+          const tx = db.transaction('kv', 'readonly');
+          const get = tx.objectStore('kv').get('masterDirHandle');
+          get.onsuccess = function(){
+            const h = get.result;
+            if (!h) return resolve(null);
+            try {
+              h.queryPermission({ mode:'readwrite' }).then(function(p){
+                if (p === 'granted') return resolve(h);
+                h.requestPermission({ mode:'readwrite' }).then(function(p2){
+                  resolve(p2 === 'granted' ? h : null);
+                }).catch(function(){ resolve(null); });
+              }).catch(function(){ resolve(null); });
+            } catch(_) { resolve(null); }
+          };
+          get.onerror = function(){ resolve(null); };
+        } catch(_) { resolve(null); }
+      };
+      req.onerror = function(){ resolve(null); };
+    } catch(_) { resolve(null); }
+  });
+}
+async function saveMasterHandle(handle){
+  return new Promise(function(resolve){
+    try {
+      if (!('indexedDB' in window)) return resolve(false);
+      const req = indexedDB.open('atm_app_meta', 1);
+      req.onupgradeneeded = function(e){
+        try { e.target.result.createObjectStore('kv'); } catch(_){}
+      };
+      req.onsuccess = function(e){
+        try {
+          const db = e.target.result;
+          if (!db.objectStoreNames.contains('kv')) return resolve(false);
+          const tx = db.transaction('kv', 'readwrite');
+          tx.objectStore('kv').put(handle, 'masterDirHandle');
+          tx.oncomplete = function(){ resolve(true); };
+          tx.onerror = function(){ resolve(false); };
+        } catch(_) { resolve(false); }
+      };
+      req.onerror = function(){ resolve(false); };
+    } catch(_) { resolve(false); }
+  });
+}
 
 async function loadFolderHandle(){
+  // ⭐ (2026-08-11) 1순위: 통합 마스터 폴더 하위 '매입일보/'
+  try {
+    const master = await loadMasterHandle();
+    if (master) {
+      _masterDirHandle = master;
+      try {
+        return await master.getDirectoryHandle('매입일보', { create: true });
+      } catch(_) { return master; }
+    }
+  } catch(_){}
+  // 2순위: legacy 매입일보 전용 폴더
   try {
     if (!('indexedDB' in window)) return null;
     const req = indexedDB.open('atm-purchase-fs', 1);
@@ -1471,6 +1541,7 @@ async function loadFolderHandle(){
   } catch(e) { return null; }
 }
 async function saveFolderHandle(handle){
+  // legacy 저장 — 이제는 사용 안 함 (마스터 폴더로 저장). 호환성을 위해 유지.
   try {
     const req = indexedDB.open('atm-purchase-fs', 1);
     req.onupgradeneeded = function(e){
@@ -1492,19 +1563,31 @@ async function pickFolder(){
     return null;
   }
   try {
+    // ⭐ (2026-08-11) 통합 마스터 폴더로 저장 (Order System과 공유)
     const handle = await window.showDirectoryPicker({ mode:'readwrite' });
-    await saveFolderHandle(handle);
-    _folderHandle = handle;
+    await saveMasterHandle(handle);
+    _masterDirHandle = handle;
+    // 표준 서브폴더 미리 생성
+    const subs = ['매출일보', '매입일보', '재고현황', 'ATM Invoice', 'ATM 주문서', 'ATM Credit', '_백업(JSON)'];
+    for (const s of subs) {
+      try { await handle.getDirectoryHandle(s, { create: true }); } catch(_){}
+    }
+    try {
+      _folderHandle = await handle.getDirectoryHandle('매입일보', { create: true });
+    } catch(_) { _folderHandle = handle; }
     updateFolderInfo();
-    return handle;
+    alert('✅ 통합 저장 폴더 설정 완료!\n\n📁 ' + handle.name + '/매입일보/\n\n주문 시스템(Order System)의 매출일보 · 재고현황 · 인보이스 PDF · 전체 백업도\n같은 마스터 폴더 하위 서브폴더에 자동 저장됩니다.');
+    return _folderHandle;
   } catch(e) { return null; }
 }
 function updateFolderInfo(){
   const el = document.getElementById('folderInfo');
   if (!el) return;
-  if (_folderHandle) {
-    const ym = CURRENT_DATE.slice(0,7);
-    el.innerHTML = '📁 PDF 저장 폴더: <b style="color:var(--accent);">' + escapeHtml(_folderHandle.name) + '/' + ym + '/</b>ATM_매입일보_' + CURRENT_DATE + '.pdf';
+  const ym = CURRENT_DATE.slice(0,7);
+  if (_masterDirHandle) {
+    el.innerHTML = '📁 PDF 저장 폴더: <b style="color:var(--accent);">' + escapeHtml(_masterDirHandle.name) + '/매입일보/' + ym + '/</b>ATM_매입일보_' + CURRENT_DATE + '.pdf';
+  } else if (_folderHandle) {
+    el.innerHTML = '📁 PDF 저장 폴더 (레거시): <b style="color:var(--accent);">' + escapeHtml(_folderHandle.name) + '/' + ym + '/</b>ATM_매입일보_' + CURRENT_DATE + '.pdf';
   } else {
     el.innerHTML = '📁 저장 폴더 미지정 — [📁 폴더 지정] 클릭하면 자동 저장 · 미지정 시 다운로드 폴더로';
   }
@@ -1563,7 +1646,11 @@ async function savePdfAndBackup(){
       await jw.write(jsonBlob);
       await jw.close();
       jsonOk = true;
-      showToast('💾 저장 완료: ' + _folderHandle.name + '/' + ym + '/ (PDF + 백업)', 5000);
+      // ⭐ (2026-08-11) 마스터가 있으면 "마스터/매입일보/YM/" 표기, 아니면 "폴더/YM/"
+      const _pathDisplay = _masterDirHandle
+        ? (_masterDirHandle.name + '/매입일보/' + ym + '/')
+        : (_folderHandle.name + '/' + ym + '/');
+      showToast('💾 저장 완료: ' + _pathDisplay + ' (PDF + 백업)', 5000);
     } catch(e) {
       console.warn('폴더 저장 실패, 다운로드로 폴백:', e);
     }

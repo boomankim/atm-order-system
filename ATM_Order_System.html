@@ -2158,12 +2158,11 @@ function viewAdmin(params) {
         <button class="btn ${tab==='audit'?'':'secondary'}" onclick="location.hash='#admin?tab=audit'">🔒 감사 로그</button>
       </div>
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
-        <button class="btn secondary" style="font-size:12px; padding:5px 10px;" onclick="setBackupFolder()">📁 폴더 설정</button>
         <button class="btn secondary" style="font-size:12px; padding:5px 10px;" onclick="importAll()">📂 복원</button>
         <button class="btn secondary" style="font-size:12px; padding:5px 10px;" onclick="exportAll()">JSON만</button>
         <button class="btn secondary" style="font-size:12px; padding:5px 10px; background:#B8860B; color:#fff; border-color:#B8860B;" onclick="exportInvoicePDFs()">PDF만</button>
         <button class="btn success" style="font-size:12px; padding:5px 10px;" onclick="exportAllFull()">💾 전체 백업</button>
-        <span style="font-size:11px; color:var(--muted); margin-left:4px;">백업 폴더 먼저 지정 후 사용 · Chrome/Edge 권장</span>
+        <span style="font-size:11px; color:var(--muted); margin-left:4px;">💡 통합 저장 폴더는 사무실 상단에서 지정 · Chrome/Edge 권장</span>
       </div>
     </div>
     <div id="adminBody"></div>
@@ -2661,23 +2660,39 @@ window.ordAdmDeleteAll = ordAdmDeleteAll;
 
 function renderBackupAdmin() {
   const body = document.getElementById('adminBody');
-  // 현재 저장된 백업 폴더 이름 표시
-  const folderName = _backupDirHandle ? _backupDirHandle.name : null;
+  // ⭐ (2026-08-11) 통합 저장 폴더 이름 표시 (마스터 우선, legacy 백업 폴더 fallback)
+  const folderName = (_masterDirHandle && _masterDirHandle.name)
+    || (_backupDirHandle && _backupDirHandle.name)
+    || null;
   const folderDisplay = folderName
     ? `<span style="background:#E8F5E9;color:#1B5E20;padding:3px 10px;border-radius:6px;font-weight:700;">📁 ${folderName}</span>`
     : `<span style="background:#FFF3E0;color:#BF6900;padding:3px 10px;border-radius:6px;">미설정</span>`;
+  // 비동기로 IDB에서 마스터 이름 로드 → 렌더 후 갱신
+  (async () => {
+    try {
+      const master = await idbGet('masterDirHandle');
+      if (master && master.name && master.name !== folderName) {
+        _masterDirHandle = _masterDirHandle || master;
+        const el = document.getElementById('adminBody');
+        if (el) {
+          const disp = el.querySelector('.masterFolderDisplay');
+          if (disp) disp.innerHTML = '<span style="background:#E8F5E9;color:#1B5E20;padding:3px 10px;border-radius:6px;font-weight:700;">📁 ' + master.name + '</span>';
+        }
+      }
+    } catch(_){}
+  })();
 
   body.innerHTML = `
     <div class="card">
-      <h3>📁 JSON 백업 폴더 설정</h3>
+      <h3>📁 통합 저장 폴더</h3>
       <div style="display:flex; align-items:center; gap:12px; flex-wrap:wrap; margin-bottom:10px;">
-        <span style="font-size:13px; color:var(--muted);">현재 저장 폴더:</span>
-        ${folderDisplay}
-        <button class="btn secondary" style="font-size:12px; padding:5px 14px;" onclick="setBackupFolder()">📁 폴더 변경</button>
+        <span style="font-size:13px; color:var(--muted);">현재 통합 저장 폴더:</span>
+        <span class="masterFolderDisplay">${folderDisplay}</span>
+        <button class="btn secondary" style="font-size:12px; padding:5px 14px;" onclick="setMasterFolder()">📁 폴더 지정/변경</button>
       </div>
       <p style="font-size:12px; color:var(--muted); line-height:1.7; margin:0;">
-        폴더를 한 번 설정하면 이후 백업 버튼 클릭 시 <b>폴더 선택창 없이 바로 저장</b>됩니다.<br>
-        파일명 형식: <code>ATM_backup_날짜_시간.json</code> (예: ATM_backup_20260609_1430.json)<br>
+        폴더를 한 번 지정하면 이후 <b>매출일보 · 매입일보 · 재고현황 · 인보이스 PDF · 전체 백업</b>이 모두<br>
+        지정된 폴더 하위의 서브폴더에 자동 저장됩니다 (예: <code>ATM CLAUDE/_백업(JSON)/2026-08-11/…</code>).<br>
         <span style="font-size:11px; color:#aaa;">※ Chrome / Edge 전용. 브라우저 재시작 후 첫 저장 시 승인 팝업이 한 번 뜰 수 있습니다.</span>
       </p>
     </div>
@@ -6978,7 +6993,9 @@ function viewOffice() {
       <button class="btn sm" style="float:right; background:var(--info);" onclick="location.hash='#history'">📊 주문 이력 / CSV →</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:var(--brand);" onclick="location.hash='#inventory'">📦 재고현황 →</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:#1d4ed8; color:#fff;" onclick="openPurchaseJournal()" title="매입일보 새 창에서 열기">📗 매입일보 →</button>
+      <button class="btn sm" style="float:right; margin-right:6px; background:#0EA5E9; color:#fff;" onclick="setMasterFolder()" title="매출일보·매입일보·재고현황·인보이스 PDF·전체 백업을 저장할 통합 폴더를 1회만 지정">📁 통합 저장 폴더</button>
     </h2>
+    <div id="masterFolderInfo" style="margin: -6px 0 8px; font-size: 11px; color: var(--muted);"></div>
     ${_backupBanner}
     <div class="card">
       <h3>인보이스 발행 대기 (${ready.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); float:right;">거래처/주문번호 클릭 → 품목·단가 확인 → 발행</span></h3>
@@ -7063,7 +7080,6 @@ function viewOffice() {
         <span style="border-left:1px solid var(--line); height:24px; margin:0 4px;"></span>
         <button class="btn sm" style="background:var(--info);" onclick="printDailyReport()">🖨️ 인쇄</button>
         <button class="btn sm success" onclick="saveDailyReportPDF()">💾 PDF 저장</button>
-        <button class="btn sm secondary" onclick="setDailyReportFolder()">📁 폴더 변경</button>
       </div>
       <div id="drFolderInfo" style="font-size:11px; color:var(--muted); margin-bottom:12px;"></div>
       ${(() => {
@@ -7116,6 +7132,8 @@ function viewOffice() {
     </div>
   `;
   setTimeout(() => { if (typeof renderDailyReport === 'function') renderDailyReport(); }, 0);
+  // ⭐ (2026-08-11) 통합 저장 폴더 상태 표시
+  setTimeout(() => { if (typeof refreshMasterFolderInfo === 'function') refreshMasterFolderInfo(); }, 0);
 }
 // ⭐ (2026-07-08) 매입일보 새 창 열기 — 별도 HTML 파일(ATM_Purchase_Journal.html) 로드.
 //   같은 디렉토리 기준 상대경로 → GitHub Pages / 로컬 파일 / PWA 모두 동작.
@@ -7570,12 +7588,18 @@ async function refreshDailyReportFolderInfo(dateISO) {
   const el = document.getElementById('drFolderInfo');
   if (!el) return;
   try {
+    const ym = (dateISO || todayLocalISO()).slice(0,7);
+    // ⭐ (2026-08-11) 통합 폴더 우선 표시
+    const master = await idbGet('masterDirHandle');
+    if (master) {
+      el.innerHTML = `📁 PDF 저장 폴더: <b style="color:var(--brand);">${master.name}/매출일보/${ym}/</b>ATM_매출일보_${dateISO}.pdf`;
+      return;
+    }
     const handle = await idbGet('dailyReportDirHandle');
     if (handle) {
-      const ym = (dateISO || todayLocalISO()).slice(0,7);
       el.innerHTML = `📁 PDF 저장 폴더: <b style="color:var(--brand);">${handle.name}/${ym}/</b>ATM_매출일보_${dateISO}.pdf`;
     } else {
-      el.innerHTML = `<span style="color:var(--warn);">⚠️ PDF 저장 폴더 미설정</span> — "📁 폴더 변경" 버튼으로 1회만 지정하면 이후 자동 저장됩니다`;
+      el.innerHTML = `<span style="color:var(--warn);">⚠️ 저장 폴더 미설정</span> — 사무실 상단 [📁 통합 저장 폴더] 버튼으로 1회만 지정하세요`;
     }
   } catch(e) {
     el.innerHTML = `<span style="color:var(--muted);">📁 저장 폴더 정보 로딩 실패</span>`;
@@ -7732,6 +7756,10 @@ window.printDailyReport = function() {
 let _dailyReportDirHandle = null;
 
 async function getDailyReportDirHandle() {
+  // ⭐ (2026-08-11) 통합 폴더 우선 — master/매출일보/YYYY-MM/에 저장
+  const sub = await getMasterSubDir('매출일보');
+  if (sub) return sub;
+  // legacy fallback
   if (_dailyReportDirHandle) {
     try {
       const perm = await _dailyReportDirHandle.queryPermission({ mode: 'readwrite' });
@@ -7751,19 +7779,11 @@ async function getDailyReportDirHandle() {
   return null;
 }
 
+// ⭐ (2026-08-11) 개별 폴더 지정 → 통합 폴더 지정으로 리다이렉트
 window.setDailyReportFolder = async function() {
-  if (!window.showDirectoryPicker) {
-    return alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\n\nChrome 또는 Edge 사용을 권장합니다.\n그 외 브라우저에서는 💾 PDF 저장 시\n다운로드 폴더로 저장됩니다.');
-  }
-  try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    await idbSet('dailyReportDirHandle', handle);
-    _dailyReportDirHandle = handle;
-    alert('✅ 매출일보 PDF 저장 폴더 설정 완료!\n\n📁 ' + handle.name + '\n\n이제 💾 PDF 저장 클릭 시\n이 폴더 안에 "년-월" 하위폴더가 자동 생성되고\n그 안에 PDF가 저장됩니다.\n\n예: ' + handle.name + '/2026-06/ATM_매출일보_2026-06-13.pdf');
-    if (typeof renderDailyReport === 'function') renderDailyReport();
-  } catch(e) {
-    if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
-  }
+  const ok = await window.setMasterFolder();
+  if (ok && typeof renderDailyReport === 'function') renderDailyReport();
+  return ok;
 };
 
 function buildDailyReportPDFHTML(rows, totals, dateISO) {
@@ -11004,11 +11024,91 @@ async function idbSet(key, value) {
 let _backupDirHandle = null;
 
 // =========================================================================
+//  ⭐ (2026-08-11) 통합 저장 폴더 (master folder)
+//  사용자는 한 번만 "ATM CLAUDE" 같은 마스터 폴더를 지정한다.
+//  하위에 매출일보/, 매입일보/, 재고현황/, ATM Invoice/, ATM 주문서/,
+//  ATM Credit/, _백업(JSON)/ 등 서브폴더가 자동 생성된다.
+// =========================================================================
+let _masterDirHandle = null;
+async function getMasterDirHandle() {
+  if (_masterDirHandle) {
+    try {
+      const perm = await _masterDirHandle.queryPermission({ mode: 'readwrite' });
+      if (perm === 'granted') return _masterDirHandle;
+      const req = await _masterDirHandle.requestPermission({ mode: 'readwrite' });
+      if (req === 'granted') return _masterDirHandle;
+    } catch(e) {}
+  }
+  try {
+    const handle = await idbGet('masterDirHandle');
+    if (handle) {
+      let perm = await handle.queryPermission({ mode: 'readwrite' });
+      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
+      if (perm === 'granted') { _masterDirHandle = handle; return handle; }
+    }
+  } catch(e) {}
+  return null;
+}
+async function getMasterSubDir(subName) {
+  const master = await getMasterDirHandle();
+  if (!master) return null;
+  if (!subName) return master;
+  try {
+    return await master.getDirectoryHandle(subName, { create: true });
+  } catch(e) {
+    console.warn('[master] 서브폴더 생성 실패:', subName, e);
+    return null;
+  }
+}
+window.setMasterFolder = async function() {
+  if (!window.showDirectoryPicker) {
+    alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
+    return false;
+  }
+  try {
+    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    await idbSet('masterDirHandle', handle);
+    _masterDirHandle = handle;
+    // 마스터 폴더 안에 표준 서브폴더 미리 생성 (첫 저장 시 자동생성되지만 명시적으로)
+    const subs = ['매출일보', '매입일보', '재고현황', 'ATM Invoice', 'ATM 주문서', 'ATM Credit', '_백업(JSON)'];
+    for (const s of subs) {
+      try { await handle.getDirectoryHandle(s, { create: true }); } catch(_){}
+    }
+    alert('✅ 통합 저장 폴더 설정 완료!\n\n📁 ' + handle.name + '\n\n앞으로 모든 저장(매출일보 · 매입일보 · 재고현황 · 인보이스 PDF · 전체 백업)이\n이 폴더 하위 서브폴더에 자동 저장됩니다.\n\n예:\n  ' + handle.name + '/매출일보/2026-08/…\n  ' + handle.name + '/매입일보/2026-08/…\n  ' + handle.name + '/ATM Invoice/거래처/…\n  ' + handle.name + '/_백업(JSON)/2026-08-11/…');
+    if (typeof refreshMasterFolderInfo === 'function') refreshMasterFolderInfo();
+    if (typeof refreshDailyReportFolderInfo === 'function') { try { refreshDailyReportFolderInfo(); } catch(_){} }
+    if (typeof inventoryRefreshFolderInfo === 'function') { try { inventoryRefreshFolderInfo(); } catch(_){} }
+    return true;
+  } catch(e) {
+    if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
+    return false;
+  }
+};
+async function refreshMasterFolderInfo() {
+  const el = document.getElementById('masterFolderInfo');
+  if (!el) return;
+  try {
+    const master = await idbGet('masterDirHandle');
+    if (master) {
+      el.innerHTML = '📁 통합 저장 폴더: <b style="color:var(--brand);">' + master.name + '/</b> <span style="color:var(--muted);">— 매출일보 · 매입일보 · 재고현황 · 인보이스 PDF · 전체 백업이 이 폴더에 저장됨</span>';
+    } else {
+      el.innerHTML = '<span style="color:var(--warn);">⚠️ 통합 저장 폴더 미설정</span> — 우측 상단 [📁 통합 저장 폴더] 버튼으로 1회만 지정하세요';
+    }
+  } catch(e) {
+    el.innerHTML = '<span style="color:var(--muted);">📁 저장 폴더 정보 로딩 실패</span>';
+  }
+}
+
+// =========================================================================
 //  인보이스 PDF 백업 (날짜별·거래처별)
 // =========================================================================
 let _invoiceBackupDirHandle = null;
 
 async function getInvoiceBackupDirHandle() {
+  // ⭐ (2026-08-11) 통합 폴더 우선 — 인보이스 PDF는 master/ATM Invoice/거래처/에 저장
+  const master = await getMasterDirHandle();
+  if (master) return master;
+  // legacy fallback
   if (_invoiceBackupDirHandle) {
     try {
       const perm = await _invoiceBackupDirHandle.queryPermission({ mode: 'readwrite' });
@@ -11028,18 +11128,9 @@ async function getInvoiceBackupDirHandle() {
   return null;
 }
 
+// ⭐ (2026-08-11) 개별 폴더 지정 → 통합 폴더 지정으로 리다이렉트
 async function setInvoiceBackupFolder() {
-  if (!window.showDirectoryPicker) {
-    return alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
-  }
-  try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    await idbSet('invoiceBackupDirHandle', handle);
-    _invoiceBackupDirHandle = handle;
-    alert('✅ 인보이스 PDF 저장 폴더 설정 완료!\n📁 ' + handle.name + '\n\n이제 📄 인보이스 PDF 클릭 시 이 폴더에 자동 저장됩니다.');
-  } catch(e) {
-    if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
-  }
+  return await window.setMasterFolder();
 }
 
 function buildInvoiceHTML(o, cust, totals) {
@@ -11430,28 +11521,22 @@ async function exportInvoicePDFs(silent = false, onProgress = null) {
   return { saved, failed };
 }
 
+// ⭐ (2026-08-11) 개별 백업 폴더 지정 → 통합 폴더 지정으로 리다이렉트
 async function setBackupFolder() {
-  if (!window.showDirectoryPicker) {
-    alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
-    return false;
-  }
-  try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    await idbSet('backupDirHandle', handle);
-    _backupDirHandle = handle;
-    showToast('✅ 백업 폴더 설정 완료: 📁 ' + handle.name);
+  const ok = await window.setMasterFolder();
+  if (ok) {
     // 백업 탭이 열려 있으면 새로고침
     const hash = location.hash;
-    if (hash.includes('tab=backup')) renderBackupAdmin();
-    return true;   // ⭐ pill 자동 제거용 반환
-  } catch(e) {
-    if (e.name !== 'AbortError') alert('폴더 선택 실패: ' + e.message);
-    return false;
+    if (hash.includes('tab=backup') && typeof renderBackupAdmin === 'function') renderBackupAdmin();
   }
+  return ok;
 }
 
 async function getBackupDirHandle() {
-  // 1. 메모리 캐시 확인
+  // ⭐ (2026-08-11) 통합 폴더 우선 — 백업 JSON은 master/_백업(JSON)/YYYY-MM-DD/에 저장
+  const master = await getMasterDirHandle();
+  if (master) return master;
+  // legacy fallback
   if (_backupDirHandle) {
     try {
       const perm = await _backupDirHandle.queryPermission({ mode: 'readwrite' });
@@ -11460,7 +11545,6 @@ async function getBackupDirHandle() {
       if (req === 'granted') return _backupDirHandle;
     } catch(e) {}
   }
-  // 2. IndexedDB 저장 핸들 복구
   try {
     const handle = await idbGet('backupDirHandle');
     if (handle) {
@@ -12841,7 +12925,6 @@ function viewInventory() {
       <button class="btn sm secondary" style="float:right;" onclick="location.hash='#office'">← 사무실로</button>
       <button class="btn sm success" style="float:right; margin-right:6px;" onclick="saveInventoryPDF()">💾 PDF 저장</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:var(--info);" onclick="printInventoryReport()">🖨️ 인쇄</button>
-      <button class="btn sm secondary" style="float:right; margin-right:6px;" onclick="setInventoryFolder()">📁 폴더 변경</button>
     </h2>
     <div id="invFolderInfo" style="font-size:11px; color:var(--muted); margin: -6px 0 12px 0;"></div>
 
@@ -13718,36 +13801,38 @@ window.inventoryAddReceipt = function() {
   alert(`✅ 입고 등록되었습니다.\n\n품목: ${p ? p.name : '품목'}\n수량: ${qty}${unit}\n\n📦 카테고리 현황에 즉시 반영되었습니다.`);
 };
 
-// ---------- PDF 저장 (별도 폴더) ----------
+// ---------- PDF 저장 (통합 폴더) ----------
 async function getInventoryDirHandle() {
+  // ⭐ (2026-08-11) 통합 폴더 우선 — master/재고현황/YYYY-MM/에 저장
+  const sub = await getMasterSubDir('재고현황');
+  if (sub) return sub;
+  // legacy fallback
   try { return await idbGet('inventoryDirHandle'); } catch(e) { return null; }
 }
 
+// ⭐ (2026-08-11) 개별 폴더 지정 → 통합 폴더 지정으로 리다이렉트
 window.setInventoryFolder = async function() {
-  if (!window.showDirectoryPicker) {
-    alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome/Edge 최신 버전을 사용해 주세요.');
-    return;
-  }
-  try {
-    const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
-    await idbSet('inventoryDirHandle', handle);
-    alert('✅ 재고현황 PDF 저장 폴더 설정 완료!\n\n📁 ' + handle.name + '\n\n이후 💾 PDF 저장 클릭 시\n이 폴더 안에 "년-월" 하위폴더가 자동 생성되고\n그 안에 PDF가 저장됩니다.');
-    inventoryRefreshFolderInfo();
-  } catch(e) {
-    if (e.name !== 'AbortError') console.error('폴더 설정 실패:', e);
-  }
+  const ok = await window.setMasterFolder();
+  if (ok) inventoryRefreshFolderInfo();
+  return ok;
 };
 
 async function inventoryRefreshFolderInfo() {
   const el = document.getElementById('invFolderInfo');
   if (!el) return;
   try {
-    const handle = await getInventoryDirHandle();
     const ym = todayLocalISO().slice(0,7);
+    // ⭐ (2026-08-11) 통합 폴더 우선 표시
+    const master = await idbGet('masterDirHandle');
+    if (master) {
+      el.innerHTML = `📁 PDF 저장 폴더: <b style="color:var(--brand);">${master.name}/재고현황/${ym}/</b>ATM_재고현황_${todayLocalISO()}.pdf`;
+      return;
+    }
+    const handle = await idbGet('inventoryDirHandle');
     if (handle) {
       el.innerHTML = `📁 재고현황 PDF 저장 폴더: <b style="color:var(--brand);">${handle.name}/${ym}/</b>ATM_재고현황_${todayLocalISO()}.pdf`;
     } else {
-      el.innerHTML = `<span style="color:var(--warn);">⚠️ 재고현황 PDF 저장 폴더 미설정</span> — "📁 폴더 변경" 버튼으로 1회만 지정하면 이후 자동 저장됩니다 (매출일보 폴더와 별도)`;
+      el.innerHTML = `<span style="color:var(--warn);">⚠️ 저장 폴더 미설정</span> — 사무실 상단 [📁 통합 저장 폴더] 버튼으로 1회만 지정하세요`;
     }
   } catch(e) {
     el.innerHTML = `<span style="color:var(--muted);">📁 저장 폴더 정보 로딩 실패</span>`;
