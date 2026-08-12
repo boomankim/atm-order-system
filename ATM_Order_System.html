@@ -13785,6 +13785,20 @@ function viewInventory() {
       <div style="font-size:11px; color:var(--muted);">※ 정수 입력. 단위는 품목 카테고리에 따름 (가공육=팩, 그 외=박스). 등록 즉시 오늘 입고에 가산되어 현재고에 반영.</div>
     </div>
 
+    <!-- ⭐ (2026-08-12) 반품 이력 — 배송완료 인보이스의 음수 수량 라인 자동 추출 -->
+    <div class="card" id="invReturnsCard">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+        <h3 style="margin:0;">📋 반품 이력 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">인보이스에서 음수 수량(-2박스 등)으로 입력한 반품 자동 추출 · 주간/월간 확인 후 입고 처리</span></h3>
+        <div style="display:flex; gap:4px;">
+          <button class="btn sm secondary" onclick="inventorySetReturnsRange(7)">최근 7일</button>
+          <button class="btn sm" onclick="inventorySetReturnsRange(30)" id="invReturnsBtn30" style="background:var(--brand); color:#fff;">최근 30일</button>
+          <button class="btn sm secondary" onclick="inventorySetReturnsRange(60)">최근 60일</button>
+          <button class="btn sm secondary" onclick="inventorySetReturnsRange(9999)">전체</button>
+        </div>
+      </div>
+      <div id="invReturnsWrap"></div>
+    </div>
+
     <div class="card">
       <h3>📋 월 실사 (전재고 일괄 입력) <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 빈 칸은 변경 없음, 값 입력한 행만 적용</span></h3>
       <div style="font-size:12px; color:var(--muted); margin-bottom:10px;">실사일 입력값 = 오늘의 전재고로 적용. 그날 입고·출고는 그 위에 가산되어 현재고에 반영됩니다.</div>
@@ -13801,7 +13815,167 @@ function viewInventory() {
   inventoryRenderOutgoing();
   // 월 실사 품목 리스트는 토글 버튼 클릭 시에만 렌더링 (lazy)
   inventoryRefreshFolderInfo();
+  // ⭐ (2026-08-12) 반품 이력 렌더 (기본 최근 30일)
+  window._returnsFilterDays = window._returnsFilterDays || 30;
+  inventoryRenderReturns(window._returnsFilterDays);
 }
+
+// ⭐ (2026-08-12) 반품 이력 표 렌더 — 배송완료 인보이스의 음수 수량 라인 자동 추출
+function inventoryRenderReturns(days) {
+  const wrap = document.getElementById('invReturnsWrap');
+  if (!wrap) return;
+  const days_ = days || 30;
+  // 기간 필터 컷오프
+  const cutoff = new Date();
+  cutoff.setDate(cutoff.getDate() - days_);
+  const cutoffISO = cutoff.getFullYear() + '-' + String(cutoff.getMonth()+1).padStart(2,'0') + '-' + String(cutoff.getDate()).padStart(2,'0');
+  // 처리 완료 플래그
+  if (!DB.inventory) DB.inventory = {};
+  if (!DB.inventory.returnsProcessed) DB.inventory.returnsProcessed = {};
+  const processed = DB.inventory.returnsProcessed;
+
+  const returns = [];
+  (DB.orders || []).forEach(o => {
+    if (!o || o.status !== 'delivered') return;
+    const dateISO = toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '');
+    if (!dateISO || dateISO < cutoffISO) return;
+    const cust = DB.customers.find(c => c.id === o.customerId);
+    const items = getInvoiceItems(o);
+    items.forEach((it, idx) => {
+      if (!it || it._status === 'cancelled') return;
+      const qty = +(it.quantity) || 0;
+      const wgt = +(it.actualWeightKg) || 0;
+      const isReturn = (it.unit === '작업중량') ? (wgt < -0.0001) : (qty < -0.0001);
+      if (!isReturn) return;
+      const p = DB.products.find(x => x.id === it.productId);
+      returns.push({
+        orderId: o.id, itemIdx: idx,
+        dateISO, custName: cust ? cust.name : '(?)',
+        invNo: o.invoiceNo || o.orderNo,
+        pid: it.productId,
+        pName: p ? p.name : '(품목없음)',
+        cut: p ? p.cut : '',
+        unit: it.unit || '박스',
+        qty: qty,
+        weightKg: wgt,
+        notes: it.notes || '',
+        processedAt: processed[o.id + '::' + idx] || null
+      });
+    });
+  });
+  returns.sort((a,b) => (b.dateISO || '').localeCompare(a.dateISO || ''));
+
+  if (returns.length === 0) {
+    wrap.innerHTML = '<div class="empty" style="padding:20px; text-align:center; color:var(--muted);"><div style="font-size:32px;">📭</div>' + days_ + '일 이내 반품 이력이 없습니다.</div>';
+    return;
+  }
+  const processedCount = returns.filter(r => r.processedAt).length;
+  const pendingCount = returns.length - processedCount;
+  const totalRefunded = returns.reduce((s, r) => {
+    if (r.unit === '작업중량') return s + Math.abs(r.weightKg);
+    return s + Math.abs(r.qty);
+  }, 0);
+
+  let html = '<div style="font-size:12px; margin-bottom:8px; padding:8px 12px; background:#FFF7E0; border-radius:6px;">';
+  html += '총 <b>' + returns.length + '건</b> · 미처리 <b style="color:#C0392B;">' + pendingCount + '건</b> · 처리완료 <b style="color:#2E7D32;">' + processedCount + '건</b>';
+  html += '</div>';
+
+  html += '<div style="overflow-x:auto;"><table class="t" style="width:100%;">';
+  html += '<thead><tr>';
+  html += '<th>날짜</th><th>거래처</th><th>인보이스#</th><th>품목</th><th class="num">반품량</th><th class="act">처리</th>';
+  html += '</tr></thead><tbody>';
+  returns.forEach(r => {
+    const done = !!r.processedAt;
+    const rowStyle = done ? 'background:#F5F5F5; color:#999;' : '';
+    const nameStyle = done ? 'text-decoration:line-through;' : '';
+    const qtyDisplay = r.unit === '작업중량'
+      ? Math.abs(r.weightKg).toFixed(2) + ' kg'
+      : Math.abs(r.qty) + ' ' + (r.unit === '팩' ? 'pack' : (r.unit === '박스' ? 'box' : r.unit));
+    const btn = done
+      ? '<span style="font-size:10px; color:#2E7D32; margin-right:4px;">✓ ' + (r.processedAt || '').slice(0,10) + '</span>'
+        + '<button class="btn sm secondary" onclick="inventoryUndoReturnProcessed(\''+r.orderId+'\','+r.itemIdx+')" title="처리 취소" style="padding:2px 8px; font-size:11px;">↩ 취소</button>'
+      : '<button class="btn sm" onclick="inventoryReceiveFromReturn(\''+r.orderId+'\','+r.itemIdx+',\''+r.pid+'\','+Math.abs(r.qty)+',\''+r.unit+'\','+Math.abs(r.weightKg)+')" style="background:var(--brand); color:#fff; padding:3px 10px; font-size:11px;">📥 입고 등록</button>'
+        + ' <button class="btn sm secondary" onclick="inventoryMarkReturnProcessed(\''+r.orderId+'\','+r.itemIdx+')" title="이미 다른 방법으로 처리했음" style="padding:2px 8px; font-size:11px;">✓ 완료 표시</button>';
+    html += '<tr style="' + rowStyle + '">';
+    html += '<td style="' + nameStyle + '">' + r.dateISO + '</td>';
+    html += '<td style="' + nameStyle + '"><b>' + escapeHtmlSimple(r.custName) + '</b></td>';
+    html += '<td style="' + nameStyle + '">' + (r.invNo || '-') + '</td>';
+    html += '<td style="' + nameStyle + '">' + escapeHtmlSimple(r.pName) + (r.notes ? ' <small style="color:#777;">※ '+escapeHtmlSimple(r.notes)+'</small>' : '') + '</td>';
+    html += '<td class="num"><b style="color:#C0392B;">' + qtyDisplay + '</b></td>';
+    html += '<td class="act" style="white-space:nowrap;">' + btn + '</td>';
+    html += '</tr>';
+  });
+  html += '</tbody></table></div>';
+  wrap.innerHTML = html;
+}
+
+window.inventorySetReturnsRange = function(days) {
+  window._returnsFilterDays = days;
+  // Update button highlighting
+  ['7', '30', '60'].forEach(d => {
+    const btn = document.querySelector('button[onclick="inventorySetReturnsRange(' + d + ')"]');
+    if (btn) {
+      if (parseInt(d,10) === days) { btn.style.background = 'var(--brand)'; btn.style.color = '#fff'; btn.className = 'btn sm'; }
+      else { btn.style.background = ''; btn.style.color = ''; btn.className = 'btn sm secondary'; }
+    }
+  });
+  const allBtn = document.querySelector('button[onclick="inventorySetReturnsRange(9999)"]');
+  if (allBtn) {
+    if (days === 9999) { allBtn.style.background = 'var(--brand)'; allBtn.style.color = '#fff'; allBtn.className = 'btn sm'; }
+    else { allBtn.style.background = ''; allBtn.style.color = ''; allBtn.className = 'btn sm secondary'; }
+  }
+  inventoryRenderReturns(days);
+};
+
+// [📥 입고 등록] 클릭 시: 위 입고 등록 폼에 자동 채우고 스크롤 (사용자가 확인 후 [입고 등록] 버튼 눌러야 실제 반영)
+// 처리완료 플래그는 안 세팅 — 사용자가 실제 입고 완료 후 [✓ 완료 표시] 로 명시적으로 표시
+window.inventoryReceiveFromReturn = function(orderId, itemIdx, pid, absQty, unit, absWeightKg) {
+  const sel = document.getElementById('invReceiptProduct');
+  const qtyEl = document.getElementById('invReceiptQty');
+  if (sel) {
+    sel.value = pid;
+    if (typeof inventoryUpdateReceiptUnitHint === 'function') inventoryUpdateReceiptUnitHint();
+  }
+  if (qtyEl) {
+    // 작업중량은 kg 정수 반올림 · 나머지는 그대로
+    const fillQty = unit === '작업중량' ? Math.max(1, Math.round(+absWeightKg || 0)) : Math.max(1, Math.round(+absQty || 0));
+    qtyEl.value = fillQty;
+  }
+  // 입고 폼 카드로 스크롤 + 짧게 강조
+  const rcpCard = sel ? sel.closest('.card') : null;
+  if (rcpCard) {
+    try { rcpCard.scrollIntoView({ behavior: 'smooth', block: 'center' }); } catch(_){}
+    const origBg = rcpCard.style.background;
+    rcpCard.style.background = '#FFFBE0';
+    setTimeout(() => { rcpCard.style.background = origBg; }, 1500);
+  }
+  if (qtyEl) { try { qtyEl.focus(); qtyEl.select && qtyEl.select(); } catch(_){} }
+  if (typeof showToast === 'function') showToast('입고 등록 값이 채워졌습니다. 확인 후 [📥 입고 등록] 클릭 → 이 반품 라인의 [✓ 완료 표시]');
+};
+
+// [✓ 완료 표시] — 처리완료 플래그 저장
+window.inventoryMarkReturnProcessed = function(orderId, itemIdx) {
+  if (!DB.inventory) DB.inventory = {};
+  if (!DB.inventory.returnsProcessed) DB.inventory.returnsProcessed = {};
+  DB.inventory.returnsProcessed[orderId + '::' + itemIdx] = new Date().toISOString();
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('inventory/returnsProcessed').update({ [orderId + '::' + itemIdx]: DB.inventory.returnsProcessed[orderId + '::' + itemIdx] }); } catch(_){}
+  }
+  inventoryRenderReturns(window._returnsFilterDays || 30);
+};
+
+// [↩ 취소] — 처리완료 플래그 제거
+window.inventoryUndoReturnProcessed = function(orderId, itemIdx) {
+  if (!DB.inventory || !DB.inventory.returnsProcessed) return;
+  const key = orderId + '::' + itemIdx;
+  delete DB.inventory.returnsProcessed[key];
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('inventory/returnsProcessed').update({ [key]: null }); } catch(_){}
+  }
+  inventoryRenderReturns(window._returnsFilterDays || 30);
+};
 
 // ⭐ (2026-07-29) 월 실사용 인쇄 시트 — 카테고리별 페이지, 시스템 재고 미표시
 //   컬럼: 품목 | 브랜드 | 실사 수량 (아주 넓음) | 합계 (넓음)
