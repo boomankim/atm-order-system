@@ -595,6 +595,47 @@ function removeFavoritePair(cust, productId, notes) {
   }
   return cust.favoritePairs.length < before;
 }
+// ⭐ (2026-08-12) 중복 짝 정리 — productId+notes 완전 동일한 짝 제거.
+//   원인: Firebase 동시 편집 race · 옛 데이터 · 복원 시 병합 등.
+//   반환: 제거된 개수.
+function dedupFavoritePairs(cust) {
+  if (!cust || !Array.isArray(cust.favoritePairs)) return 0;
+  const seen = new Set();
+  const out = [];
+  for (const pair of cust.favoritePairs) {
+    if (!pair || !pair.productId) continue;
+    const key = pair.productId + '||' + normalizeFavNotes(pair.notes);
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push({ productId: pair.productId, notes: normalizeFavNotes(pair.notes) });
+  }
+  const removed = cust.favoritePairs.length - out.length;
+  if (removed > 0) cust.favoritePairs = out;
+  return removed;
+}
+// 앱 시작 시 전체 거래처 자동 정리 (일회성 · Firebase 저장)
+// ⭐ (2026-08-12) saveEntityField 사용 — 로컬 idx 로 Firebase 쓰면 동시성 사고 재발.
+//   과거 "거래처 뒤바뀜" 사고 방지: 반드시 cust.id 기반 안전 저장.
+function cleanupAllFavoriteDuplicates() {
+  if (!Array.isArray(DB.customers)) return;
+  let totalRemoved = 0, custsAffected = 0;
+  DB.customers.forEach(c => {
+    if (!c || !c.id) return;
+    const removed = dedupFavoritePairs(c);
+    if (removed > 0) {
+      totalRemoved += removed;
+      custsAffected++;
+      try { saveEntityField('customers', c.id, 'favoritePairs'); }
+      catch(e) { console.warn('favoritePairs dedup 저장 실패:', e); }
+    }
+  });
+  if (totalRemoved > 0) {
+    saveLocalDB();
+    console.info('[favoritePairs] 중복 자동 정리 · 거래처 ' + custsAffected + '곳 · ' + totalRemoved + '개 제거');
+  }
+}
+window.cleanupAllFavoriteDuplicates = cleanupAllFavoriteDuplicates;
+
 function updateFavoritePairNotes(cust, productId, oldNotes, newNotes) {
   if (!cust || !productId || !Array.isArray(cust.favoritePairs)) return false;
   const oldN = normalizeFavNotes(oldNotes);
@@ -4080,6 +4121,14 @@ function renderFavChips(custId) {
   const chipsEl = document.getElementById('favChips');
   const countEl = document.getElementById('favCount');
   if (!cust || !chipsEl) return;
+  // ⭐ (2026-08-12) 렌더 직전 중복 짝 안전망
+  try {
+    const removed = dedupFavoritePairs(cust);
+    if (removed > 0) {
+      try { saveEntityField('customers', cust.id, 'favoritePairs'); } catch(_){}
+      console.info('[favoritePairs] admin render 시 중복 ' + removed + '개 제거 —', cust.name);
+    }
+  } catch(_){}
   const pairs = (Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [])
     .map((pair, idx) => {
       if (!pair || !pair.productId) return null;
@@ -5677,6 +5726,14 @@ function viewOrder(params) {
 function renderFavQuick(cust) {
   const div = document.getElementById('favList');
   const card = document.getElementById('favCard');
+  // ⭐ (2026-08-12) 렌더 직전 중복 짝 안전망 — race 로 새로 생긴 중복도 즉시 제거
+  try {
+    const removed = dedupFavoritePairs(cust);
+    if (removed > 0) {
+      try { saveEntityField('customers', cust.id, 'favoritePairs'); } catch(_){}
+      console.info('[favoritePairs] render 시 중복 ' + removed + '개 제거 —', cust.name);
+    }
+  } catch(_){}
   // 짝(productId + notes) 단위로 카드 분리. 유효한 활성 품목만.
   const pairs = (Array.isArray(cust.favoritePairs) ? cust.favoritePairs : [])
     .map(pair => {
@@ -8573,6 +8630,14 @@ window.openBankCsvImportModal = function() {
         <span style="flex:1;"></span>
         <span id="bankCsvStat" style="font-size:11px; color:var(--muted);"></span>
       </div>
+      <div style="padding:8px 18px; border-bottom:1px solid var(--line); background:#FFF9E6; display:flex; gap:10px; flex-wrap:wrap; align-items:center;">
+        <label style="font-size:12px; color:#5D4037; display:flex; align-items:center; gap:6px; cursor:pointer;">
+          <input type="checkbox" id="bankCsvOverrideDate" checked onchange="bankCsvUpdateOverrideInfo()" style="cursor:pointer;">
+          <b>지정 입금일로 모두 등록</b>
+        </label>
+        <input type="date" id="bankCsvOverrideDateVal" onchange="bankCsvUpdateOverrideInfo()" style="padding:5px 8px; border:1px solid var(--line); border-radius:5px; font-size:12px;">
+        <span id="bankCsvOverrideInfo" style="font-size:11px; color:var(--muted);"></span>
+      </div>
       <div id="bankCsvPreview" style="flex:1; overflow:auto; padding:10px 18px;">
         <div style="text-align:center; padding:60px 20px; color:var(--muted); font-size:13px;">
           📁 CSV 파일 선택 후 [🔍 파싱 & 미리보기] 를 눌러주세요.<br><br>
@@ -8594,6 +8659,30 @@ window.openBankCsvImportModal = function() {
   `;
   bg.onclick = e => { if (e.target === bg) closeBankCsvImportModal(); };
   document.body.appendChild(bg);
+  // ⭐ (2026-08-12) 지정 입금일 프리셋 — 매출일보 [입금일] 필드에서 읽어옴
+  try {
+    const ipDateEl = document.getElementById('ipDate');
+    const overrideEl = document.getElementById('bankCsvOverrideDateVal');
+    if (overrideEl) {
+      overrideEl.value = (ipDateEl && ipDateEl.value) || (window._ipDateSticky || todayLocalISO());
+    }
+    bankCsvUpdateOverrideInfo();
+  } catch(_){}
+};
+
+// ⭐ (2026-08-12) 오버라이드 체크박스 상태 표시 갱신
+window.bankCsvUpdateOverrideInfo = function() {
+  const infoEl = document.getElementById('bankCsvOverrideInfo');
+  const chkEl = document.getElementById('bankCsvOverrideDate');
+  const dateEl = document.getElementById('bankCsvOverrideDateVal');
+  if (!infoEl || !chkEl || !dateEl) return;
+  if (chkEl.checked && dateEl.value) {
+    infoEl.innerHTML = '→ 저장 시 모든 payment 입금일 = <b>' + dateEl.value + '</b> (CSV 원본 날짜는 bankDate 필드에 별도 보존)';
+  } else if (chkEl.checked && !dateEl.value) {
+    infoEl.innerHTML = '<span style="color:var(--warn);">⚠️ 날짜를 지정하세요.</span>';
+  } else {
+    infoEl.innerHTML = '→ 저장 시 CSV 원본 날짜 그대로 사용';
+  }
 };
 window.closeBankCsvImportModal = function() {
   const bg = document.getElementById('bankCsvModalBg');
@@ -8748,6 +8837,17 @@ window.bankCsvSaveBatch = async function() {
   const bank = p.bank || 'unknown';
   const now = new Date().toISOString();
   let saved = 0, failed = 0, learned = 0;
+  // ⭐ (2026-08-12) 지정 입금일 오버라이드 옵션
+  //   체크 시 payment.date = 사용자 지정 날짜 (매출일보 [입금일] 필드 기준)
+  //   bankDate 는 CSV 원본 날짜를 항상 보존 (은행 대조용 감사 필드)
+  let overrideDate = null;
+  try {
+    const chkEl = document.getElementById('bankCsvOverrideDate');
+    const dateEl = document.getElementById('bankCsvOverrideDateVal');
+    if (chkEl && chkEl.checked && dateEl && /^\d{4}-\d{2}-\d{2}$/.test(dateEl.value || '')) {
+      overrideDate = dateEl.value;
+    }
+  } catch(_){}
   // ⭐ 학습맵 준비 (없으면 초기화)
   if (!DB.bankSenderMap) DB.bankSenderMap = {};
 
@@ -8773,13 +8873,15 @@ window.bankCsvSaveBatch = async function() {
       const pay = {
         id: uid('pay'),
         customerId: it.cid,
-        date: it.dateISO,
+        // ⭐ payment.date: 오버라이드 있으면 지정 날짜, 없으면 CSV 원본 날짜
+        date: overrideDate || it.dateISO,
         amount: it.amount,
         method: 'bank',
         reference: it.invMatch ? ('INV ' + it.invMatch.invNo) : (it.fields.refNo ? ('REF ' + it.fields.refNo) : ''),
         notes: '[' + bank.toUpperCase() + ' CSV] ' + (it.fields.senderName || '') + (it.fields.businessGuess ? ' / ' + it.fields.businessGuess : ''),
         createdAt: now,
         bankRef: it.fields.refNo || null,
+        // ⭐ bankDate: 항상 CSV 원본 날짜 (감사/대조용)
         bankDate: it.dateISO,
         bankSource: bank,
         bankImportBatchId: batchId,
@@ -9977,10 +10079,10 @@ function removeInvoiceItem(orderId, idx) {
     renderPrepTbody(o); renderPrepTotals(o); renderInvoiceChangeNotice(o);
     return;
   }
-  var reason = prompt('"' + name + '" 취소 처리합니다.\n사유 입력 (예: 재고없음, 고객취소):');
-  if (reason === null) return;
+  // ⭐ (2026-08-12) 사유 prompt 제거 — 즉시 취소 처리 (사용자 요청).
+  //   기존 _cancelNote 데이터는 보존 · 새 취소는 빈 값으로 (인쇄에 사유 표시 안 됨).
   item._status = 'cancelled';
-  item._cancelNote = reason || '취소';
+  item._cancelNote = '';
   // Phase 2 동시성: 부분 업데이트
   saveOrderItemField(oid, listKey, idx, '_status');
   saveOrderItemField(oid, listKey, idx, '_cancelNote');
@@ -10031,8 +10133,9 @@ function renderPrepAddResults(orderId, q) {
     var p   = results[j];
     var lbl = CUT_DISPLAY[p.cut] || p.cut;
     var pid = p.id;
+    // ⭐ (2026-08-12) 사유 prompt 제거 — 클릭 즉시 추가 (사용자 요청).
     html += '<div'
-      + ' onclick="var n=prompt(\'추가 사유 (예: 긴급 전화 추가주문):\') || \'\';addInvoiceItem(\'' + orderId + '\',\'' + pid + '\',n)"'
+      + ' onclick="addInvoiceItem(\'' + orderId + '\',\'' + pid + '\',\'\')"'
       + ' onmouseover="this.style.background=\'#FFF5D6\'"'
       + ' onmouseout="this.style.background=\'transparent\'"'
       + ' style="cursor:pointer;padding:6px 8px;font-size:13px;border-bottom:1px solid var(--line);">'
@@ -14835,6 +14938,7 @@ function initApp(data) {
   migrateProducts();
   migrateFavoritePairs();
   cleanupCustomPriceKeys();   // ⭐ (2026-07-09) "" 키 자동 청소 — Firebase 저장 실패 원인 근절
+  cleanupAllFavoriteDuplicates();   // ⭐ (2026-08-12) 즐겨찾기 짝 중복 자동 정리 (동시 편집 race 대응)
   route();
   // 자동 백업: 1) 앱 열림 트리거 (태블릿/핸드폰용), 2) 30분마다 스케줄 트리거 (PC용)
   setTimeout(() => checkAutoBackup({ onOpen: true }), 3000); // 3초 후 — 폴더 권한·DB 로드 안정화 대기
