@@ -13886,7 +13886,11 @@ function viewInventory() {
         <button class="btn" id="invStocktakeToggleBtn" onclick="inventoryToggleStocktake()">📋 품목 리스트 펼치기</button>
         <button class="btn warn" id="invStocktakeApplyBtn" onclick="inventoryApplyStocktakeBulk()" style="display:none;">✅ 일괄 실사 적용</button>
         <button class="btn sm secondary" id="invStocktakeClearBtn" onclick="inventoryClearStocktakeInputs()" style="display:none;">🧹 입력값 초기화</button>
-        <button class="btn sm" style="background:var(--info);" onclick="printStocktakeSheet()" title="실사용 인쇄 (카테고리별 페이지 · 실사 수량·합계 기입란)">🖨️ 실사 인쇄</button>
+        <button class="btn sm" style="background:var(--info);" onclick="printStocktakeSheet()" title="실사용 빈 폼 인쇄 (실물 확인 시 수기로 적어 오는 종이)">🖨️ 재고 조사 폼 인쇄</button>
+        <div style="position:relative; display:inline-block;">
+          <button class="btn sm" style="background:#5E35B1; color:#fff;" onclick="inventoryToggleStocktakeHistoryDropdown()" title="지난 실사의 오차 리스트 다시 조회">📊 지난 실사 이력</button>
+          <div id="invStocktakeHistoryDropdown" style="display:none; position:absolute; top:calc(100% + 4px); right:0; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.15); min-width:280px; max-width:360px; z-index:100;"></div>
+        </div>
       </div>
       <div id="invStocktakeWrap" style="display:none;"></div>
     </div>
@@ -14575,6 +14579,56 @@ window.inventoryExportStocktakeVarianceCSV = function(dateISO) {
   a.download = 'ATM_실사오차_' + dateISO + '.csv';
   a.click();
   URL.revokeObjectURL(url);
+};
+
+// ⭐ (2026-08-13) 지난 실사 이력 드롭다운 · 옵션 A
+window.inventoryToggleStocktakeHistoryDropdown = function() {
+  const dd = document.getElementById('invStocktakeHistoryDropdown');
+  if (!dd) return;
+  if (dd.style.display !== 'none') { dd.style.display = 'none'; return; }
+  // 이력 조회 · 최근순 정렬
+  const hist = (DB.inventory && DB.inventory.stocktakeHistory) || {};
+  const dates = Object.keys(hist).sort((a, b) => b.localeCompare(a));
+  if (dates.length === 0) {
+    dd.innerHTML = '<div style="padding:16px; text-align:center; color:var(--muted); font-size:12px;">저장된 실사 이력이 없습니다.<br><small>실사값 입력 후 [일괄 적용] 하면 자동 저장됩니다.</small></div>';
+  } else {
+    const rows = dates.slice(0, 24).map(d => {
+      const entry = hist[d] || { items: [] };
+      const items = entry.items || [];
+      const total = items.reduce((s, it) => s + (+it.variance || 0), 0);
+      const sign = total > 0.0001 ? '+' : '';
+      const color = total > 0.0001 ? '#2E7D32' : (total < -0.0001 ? '#C62828' : '#666');
+      return '<div onclick="inventoryOpenStocktakeHistory(\'' + d + '\')" '
+        + 'style="padding:8px 12px; border-bottom:1px solid #F0EAE0; cursor:pointer; display:flex; justify-content:space-between; align-items:center; font-size:12px;" '
+        + 'onmouseover="this.style.background=\'#FFF7E0\'" onmouseout="this.style.background=\'\'">'
+        + '<span><b>' + d + '</b> <span style="color:var(--muted); font-size:11px;">· ' + items.length + '품목</span></span>'
+        + '<span style="color:' + color + '; font-weight:700;">' + sign + total.toFixed(1) + '</span>'
+        + '</div>';
+    }).join('');
+    const more = dates.length > 24 ? '<div style="padding:6px 12px; font-size:11px; color:var(--muted); text-align:center; border-top:1px solid var(--line);">최근 24건 표시 · 전체 ' + dates.length + '건</div>' : '';
+    dd.innerHTML = '<div style="padding:8px 12px; font-size:11px; font-weight:700; color:var(--brand-dark); border-bottom:2px solid var(--line); background:#FAF6F1;">📊 지난 실사 이력 (' + dates.length + '건) <span style="float:right; cursor:pointer; color:var(--muted);" onclick="event.stopPropagation(); document.getElementById(\'invStocktakeHistoryDropdown\').style.display=\'none\';">✕</span></div>'
+      + '<div style="max-height:360px; overflow-y:auto;">' + rows + '</div>' + more;
+  }
+  dd.style.display = 'block';
+  // 외부 클릭 시 자동 닫기
+  setTimeout(() => {
+    const closer = (e) => {
+      if (!dd.contains(e.target) && e.target.getAttribute('onclick') !== 'inventoryToggleStocktakeHistoryDropdown()') {
+        dd.style.display = 'none';
+        document.removeEventListener('click', closer);
+      }
+    };
+    document.addEventListener('click', closer);
+  }, 100);
+};
+
+// 이력 클릭 → 해당 날짜 오차 카드 재렌더
+window.inventoryOpenStocktakeHistory = function(dateISO) {
+  const dd = document.getElementById('invStocktakeHistoryDropdown');
+  if (dd) dd.style.display = 'none';
+  if (typeof inventoryRenderStocktakeVariance === 'function') {
+    inventoryRenderStocktakeVariance(dateISO);
+  }
 };
 
 function inventoryRenderSummary() {
