@@ -13886,9 +13886,9 @@ function viewInventory() {
         <button class="btn" id="invStocktakeToggleBtn" onclick="inventoryToggleStocktake()">📋 품목 리스트 펼치기</button>
         <button class="btn warn" id="invStocktakeApplyBtn" onclick="inventoryApplyStocktakeBulk()" style="display:none;">✅ 일괄 실사 적용</button>
         <button class="btn sm secondary" id="invStocktakeClearBtn" onclick="inventoryClearStocktakeInputs()" style="display:none;">🧹 입력값 초기화</button>
-        <button class="btn sm" style="background:var(--info); min-width:150px;" onclick="printStocktakeSheet()" title="실사용 빈 폼 인쇄 (실물 확인 시 수기로 적어 오는 종이)">🖨️ 재고 조사 폼 인쇄</button>
-        <div style="position:relative; display:inline-block;">
-          <button class="btn sm" style="background:#5E35B1; color:#fff; min-width:150px;" onclick="inventoryToggleStocktakeHistoryDropdown()" title="지난 실사의 오차 리스트 다시 조회">📊 지난 실사 이력</button>
+        <button class="btn sm" style="background:var(--info); min-width:170px; padding:6px 12px;" onclick="printStocktakeSheet()" title="실사용 빈 폼 인쇄 (실물 확인 시 수기로 적어 오는 종이)">🖨️ 재고 조사 폼 인쇄</button>
+        <div style="position:relative; display:inline-block; min-width:170px;">
+          <button class="btn sm" style="background:#5E35B1; color:#fff; min-width:170px; width:100%; padding:6px 12px;" onclick="inventoryToggleStocktakeHistoryDropdown()" title="지난 실사의 오차 리스트 다시 조회">📊 지난 실사 이력</button>
           <div id="invStocktakeHistoryDropdown" style="display:none; position:absolute; top:calc(100% + 4px); right:0; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.15); min-width:280px; max-width:360px; z-index:100;"></div>
         </div>
       </div>
