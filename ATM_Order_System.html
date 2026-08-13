@@ -399,16 +399,23 @@
   @media (max-width: 640px) and (orientation: portrait) {
     .nav {
       padding: 6px 8px !important;
-      flex-wrap: nowrap !important;
+      /* ⭐ (2026-08-13) staff 모드는 9개 항목 → wrap 허용해서 2줄로 (이전엔 nowrap 강제로 "어드민 잠그기" 글자가 세로로 깨짐).
+       *   customer 모드는 항목 4개라 어차피 한 줄에 다 들어감. */
+      flex-wrap: wrap !important;
       gap: 4px !important;
     }
-    .nav .logo { font-size: 13px !important; margin-right: 4px !important; letter-spacing: 0.5px; }
+    .nav .logo { font-size: 13px !important; margin-right: 4px !important; letter-spacing: 0.5px; white-space: nowrap; }
     .nav .tab {
       padding: 4px 8px !important;
       font-size: 11px !important;
       white-space: nowrap;
     }
-    .nav .util { padding: 4px 8px !important; font-size: 11px !important; }
+    .nav .util {
+      padding: 4px 8px !important; font-size: 11px !important;
+      white-space: nowrap;
+    }
+    /* spacer 는 wrap 방식에선 방해될 수 있음 — 폭 0으로 축소해서 자연스러운 wrap 유도 */
+    .nav .spacer { flex: 0 0 100%; height: 0; }
     /* 거래처명 텍스트 — 넘치면 말줄임표 */
     .nav .cust-name {
       overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
@@ -6462,12 +6469,21 @@ window.handleTomorrowDelivery = function(custId) {
 };
 
 async function submitOrder(custId, deliveryDateISO) {
-  // ⭐ (2026-08-01) 중복 제출 최종 방어 — 최근 5초 내 같은 거래처+CART 로 제출한 이력 있으면 차단
-  //   인터넷 느린 곳에서 setDeliveryAndSubmit 우회로 재진입되는 극단 케이스 방어.
-  const _dedupeKey = 'atm_submit_dedupe';
+  // ⭐ (2026-08-01) 방어 1: 최근 8초 내 같은 거래처+CART → 즉시 차단 (더블 클릭 방어)
+  // ⭐ (2026-08-13) 방어 2: localStorage 5분 dedup — 탭 닫아도 유지, 인터넷 느린 재시도 커버
+  //                방어 3: 클라이언트 submissionId 로 Firebase idempotent 저장 (같은 카트→같은 ID→중복 저장 자체 차단)
+  //                방어 4: 12초 타임아웃 후 서버에 실제로 저장됐는지 재조회 → 있으면 성공 처리
+  if (!custId || String(custId).trim() === '') {
+    return alert('⚠️ 거래처가 지정되지 않았습니다.\n주문 링크를 다시 확인하거나 관리자에게 문의하세요.');
+  }
+  if (CART.length === 0) return alert('주문 품목을 추가해주세요.');
+
   const _now = Date.now();
   const _cartSig = String(CART.length) + ':' + CART.map(function(i){ return i.productId + '_' + (i.quantity||0) + '_' + (i.unit||''); }).join('|');
   const _mySig = custId + '::' + _cartSig;
+
+  // 방어 1: sessionStorage 8초 (탭 세션) — 즉시 재클릭 방어
+  const _dedupeKey = 'atm_submit_dedupe';
   try {
     const _last = JSON.parse(sessionStorage.getItem(_dedupeKey) || 'null');
     if (_last && _last.sig === _mySig && (_now - _last.ts) < 8000) {
@@ -6476,11 +6492,43 @@ async function submitOrder(custId, deliveryDateISO) {
     }
     sessionStorage.setItem(_dedupeKey, JSON.stringify({ sig: _mySig, ts: _now }));
   } catch(_){}
-  // ⭐ (2026-07-28) 방어 1/3: 거래처 미지정 상태 주문 생성 차단 (orphan 예방)
-  if (!custId || String(custId).trim() === '') {
-    return alert('⚠️ 거래처가 지정되지 않았습니다.\n주문 링크를 다시 확인하거나 관리자에게 문의하세요.');
+
+  // 방어 2: localStorage 5분 dedup — 같은 카트에 대해 이전 submissionId 재사용 (idempotent key)
+  const _lsKey = 'atm_submission_ids';
+  let submissionId = null;
+  try {
+    const store = JSON.parse(localStorage.getItem(_lsKey) || '{}');
+    // 5분 지난 항목 청소
+    const cutoff = _now - 5*60*1000;
+    Object.keys(store).forEach(k => { if (!store[k] || store[k].ts < cutoff) delete store[k]; });
+    if (store[_mySig] && store[_mySig].submissionId) {
+      submissionId = store[_mySig].submissionId;
+      // 같은 사인 재시도 — 서버에 이미 저장됐는지 확인
+      if (DB_REF) {
+        try {
+          const snap = await DB_REF.child('orders').once('value');
+          const list = snap.val() || [];
+          const existing = (Array.isArray(list) ? list : Object.values(list)).find(o => o && o.submissionId === submissionId);
+          if (existing) {
+            // 이미 서버에 있음 — 성공 처리
+            CART = []; clearCartDraft();
+            alert('✅ 이 주문은 이미 저장되어 있습니다.\n주문번호: ' + (existing.orderNo || '(대기)'));
+            location.hash = '#orderDetail?id=' + existing.id;
+            return;
+          }
+        } catch(_){}
+      }
+    } else {
+      // 신규 submissionId 생성
+      submissionId = 'sub_' + _now + '_' + Math.random().toString(36).slice(2, 10);
+      store[_mySig] = { submissionId, ts: _now };
+      localStorage.setItem(_lsKey, JSON.stringify(store));
+    }
+  } catch(_) {
+    submissionId = 'sub_' + _now + '_' + Math.random().toString(36).slice(2, 10);
   }
-  if (CART.length === 0) return alert('주문 품목을 추가해주세요.');
+  window._pendingSubmissionId = submissionId;
+  window._pendingSubmissionSig = _mySig;
 
   // Phase 2 동시성: 트랜잭션으로 orderSeq 를 안전하게 증가시켜 주문번호 중복 방지
   // (두 거래처가 동시에 주문 제출해도 서로 다른 번호 보장)
@@ -6536,7 +6584,9 @@ async function submitOrder(custId, deliveryDateISO) {
     deliveryNotes: _finalNotes,
     items: CART.map(i => ({...i, actualWeightKg: null})), // 박스육·작업육 모두 계근 후 직원이 입력
     status: 'new',
-    createdAt: new Date().toISOString()
+    createdAt: new Date().toISOString(),
+    // ⭐ (2026-08-13) idempotent 저장 키 — Firebase transaction 안에서 중복 감지
+    submissionId: submissionId,
   };
   DB.orders.push(order);
 
@@ -6572,20 +6622,50 @@ async function submitOrder(custId, deliveryDateISO) {
   if (_bg) _bg.onclick = null;
 
   // Phase 2 동시성: 전체 DB 덮어쓰기 대신 신규 주문을 트랜잭션으로 push.
-  // 거래처 favorites 도 부분 업데이트 (다른 거래처 주문과 충돌 없음).
+  // ⭐ (2026-08-13) idempotent 보호: transaction 안에서 submissionId 중복 감지 → 이미 있으면 재삽입 안 함.
+  //   거래처 favorites 도 부분 업데이트 (다른 거래처 주문과 충돌 없음).
+  //   중복 감지되면 existing 주문의 id/orderNo 로 remap → 로컬 order 도 교체하여 stale ghost 방지.
   const delivered = !DB_REF ? true : await new Promise(resolve => {
     let done = false;
     const finish = ok => { if (!done) { done = true; clearTimeout(timer); resolve(ok); } };
-    const timer = setTimeout(() => finish(false), 12000); // 12초 내 확인 못하면 실패로 간주
+    const _remapToExisting = (existing) => {
+      // 로컬 order 를 서버 existing 으로 교체 (ghost 방지)
+      DB.orders = DB.orders.filter(x => x.id !== order.id);
+      DB.orders.push(existing);
+      // 참조 order 도 존재 값으로 갱신 (아래 성공 화면에서 orderNo/id 사용)
+      order.id = existing.id;
+      order.orderNo = existing.orderNo;
+      saveLocalDB();
+    };
+    const timer = setTimeout(async () => {
+      // ⭐ 12초 타임아웃 — 서버에 이미 저장됐을 수도 있으니 재조회
+      try {
+        const snap = await DB_REF.child('orders').once('value');
+        const list = snap.val() || [];
+        const existing = (Array.isArray(list) ? list : Object.values(list)).find(o => o && (o.submissionId === submissionId || o.id === order.id));
+        if (existing) { _remapToExisting(existing); finish(true); return; }
+      } catch(_){}
+      finish(false);
+    }, 12000);
     _lastSaveTime = Date.now();
     DB_REF.child('orders').transaction(currentList => {
       const list = Array.isArray(currentList) ? currentList.slice() : [];
-      if (list.some(x => x && x.id === order.id)) return list; // 이미 추가됨
+      // ⭐ 중복 감지 2중: id 또는 submissionId 둘 중 하나라도 이미 있으면 skip
+      if (list.some(x => x && (x.id === order.id || (submissionId && x.submissionId === submissionId)))) return list;
       list.push(order);
       return list;
-    }, (error, committed) => {
+    }, (error, committed, snapshot) => {
       if (committed && !error) {
-        // 거래처 favorites 부분 업데이트 (fire-and-forget)
+        // ⭐ committed=true 지만 우리가 실제로 push 됐는지 확인 (다른 세션이 먼저 submissionId push 했으면 우리는 skip 됨).
+        //   최종 서버 상태에서 submissionId 로 존재 확인 → 다른 id 로 저장돼 있으면 로컬 remap.
+        try {
+          const finalList = snapshot && typeof snapshot.val === 'function' ? snapshot.val() : null;
+          if (finalList) {
+            const list = Array.isArray(finalList) ? finalList : Object.values(finalList);
+            const existing = list.find(o => o && ((submissionId && o.submissionId === submissionId) || o.id === order.id));
+            if (existing && existing.id !== order.id) _remapToExisting(existing);
+          }
+        } catch(_){}
         if (custForFav) saveEntityField('customers', custId, 'favoritePairs');
         finish(true);
       } else {
@@ -14186,7 +14266,7 @@ function inventoryRenderStocktake() {
               <td>${p.name || '(이름 없음)'}</td>
               <td class="num" style="color:var(--muted); font-size:11px;">${unit}</td>
               <td class="num">${inventoryFmt((e && e.prev) || 0)}</td>
-              <td class="num"><input type="number" step="1" data-pid="${p.id}" data-unit="${unit}" class="invStockInput" placeholder="—" style="width:120px; text-align:right; padding:4px 8px; border:1px solid var(--line); border-radius:4px;"></td>
+              <td class="num"><input type="number" step="1" data-pid="${p.id}" data-unit="${unit}" class="invStockInput" placeholder="—" onkeydown="inventoryStockInputKey(event, this)" style="width:120px; text-align:right; padding:4px 8px; border:1px solid var(--line); border-radius:4px;"></td>
             </tr>
           `).join('');
         }).join('')}
@@ -14194,6 +14274,23 @@ function inventoryRenderStocktake() {
     </table>
   `;
 }
+
+// ⭐ (2026-08-13) 월 실사 입력칸 Enter → 아래 칸 이동 · 마지막이면 [일괄 적용] 버튼 포커스
+window.inventoryStockInputKey = function(e, el) {
+  if (e.key !== 'Enter') return;
+  e.preventDefault();
+  const all = Array.from(document.querySelectorAll('.invStockInput'));
+  const idx = all.indexOf(el);
+  if (idx < 0) return;
+  const next = all[idx + 1];
+  if (next) {
+    try { next.focus(); if (next.select) next.select(); } catch(_){}
+  } else {
+    // 마지막 → 일괄 적용 버튼 포커스 (실수로 저장 방지: 자동 클릭 안 함)
+    const applyBtn = document.getElementById('invStocktakeApplyBtn');
+    if (applyBtn) { try { applyBtn.focus(); } catch(_){} }
+  }
+};
 
 window.inventoryClearStocktakeInputs = function() {
   document.querySelectorAll('.invStockInput').forEach(el => { el.value = ''; });
