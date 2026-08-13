@@ -14320,15 +14320,261 @@ window.inventoryApplyStocktakeBulk = function() {
   const more = changes.length > 8 ? `\n  ... 외 ${changes.length - 8}건` : '';
   if (!confirm(`다음 ${changes.length}개 품목의 전재고를 실사값으로 적용합니다.\n오늘 입고·출고는 그 위에 그대로 가산됩니다.\n\n${preview}${more}\n\n진행할까요?`)) return;
 
+  // ⭐ (2026-08-13) 적용 직전 기존 전재고 스냅샷 → 오차 계산용
+  const historyItems = changes.map(ch => {
+    const p = DB.products.find(x => x.id === ch.pid);
+    const e = inventoryEnsureProduct(ch.pid);
+    const prevStock = +(e.prev || 0);
+    const actualStock = +ch.value;
+    return {
+      pid: ch.pid,
+      name: p ? p.name : '(품목없음)',
+      cut: p ? p.cut : '',
+      unit: p ? inventoryUnitLabel(p.cut) : '단위',
+      prevStock: prevStock,
+      actualStock: actualStock,
+      variance: actualStock - prevStock,
+    };
+  });
+
+  // 재고 반영 (기존 로직)
   changes.forEach(ch => {
     const e = inventoryEnsureProduct(ch.pid);
     e.prev = ch.value;
     e.stock = ch.value + (e.receivedToday || 0) - (e.deductedToday || 0);
   });
+
+  // ⭐ 오차 이력 저장
+  if (!DB.inventory) DB.inventory = {};
+  if (!DB.inventory.stocktakeHistory) DB.inventory.stocktakeHistory = {};
+  const dateISO = todayLocalISO();
+  const entry = {
+    appliedAt: new Date().toISOString(),
+    items: historyItems,
+  };
+  DB.inventory.stocktakeHistory[dateISO] = entry;
   saveDB();
-  showToast(`✅ ${changes.length}개 품목 실사 적용 완료`);
+  // Firebase patch (전체 map 덮어쓰기 방지)
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try {
+      _lastSaveTime = Date.now();
+      DB_REF.child('inventory/stocktakeHistory').update({ [dateISO]: entry });
+    } catch(_){}
+  }
+  try { auditLogAdd('월 실사 일괄 적용: ' + changes.length + '건 · 오차 이력 저장 (' + dateISO + ')'); } catch(_){}
+
+  showToast(`✅ ${changes.length}개 품목 실사 적용 · 오차 리스트 생성`);
   inventoryRenderSummary();
   inventoryRenderStocktake();
+  // 오차 카드 자동 펼침
+  inventoryRenderStocktakeVariance(dateISO);
+};
+
+// ⭐ (2026-08-13) 실사 오차 리스트 렌더 — 특정 날짜 이력 조회 · 자동 카드 생성
+window.inventoryRenderStocktakeVariance = function(dateISO) {
+  if (!dateISO) return;
+  if (!DB.inventory || !DB.inventory.stocktakeHistory) return;
+  const entry = DB.inventory.stocktakeHistory[dateISO];
+  if (!entry) return;
+  let card = document.getElementById('invVarianceCard');
+  if (!card) {
+    card = document.createElement('div');
+    card.id = 'invVarianceCard';
+    card.className = 'card';
+    // 월 실사 카드 바로 위에 삽입
+    const stkWrap = document.getElementById('invStocktakeWrap');
+    const stkCard = stkWrap ? stkWrap.closest('.card') : null;
+    if (stkCard && stkCard.parentNode) {
+      stkCard.parentNode.insertBefore(card, stkCard);
+    } else {
+      document.getElementById('app').appendChild(card);
+    }
+  }
+  // 카테고리별 요약
+  const byCat = {};
+  entry.items.forEach(it => {
+    const key = it.cut || '기타';
+    if (!byCat[key]) byCat[key] = { count: 0, sum: 0, unit: it.unit };
+    byCat[key].count++;
+    byCat[key].sum += (+it.variance || 0);
+  });
+  const catRows = Object.keys(byCat).sort((a,b) => {
+    const ia = INVENTORY_CATEGORIES.indexOf(a), ib = INVENTORY_CATEGORIES.indexOf(b);
+    if (ia !== ib) return (ia<0?999:ia) - (ib<0?999:ib);
+    return a.localeCompare(b);
+  }).map(cat => {
+    const g = byCat[cat];
+    const sign = g.sum > 0.0001 ? '+' : '';
+    const color = g.sum > 0.0001 ? '#2E7D32' : (g.sum < -0.0001 ? '#C62828' : '#666');
+    return '<div style="display:flex; justify-content:space-between; padding:4px 8px; border-bottom:1px dashed #E8DFCF;">'
+      + '<span style="font-weight:600;">' + escapeHtmlSimple(cat) + '</span>'
+      + '<span style="color:' + color + '; font-weight:700; white-space:nowrap;">' + sign + g.sum.toFixed(1) + ' ' + escapeHtmlSimple(g.unit) + '</span>'
+      + '<span style="color:var(--muted); font-size:11px;">(' + g.count + '품목)</span>'
+      + '</div>';
+  }).join('');
+  const totalVariance = entry.items.reduce((s, it) => s + (+it.variance || 0), 0);
+  const totalSign = totalVariance > 0.0001 ? '+' : '';
+  const totalColor = totalVariance > 0.0001 ? '#2E7D32' : (totalVariance < -0.0001 ? '#C62828' : '#666');
+  const totalNote = totalVariance > 0.0001 ? '실물이 시스템보다 초과' : (totalVariance < -0.0001 ? '실물이 시스템보다 부족' : '오차 없음');
+
+  // 품목별 상세 표
+  const detailRows = entry.items.map(it => {
+    const variance = +it.variance || 0;
+    const sign = variance > 0.0001 ? '+' : '';
+    const arrow = variance > 0.0001 ? ' ⬆' : (variance < -0.0001 ? ' ⬇' : ' ✓');
+    const color = variance > 0.0001 ? '#2E7D32' : (variance < -0.0001 ? '#C62828' : '#888');
+    const rowBg = variance === 0 ? 'background:#F5F5F5; color:#999;' : '';
+    return '<tr style="' + rowBg + '">'
+      + '<td>' + escapeHtmlSimple(it.cut) + '</td>'
+      + '<td><b>' + escapeHtmlSimple(it.name) + '</b></td>'
+      + '<td class="num" style="font-size:11px; color:var(--muted);">' + escapeHtmlSimple(it.unit) + '</td>'
+      + '<td class="num">' + it.prevStock.toFixed(1) + '</td>'
+      + '<td class="num">' + it.actualStock.toFixed(1) + '</td>'
+      + '<td class="num" style="color:' + color + '; font-weight:700;">' + sign + variance.toFixed(1) + arrow + '</td>'
+      + '</tr>';
+  }).join('');
+
+  card.innerHTML = '<div id="invVarianceCardBody">'
+    + '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">'
+    +   '<h3 style="margin:0;">📊 실사 오차 리스트 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">' + dateISO + '</span></h3>'
+    +   '<div style="display:flex; gap:6px;">'
+    +     '<button class="btn sm" style="background:var(--info);" onclick="inventoryPrintStocktakeVariance(\'' + dateISO + '\')">🖨️ 인쇄</button>'
+    +     '<button class="btn sm secondary" onclick="inventoryExportStocktakeVarianceCSV(\'' + dateISO + '\')">📥 CSV</button>'
+    +     '<button class="btn sm secondary" onclick="inventoryCloseVarianceCard()">✕ 닫기</button>'
+    +   '</div>'
+    + '</div>'
+    // 카테고리별 요약
+    + '<div style="background:#FFFCF3; border:1px solid #F0D89A; border-radius:6px; padding:8px 10px; margin-bottom:10px;">'
+    +   '<div style="font-size:11px; font-weight:700; color:var(--brand-dark); margin-bottom:4px;">카테고리별 오차</div>'
+    +   catRows
+    + '</div>'
+    // 총 오차
+    + '<div style="text-align:center; padding:10px; background:#FFF3E0; border-left:4px solid ' + totalColor + '; border-radius:4px; margin-bottom:12px; font-size:14px;">'
+    +   '⚠️ 총 오차: <b style="color:' + totalColor + '; font-size:16px;">' + totalSign + totalVariance.toFixed(1) + ' box/pack</b> <span style="color:var(--muted); margin-left:8px;">(' + totalNote + ')</span>'
+    + '</div>'
+    // 품목별 상세
+    + '<div style="overflow-x:auto;"><table class="t" style="width:100%;">'
+    +   '<thead><tr><th>카테고리</th><th>품목</th><th class="num">단위</th><th class="num">기존 재고</th><th class="num">실사값</th><th class="num">오차</th></tr></thead>'
+    +   '<tbody>' + detailRows + '</tbody>'
+    + '</table></div>'
+    + '</div>';
+  // 부드럽게 스크롤
+  try { card.scrollIntoView({ behavior: 'smooth', block: 'start' }); } catch(_){}
+};
+
+window.inventoryCloseVarianceCard = function() {
+  const card = document.getElementById('invVarianceCard');
+  if (card && card.parentNode) card.parentNode.removeChild(card);
+};
+
+window.inventoryPrintStocktakeVariance = function(dateISO) {
+  if (!DB.inventory || !DB.inventory.stocktakeHistory) { alert('오차 이력이 없습니다.'); return; }
+  const entry = DB.inventory.stocktakeHistory[dateISO];
+  if (!entry) { alert('해당 날짜 실사 이력이 없습니다: ' + dateISO); return; }
+  const company = (DB.company && DB.company.name) || 'ALL THAT MEAT WHOLESALE PTY LTD';
+  const byCat = {};
+  entry.items.forEach(it => {
+    const key = it.cut || '기타';
+    if (!byCat[key]) byCat[key] = { items: [], sum: 0, unit: it.unit };
+    byCat[key].items.push(it);
+    byCat[key].sum += (+it.variance || 0);
+  });
+  const catOrder = Object.keys(byCat).sort((a,b) => {
+    const ia = INVENTORY_CATEGORIES.indexOf(a), ib = INVENTORY_CATEGORIES.indexOf(b);
+    return (ia<0?999:ia) - (ib<0?999:ib);
+  });
+  const totalVariance = entry.items.reduce((s, it) => s + (+it.variance || 0), 0);
+
+  const esc = s => String(s == null ? '' : s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+  let html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>실사 오차 리스트 ' + dateISO + '</title>'
+    + '<style>'
+    + '@page { size:A4 portrait; margin:12mm; }'
+    + 'body { font-family:"Malgun Gothic","Apple SD Gothic Neo",sans-serif; margin:0; color:#2A1A1A; }'
+    + 'h1 { font-size:20px; color:#5C0F0F; margin:0 0 6px; }'
+    + '.meta { font-size:11px; color:#666; margin-bottom:12px; border-bottom:2px solid #5C0F0F; padding-bottom:6px; }'
+    + '.cat-block { margin-bottom:14px; break-inside:avoid; }'
+    + '.cat-title { font-size:13px; font-weight:700; color:#5C0F0F; background:#FFFCF3; padding:5px 8px; border-left:4px solid #5C0F0F; margin:0 0 4px; }'
+    + '.cat-sum { float:right; font-size:12px; font-weight:700; }'
+    + 'table { width:100%; border-collapse:collapse; font-size:11px; }'
+    + 'th, td { border:1px solid #C0B7A8; padding:4px 6px; }'
+    + 'th { background:#F5EFE3; text-align:left; }'
+    + '.num { text-align:right; }'
+    + '.plus { color:#2E7D32; font-weight:700; }'
+    + '.minus { color:#C62828; font-weight:700; }'
+    + '.zero { color:#999; }'
+    + '.total-box { margin-top:16px; padding:10px; border:2px solid #5C0F0F; background:#FFFCF3; font-size:13px; }'
+    + '.sig-row { margin-top:24px; display:flex; gap:40px; font-size:11px; }'
+    + '.sig-line { border-bottom:1px solid #333; height:24px; flex:1; }'
+    + '</style></head><body>'
+    + '<h1>실사 오차 리스트</h1>'
+    + '<div class="meta">'
+    +   '<b>' + esc(company) + '</b><br>'
+    +   '실사일: <b>' + dateISO + '</b> · 적용일시: ' + (function(){ try { return new Date(entry.appliedAt).toLocaleString('ko-KR', { hour12:false }); } catch(_){ return (entry.appliedAt||'').slice(0,16); } })() + ' · 대상 <b>' + entry.items.length + '</b>품목'
+    + '</div>';
+  catOrder.forEach(cat => {
+    const g = byCat[cat];
+    const sign = g.sum > 0.0001 ? '+' : '';
+    const cls = g.sum > 0.0001 ? 'plus' : (g.sum < -0.0001 ? 'minus' : 'zero');
+    html += '<div class="cat-block">'
+      + '<h3 class="cat-title">' + esc(cat)
+      +   ' <span class="cat-sum ' + cls + '">소계: ' + sign + g.sum.toFixed(1) + ' ' + esc(g.unit) + '</span>'
+      + '</h3>'
+      + '<table><thead><tr>'
+      + '<th style="width:40%;">품목</th>'
+      + '<th class="num" style="width:8%;">단위</th>'
+      + '<th class="num" style="width:14%;">기존 재고</th>'
+      + '<th class="num" style="width:14%;">실사값</th>'
+      + '<th class="num" style="width:12%;">오차</th>'
+      + '<th style="width:12%;">사유 (수기)</th>'
+      + '</tr></thead><tbody>';
+    g.items.forEach(it => {
+      const v = +it.variance || 0;
+      const s = v > 0.0001 ? '+' : '';
+      const c = v > 0.0001 ? 'plus' : (v < -0.0001 ? 'minus' : 'zero');
+      html += '<tr>'
+        + '<td>' + esc(it.name) + '</td>'
+        + '<td class="num">' + esc(it.unit) + '</td>'
+        + '<td class="num">' + it.prevStock.toFixed(1) + '</td>'
+        + '<td class="num">' + it.actualStock.toFixed(1) + '</td>'
+        + '<td class="num ' + c + '">' + s + v.toFixed(1) + '</td>'
+        + '<td>&nbsp;</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div>';
+  });
+  const tSign = totalVariance > 0.0001 ? '+' : '';
+  const tCls = totalVariance > 0.0001 ? 'plus' : (totalVariance < -0.0001 ? 'minus' : 'zero');
+  html += '<div class="total-box">총 오차: <span class="' + tCls + '">' + tSign + totalVariance.toFixed(1) + ' box/pack</span></div>'
+    + '<div class="sig-row">'
+    +   '<div>담당자: <div class="sig-line"></div></div>'
+    +   '<div>확인자: <div class="sig-line"></div></div>'
+    + '</div>'
+    + '</body></html>';
+  const w = window.open('', '_blank', 'width=900,height=700');
+  if (!w) { alert('팝업이 차단되었습니다.'); return; }
+  w.document.open(); w.document.write(html); w.document.close(); w.focus();
+  setTimeout(() => { try { w.print(); } catch(_){} }, 400);
+};
+
+window.inventoryExportStocktakeVarianceCSV = function(dateISO) {
+  if (!DB.inventory || !DB.inventory.stocktakeHistory) { alert('오차 이력이 없습니다.'); return; }
+  const entry = DB.inventory.stocktakeHistory[dateISO];
+  if (!entry) { alert('해당 날짜 실사 이력이 없습니다: ' + dateISO); return; }
+  const rows = [['카테고리', '품목', '단위', '기존 재고', '실사값', '오차']];
+  entry.items.forEach(it => {
+    rows.push([it.cut, it.name, it.unit, it.prevStock.toFixed(2), it.actualStock.toFixed(2), (+it.variance || 0).toFixed(2)]);
+  });
+  const csv = '﻿' + rows.map(r => r.map(v => {
+    const s = String(v == null ? '' : v);
+    return /[",\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }).join(',')).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = 'ATM_실사오차_' + dateISO + '.csv';
+  a.click();
+  URL.revokeObjectURL(url);
 };
 
 function inventoryRenderSummary() {
