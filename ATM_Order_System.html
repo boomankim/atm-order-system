@@ -10792,7 +10792,6 @@ function viewInvoice(params) {
         : `<button class="btn secondary" style="cursor:not-allowed;opacity:0.55;" onclick="alert('편집 불가: '+ (invoiceEditLockReason(DB.orders.find(x=>x.id==='${o.id}'))||'')); return false;" title="편집 잠금">🔒 편집 잠금</button>`}
       <button class="btn" style="background:#C0392B;color:#fff;" onclick="location.hash='#creditIssue?orderId=${o.id}'">🧾 크레딧 노트 발행 (반품)</button>
       <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
-      <button class="btn secondary" onclick="history.back()" title="브라우저 히스토리로 이전 화면으로 돌아감">← 이전 화면</button>
     </div>
     ${isInvoiceEditable(o) ? `
     <div class="no-print" style="margin-bottom:12px; padding:8px 12px; background:#FFF7E0; border-left:4px solid #B8860B; border-radius:4px; font-size:12px; color:#5C3A00;">
@@ -11979,9 +11978,11 @@ function viewOrderDetail(params) {
     <h2 class="page-title">📄 ${o.orderNo}
       <span class="sub">${cust ? cust.name : ''}</span></h2>
     <div class="card">
-      <div class="btn-row" style="margin-bottom:10px;">
+      <div class="btn-row" style="margin-bottom:10px; align-items:center;">
         <span class="pill ${o.status}" style="padding:6px 14px; font-size:13px;">${statusLabel(o.status)}</span>
         <span style="font-size:12px; color:var(--muted); margin-left:6px;">계근은 작업장(⚖️ Warehouse), 인보이스는 사무실(🏢 Office)에서 처리</span>
+        <span style="flex:1;"></span>
+        <button class="btn sm secondary" onclick="history.back()" title="브라우저 히스토리로 이전 화면으로 돌아감">← 이전 화면</button>
       </div>
       <table class="t">
         <thead><tr><th>품목</th><th>브랜드</th><th>주문</th><th class="num">실측 중량</th><th class="num">금액</th></tr></thead>
