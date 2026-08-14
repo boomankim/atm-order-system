@@ -575,7 +575,14 @@ function getFavoriteProductIds(c) {
   }
   return ids;
 }
-function normalizeFavNotes(n) { return (n == null ? '' : String(n)).trim(); }
+function normalizeFavNotes(n) {
+  // ⭐ (2026-08-14) invisible unicode strip + 공백 정규화 · dedup 정확도 향상
+  //   nbsp · zero-width space · zero-width joiner · BOM 등 → 일반 공백 → 정규화 → trim.
+  return String(n == null ? '' : n)
+    .replace(/[ ​‌‍﻿\t]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
 function findFavoritePair(cust, productId, notes) {
   if (!cust || !Array.isArray(cust.favoritePairs)) return -1;
   const n = normalizeFavNotes(notes);
@@ -3489,7 +3496,7 @@ function renderProductList(q) {
           <td><b>${p.name}</b></td>
           <td><input class="inline-edit" type="text" value="${p.brand.replace(/"/g,'&quot;')}" onblur="updateProductField('${p.id}','brand',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
           <td class="num"><input class="inline-edit num" type="number" step="0.01" min="0" value="${(p.priceKg||0).toFixed(2)}" onblur="this.value=parseFloat(this.value||0).toFixed(2); updateProductField('${p.id}','priceKg',this.value)" onkeydown="if(event.key==='Enter')this.blur()"></td>
-          <td>${p.active ? '✅' : '⛔'}</td>
+          <td onclick="toggleProductActive('${p.id}')" title="클릭하면 활성/비활성 전환" style="cursor:pointer; text-align:center; user-select:none; transition:background 0.15s;" onmouseover="this.style.background='#FFF7E0'" onmouseout="this.style.background=''">${p.active ? '✅' : '⛔'}</td>
           <td class="act">
             <button class="btn sm secondary" onclick="editProduct('${p.id}')">수정</button>
             <button class="btn sm danger" onclick="delProduct('${p.id}')">삭제</button>
@@ -3584,6 +3591,26 @@ function saveProduct(id, isNew) {
   saveLocalDB();
   closeModal(); renderProductsAdmin();
 }
+// ⭐ (2026-08-14) 품목 마스터 상태 아이콘 클릭 → 활성/비활성 즉시 토글
+window.toggleProductActive = function(pid) {
+  const p = DB.products.find(x => x.id === pid);
+  if (!p) return;
+  p.active = !p.active;
+  try { saveEntityField('products', pid, 'active'); } catch(e) { console.warn(e); }
+  saveLocalDB();
+  if (typeof showToast === 'function') {
+    showToast(p.active ? '✅ 활성화됨: ' + p.name : '⛔ 비활성화됨: ' + p.name);
+  }
+  // 리스트 다시 그리기 (검색어 유지)
+  if (typeof renderProductsAdmin === 'function') {
+    const searchEl = document.getElementById('prodSearch');
+    const q = searchEl ? searchEl.value : '';
+    renderProductsAdmin();
+    const newSearch = document.getElementById('prodSearch');
+    if (newSearch && q) { newSearch.value = q; newSearch.oninput({ target: newSearch }); }
+  }
+};
+
 function delProduct(id) {
   if (!confirm('이 품목을 삭제하시겠습니까?')) return;
   DB.products = DB.products.filter(p => p.id !== id);
@@ -9971,10 +9998,11 @@ function viewInvoicePrep(params) {
 
       <div style="margin-top:16px; padding:12px 14px; background:#F8F8F8; border-radius:8px; border:1px dashed var(--brand);">
         <div style="font-weight:700; font-size:13px; color:var(--brand); margin-bottom:8px;">➕ 품목 추가 / Add Item</div>
-        <input id="prepAddSearch" type="text" placeholder="🔍 품목명 검색 후 클릭해서 추가..."
+        <input id="prepAddSearch" type="text" placeholder="🔍 클릭하면 전체 품목 · 검색어 입력하면 필터"
           style="width:100%; padding:8px; border:1px solid var(--line); border-radius:6px; font-size:14px; box-sizing:border-box;"
+          onfocus="showPrepAddCatalog('${o.id}')"
           oninput="renderPrepAddResults('${o.id}', this.value)">
-        <div id="prepAddResults" style="margin-top:6px; max-height:180px; overflow-y:auto;"></div>
+        <div id="prepAddResults" style="margin-top:6px; max-height:360px; overflow-y:auto;"></div>
       </div>
 
       <div class="btn-row" style="margin-top:18px;">
@@ -10001,14 +10029,12 @@ function renderInvoiceChangeNotice(o) {
   var added     = items.filter(function(it){ return it._source === 'added' && it._status !== 'cancelled'; }).length;
   var cancelled = items.filter(function(it){ return it._status === 'cancelled'; }).length;
   var removed   = cancelled;
+  // ⭐ (2026-08-14) 배지·문구 완전 제거 — [원본으로 되돌리기] 버튼만 최소 표시
+  //   이스케이프 안전을 위해 o.id 직접 인터폴레이션.
   if (added > 0 || cancelled > 0) {
-    el.innerHTML = '<div class="notice" style="border-left-color:#E67E22;background:#FEF9F0;margin-bottom:12px;">'
-      + '⚠️ 원본 주문과 인보이스 품목이 다릅니다'
-      + (added     ? ' &nbsp;|&nbsp; <span style="color:#27AE60;">추가요청 ' + added + '건</span>'     : '')
-      + (cancelled ? ' &nbsp;|&nbsp; <span style="color:#E74C3C;">취소요청 ' + cancelled + '건</span>' : '')
-      + ' &nbsp;&nbsp;<button onclick="resetInvoiceItems(document.querySelector(\"[data-oid]\").dataset.oid)"'
-      + ' style="background:none;border:1px solid #E67E22;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px;">원본으로 되돌리기</button></div>';
-    document.getElementById('prepTable').setAttribute('data-oid', o.id);
+    el.innerHTML = '<div style="margin-bottom:8px; text-align:right;">'
+      + '<button onclick="resetInvoiceItems(\'' + o.id + '\')"'
+      + ' style="background:none;border:1px solid #E67E22;border-radius:4px;padding:2px 8px;cursor:pointer;font-size:12px; color:#E67E22;">↺ 원본 주문으로 되돌리기</button></div>';
   } else {
     el.innerHTML = '';
   }
@@ -10044,17 +10070,30 @@ function renderPrepTbody(o) {
     var p = DB.products.find(function(x){ return x.id === it.productId; });
     var w = isCancelled ? 0 : it.actualWeightKg;
     var wDisplay = isCancelled ? '0.00' : (w != null ? parseFloat(w).toFixed(2) : '');
-    var orderDisplay = it.unit === '작업중량'
-      ? it.quantity + ' kg <small>작업</small>'
-      : it.quantity + ' ' + it.unit;
-    var rowBg = isCancelled ? 'background:#FFF0F0;' : isAdded ? 'background:#F0FAF0;' : '';
-    var badge = isCancelled
-      ? '<span style="background:#E74C3C;color:#fff;font-size:10px;border-radius:4px;padding:1px 5px;margin-right:4px;">취소요청</span>'
-      : isAdded
-      ? '<span style="background:#27AE60;color:#fff;font-size:10px;border-radius:4px;padding:1px 5px;margin-right:4px;">추가요청</span>'
-      : '';
-    var cancelNote = isCancelled && it._cancelNote ? '<br><small style="color:#E74C3C;">사유: ' + it._cancelNote + '</small>' : '';
-    var addNote    = !isCancelled && it._addNote   ? '<br><small style="color:var(--muted);">📝 ' + it._addNote + '</small>' : '';
+    // ⭐ (2026-08-14) 작업3-C: 추가된 라인은 주문 수량·단위 편집 가능 (원본 라인은 텍스트 그대로)
+    var orderDisplay;
+    if (isAdded && !isCancelled) {
+      orderDisplay = '<input type="number" step="1" min="0" value="' + (it.quantity || 0) + '"'
+        + ' data-prep-key="q_' + i + '"'
+        + ' style="width:56px;padding:5px;border:1px solid var(--line);border-radius:4px;text-align:right;font-size:12px;"'
+        + ' onfocus="this.select()"'
+        + ' onchange="updatePrepQuantity(window._prepOid,' + i + ',this.value)">'
+        + ' <select data-prep-key="u_' + i + '" style="padding:5px 3px;border:1px solid var(--line);border-radius:4px;font-size:11px;"'
+        + ' onchange="updatePrepUnit(window._prepOid,' + i + ',this.value)">'
+        + '<option value="박스"' + (it.unit === '박스' ? ' selected' : '') + '>박스</option>'
+        + '<option value="팩"' + (it.unit === '팩' ? ' selected' : '') + '>팩</option>'
+        + '<option value="작업중량"' + (it.unit === '작업중량' ? ' selected' : '') + '>작업kg</option>'
+        + '</select>';
+    } else {
+      orderDisplay = it.unit === '작업중량'
+        ? it.quantity + ' kg <small>작업</small>'
+        : it.quantity + ' ' + it.unit;
+    }
+    // ⭐ (2026-08-14) 배지·배경색·사유 문구 완전 제거 — 일반 주문 행처럼 표시
+    var rowBg = '';
+    var badge = '';
+    var cancelNote = '';
+    var addNote = '';
     // 품목 요청사항: 편집 가능. 저장 시 거래처 자주 주문 짝도 동기화됨.
     var notesValueAttr = (it.notes || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
     var itemNote = isCancelled ? '' :
@@ -10093,7 +10132,8 @@ function renderPrepTbody(o) {
       priceDiff = '<small style="color:var(--warn);display:block;font-size:10px;">' + labelText + fmtMoney(masterP) + '</small>';
     }
     var amt = fmtMoney(isCancelled ? 0 : ((w != null ? parseFloat(w) : 0) * lineP));
-    var nameStyle = isCancelled ? 'text-decoration:line-through;color:#999;' : '';
+    // ⭐ (2026-08-14) 취소선 제거 — 일반 행처럼 표시 (취소 여부는 ❌/↩️ 버튼으로만 구분)
+    var nameStyle = '';
     var btnTitle  = isCancelled ? '취소 복원 (클릭)' : '취소 처리';
     var btnIcon   = isCancelled ? '↩️' : '❌';
     // ⭐ (2026-07-08) onfocus=this.select() — 클릭 즉시 전체선택 → 바로 타이핑으로 덮어쓰기
@@ -10129,6 +10169,25 @@ function renderPrepTbody(o) {
       +   ' title="' + btnTitle + '" style="background:none;border:none;cursor:pointer;font-size:15px;">' + btnIcon + '</button></td>'
       + '</tr>';
   }
+  // ⭐ (2026-08-14) 작업4: 적용된 크레딧 노트를 품목 리스트 마지막에 빨간 라인으로 추가
+  //   [✕] 클릭 시 unapplyCreditFromPrep 호출 → 상단 크레딧 섹션으로 복귀
+  try {
+    var _appliedCreditsPrep = (typeof getAppliedCreditNotesForOrder === 'function') ? getAppliedCreditNotesForOrder(o.id) : [];
+    _appliedCreditsPrep.forEach(function(cn){
+      var cnNo = cn.creditNo || cn.id.slice(0,8);
+      var cnDate = (cn.issuedAt || '').slice(0,10);
+      var cnAmt = (typeof computeCreditNoteTotals === 'function') ? (computeCreditNoteTotals(cn).grand || 0) : 0;
+      var reasonInline = cn.reason ? ' <small style="color:#777;">※ ' + escapeHtmlSimple(cn.reason) + '</small>' : '';
+      html += '<tr style="background:#FDECEA;">'
+        + '<td colspan="5"><b style="color:#C0392B;">🟥 크레딧 CN-' + cnNo + ' (반품)</b> <small style="color:#999;">· ' + cnDate + '</small>' + reasonInline + '</td>'
+        + '<td class="num"><b style="color:#C0392B;">-$' + fmtMoney(cnAmt) + '</b></td>'
+        + '<td style="text-align:center;">'
+        +   '<button onclick="unapplyCreditFromPrep(\'' + cn.id + '\',\'' + o.id + '\')" title="크레딧 적용 취소" '
+        +   'style="background:none;border:none;cursor:pointer;font-size:15px;color:#C0392B;">✕</button>'
+        + '</td>'
+        + '</tr>';
+    });
+  } catch(_){}
   tbody.innerHTML = html;
   // ⭐ (2026-08-07) 재렌더 후 focus 복원 - Enter 이동 후 onchange 재렌더 시 focus 유실 방지
   if (_prepFocusKey) {
@@ -10200,30 +10259,62 @@ function addInvoiceItem(orderId, productId, note) {
 
 function renderPrepAddResults(orderId, q) {
   var div = document.getElementById('prepAddResults');
-  if (!q || q.length < 1) { div.innerHTML = ''; return; }
+  if (!div) return;
+  // ⭐ (2026-08-14) 작업3-B: 검색창 비어있으면 전체 표시 · 여러 단어 매칭 · 카테고리 그룹핑
+  var query = String(q || '').trim().toLowerCase();
+  var words = query.split(/\s+/).filter(Boolean);
   var results = DB.products.filter(function(p){
-    return p.active && (p.name + ' ' + p.cut).toLowerCase().indexOf(q.toLowerCase()) >= 0;
-  }).slice(0, 20);
+    if (!p.active) return false;
+    if (words.length === 0) return true;
+    var hay = ((p.name || '') + ' ' + (p.cut || '') + ' ' + (p.brand || '')).toLowerCase();
+    // 모든 단어가 포함되어야 매칭 (AND)
+    return words.every(function(w){ return hay.indexOf(w) >= 0; });
+  });
   if (!results.length) {
-    div.innerHTML = '<div style="color:var(--muted);padding:6px;font-size:13px;">결과 없음</div>';
+    div.innerHTML = '<div style="color:var(--muted);padding:8px;font-size:13px;text-align:center;">검색 결과 없음</div>';
     return;
   }
+  // 카테고리별 그룹핑 · CUT_ORDER 기준 정렬
+  var byCat = {};
+  results.forEach(function(p){
+    var cut = p.cut || '기타';
+    if (!byCat[cut]) byCat[cut] = [];
+    byCat[cut].push(p);
+  });
+  var _cutOrder = (typeof CUT_ORDER !== 'undefined' && Array.isArray(CUT_ORDER)) ? CUT_ORDER : Object.keys(byCat);
+  var cats = Object.keys(byCat).sort(function(a, b){
+    var ia = _cutOrder.indexOf(a);
+    var ib = _cutOrder.indexOf(b);
+    return (ia < 0 ? 999 : ia) - (ib < 0 ? 999 : ib);
+  });
   var html = '';
-  for (var j = 0; j < results.length; j++) {
-    var p   = results[j];
-    var lbl = CUT_DISPLAY[p.cut] || p.cut;
-    var pid = p.id;
-    // ⭐ (2026-08-12) 사유 prompt 제거 — 클릭 즉시 추가 (사용자 요청).
-    html += '<div'
-      + ' onclick="addInvoiceItem(\'' + orderId + '\',\'' + pid + '\',\'\')"'
-      + ' onmouseover="this.style.background=\'#FFF5D6\'"'
-      + ' onmouseout="this.style.background=\'transparent\'"'
-      + ' style="cursor:pointer;padding:6px 8px;font-size:13px;border-bottom:1px solid var(--line);">'
-      + '<span style="color:var(--brand);font-size:11px;">' + lbl + '</span>'
-      + ' <b>' + p.name + '</b></div>';
-  }
+  cats.forEach(function(cut){
+    var items = byCat[cut].slice().sort(function(a, b){
+      return String(a.name || '').localeCompare(String(b.name || ''), 'ko-KR', { numeric: true });
+    });
+    var lbl = CUT_DISPLAY[cut] || cut;
+    html += '<div style="background:var(--brand);color:#fff;padding:4px 10px;font-size:11px;font-weight:700;margin-top:6px;border-radius:4px 4px 0 0;">'
+      + escapeHtmlSimple(lbl) + ' · ' + items.length + '건</div>';
+    items.forEach(function(p){
+      var pid = p.id;
+      var pname = escapeHtmlSimple(p.name || '');
+      var pbrand = p.brand ? ' <small style="color:var(--muted);">' + escapeHtmlSimple(p.brand) + '</small>' : '';
+      html += '<div'
+        + ' onclick="addInvoiceItem(\'' + orderId + '\',\'' + pid + '\',\'\')"'
+        + ' onmouseover="this.style.background=\'#FFF5D6\'"'
+        + ' onmouseout="this.style.background=\'transparent\'"'
+        + ' style="cursor:pointer;padding:5px 10px;font-size:13px;border-bottom:1px solid var(--line);">'
+        + '<b>' + pname + '</b>' + pbrand
+        + '</div>';
+    });
+  });
   div.innerHTML = html;
 }
+// ⭐ 검색창 포커스 시 자동으로 전체 카탈로그 표시
+window.showPrepAddCatalog = function(orderId) {
+  var div = document.getElementById('prepAddResults');
+  if (div && !div.innerHTML.trim()) renderPrepAddResults(orderId, '');
+};
 
 function resetInvoiceItems(orderId) {
   if (!confirm('인보이스 품목을 원본 주문으로 되돌릴까요?')) return;
@@ -10233,6 +10324,41 @@ function resetInvoiceItems(orderId) {
   saveEntityField('orders', orderId, 'invoiceItems');
   route();
 }
+
+// ⭐ (2026-08-14) 작업3-C: 추가된 라인의 주문 수량·단위 편집 저장 함수
+//   박스/팩 은 정수만, 작업중량은 소수 허용 (단위별 검증)
+window.updatePrepQuantity = function(orderId, idx, val) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  if (!o) return;
+  var it = getInvoiceItems(o)[idx];
+  if (!it) return;
+  var newQty;
+  if (it.unit === '작업중량') {
+    newQty = parseFloat(val);
+  } else {
+    newQty = parseInt(val, 10);   // 박스·팩은 정수
+  }
+  if (isNaN(newQty) || newQty < 1) {
+    alert('수량은 1 이상 입력해주세요.');
+    // 재렌더로 이전 값 복원
+    renderPrepTbody(o);
+    renderPrepTotals(o);
+    return;
+  }
+  it.quantity = newQty;
+  var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
+  saveOrderItemField(orderId, listKey, idx, 'quantity');
+  renderPrepTotals(o);
+};
+window.updatePrepUnit = function(orderId, idx, val) {
+  var o = DB.orders.find(function(x){ return x.id === orderId; });
+  if (!o) return;
+  var newUnit = String(val || '박스');
+  getInvoiceItems(o)[idx].unit = newUnit;
+  var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
+  saveOrderItemField(orderId, listKey, idx, 'unit');
+  renderPrepTotals(o);
+};
 
 function updatePrepWeight(orderId, idx, val) {
   var o = DB.orders.find(function(x){ return x.id === orderId; });
@@ -10772,44 +10898,26 @@ function viewInvoice(params) {
           <th class="num">Weight / 중량 (kg)</th><th class="num">Unit Price / 단가</th><th class="num">Amount / 금액</th>
         </tr></thead>
         <tbody>
-          ${invoiceItems.map(it => {
+          ${invoiceItems.filter(it => it && it._status !== 'cancelled').map(it => {
+            // ⭐ (2026-08-14) 취소 라인 완전 제외 · 배지·취소선·사유 문구 모두 제거 → 일반 품목처럼 표시
             const p = DB.products.find(x => x.id === it.productId);
             const pName  = p ? p.name  : '(품목없음)';
-            const isCancelled = it._status === 'cancelled';
-            const isAdded     = it._source === 'added' && !isCancelled;
-            const badge = isCancelled
-              ? `<span style="font-size:9px;background:#E74C3C;color:#fff;border-radius:3px;padding:1px 4px;margin-right:4px;">취소요청</span>`
-              : isAdded
-              ? `<span style="font-size:9px;background:#27AE60;color:#fff;border-radius:3px;padding:1px 4px;margin-right:4px;">추가요청</span>`
-              : '';
-            const nameStyle = isCancelled ? 'text-decoration:line-through;color:#999;' : '';
-            const cancelNote = isCancelled && it._cancelNote
-              ? ` <small style="color:#E74C3C;font-size:9px;">사유: ${it._cancelNote}</small>` : '';
-            const w = isCancelled ? 0 : it.actualWeightKg;
-            const price = isCancelled ? 0 : lineUnitPrice(it, p, cust);
+            const w = it.actualWeightKg;
+            const price = lineUnitPrice(it, p, cust);
             const orderDisplay = it.unit === '작업중량'
               ? `${it.quantity}kg 작업`
               : `${it.quantity}${unitEn(it.unit)}`;
             const noteInline = it.notes ? ` <span style="color:#777;font-size:9px;">※ ${it.notes}</span>` : '';
-            if (isCancelled) {
-              return `<tr>
-                <td class="item-cell">${badge}<b style="${nameStyle}">${pName}</b>${cancelNote}</td>
-                <td>${orderDisplay}</td>
-                <td class="num" style="color:#999;">0.00</td>
-                <td class="num" style="color:#999;">$0.00</td>
-                <td class="num" style="color:#999;">$0.00</td>
-              </tr>`;
-            }
             if (w == null) {
               return `<tr>
-                <td class="item-cell">${badge}<b>${pName}</b>${noteInline}</td>
+                <td class="item-cell"><b>${pName}</b>${noteInline}</td>
                 <td>${orderDisplay}</td>
                 <td class="num" colspan="3" style="color:var(--warn);font-style:italic;">계근 대기</td>
               </tr>`;
             }
             const amt = w * price;
             return `<tr>
-              <td class="item-cell">${badge}<b style="${nameStyle}">${pName}</b>${noteInline}</td>
+              <td class="item-cell"><b>${pName}</b>${noteInline}</td>
               <td>${orderDisplay}</td>
               <td class="num">${w.toFixed(2)}</td>
               <td class="num">$${fmtMoney(price)}</td>
@@ -11128,36 +11236,59 @@ function getAppliedCreditNotesForOrder(orderId) {
 // ⭐ (2026-08-04) invoicePrep 화면 - 미사용 크레딧 알림 박스 렌더
 function _renderUnusedCreditsPanel(o, cust) {
   if (!o || !cust) return '';
-  // 이미 이 인보이스에 적용된 크레딧 (재진입 시)
+  // ⭐ (2026-08-14) 작업4: 미적용 크레딧만 상단 섹션에 표시.
+  //   이미 이 인보이스에 적용된 크레딧은 하단 품목 리스트에 라인으로 나타남 (renderPrepTbody 에서 처리).
+  const unused = getUnusedCreditNotesForCustomer(cust.id).filter(cn => cn.appliedToOrderId !== o.id);
+  // 자동 세팅: 이미 적용된 크레딧은 _prepSelectedCreditIds 에 자동 포함 (issueInvoice 호환)
   const alreadyApplied = getAppliedCreditNotesForOrder(o.id);
-  // 이 거래처의 미사용 크레딧
-  const unused = getUnusedCreditNotesForCustomer(cust.id);
-  // 편집 모드일 때는 alreadyApplied 도 후보에 포함 (해제 가능하게)
-  const candidates = alreadyApplied.concat(unused);
-  if (candidates.length === 0) return '';
-  const rows = candidates.map(function(cn){
+  window._prepSelectedCreditIds = alreadyApplied.map(cn => cn.id);
+  if (unused.length === 0) return '';
+  const rows = unused.map(function(cn){
     const grand = (computeCreditNoteTotals(cn).grand || 0);
-    const isApplied = cn.appliedToOrderId === o.id;
     const dateStr = (cn.issuedAt || '').slice(0,10);
     const reason = (cn.reason || '').replace(/&/g,'&amp;').replace(/</g,'&lt;');
     const cnNo = cn.creditNo || cn.id.slice(0,8);
     return '<label style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:#fff; border:1px solid #E8A317; border-radius:6px; margin-bottom:6px; cursor:pointer;">'
-      + '<input type="checkbox" class="prepCreditChk" data-cnid="' + cn.id + '" data-amount="' + grand + '" ' + (isApplied ? 'checked' : '') + ' onchange="_updatePrepCreditsPreview()" style="width:18px; height:18px; cursor:pointer;">'
+      + '<input type="checkbox" data-cnid="' + cn.id + '" onchange="applyCreditToPrepNow(\'' + cn.id + '\',\'' + o.id + '\')" style="width:18px; height:18px; cursor:pointer;">'
       + '<span style="flex:1;"><b>CN-' + cnNo + '</b> <span style="color:var(--muted); font-size:12px;">(' + dateStr + ')</span>'
       + (reason ? ' · <span style="color:var(--brand-dark);">' + reason + '</span>' : '')
       + '</span>'
       + '<b style="color:#C0392B; font-size:14px;">-$' + fmtMoney(grand) + '</b>'
       + '</label>';
   }).join('');
-  // ⭐ (2026-08-04) 편집 모드 재진입 시 이미 적용된 크레딧을 window._prepSelectedCreditIds 에 자동 세팅
-  //   (사용자가 체크박스 안 만져도 발행 시 기존 적용 유지)
-  window._prepSelectedCreditIds = alreadyApplied.map(cn => cn.id);
-  return '<div class="card" style="border-left:4px solid #E8A317; background:#FFF7E0;">'
-    + '<h3 style="margin:0 0 8px 0; color:#7A4A00;">📎 크레딧 노트 적용 <span style="font-weight:400; font-size:12px; color:var(--muted);">— 체크한 크레딧이 이 인보이스에 적용됩니다 (한 번 적용 시 취소 필요)</span></h3>'
+  return '<div class="card" id="prepCreditsSection" style="border-left:4px solid #E8A317; background:#FFF7E0;">'
+    + '<h3 style="margin:0 0 8px 0; color:#7A4A00;">📎 크레딧 노트 적용 <span style="font-weight:400; font-size:12px; color:var(--muted);">— 체크 시 즉시 인보이스 품목에 라인으로 추가됨 · 하단에서 [✕] 로 취소 가능</span></h3>'
     + '<div style="margin-top:8px;">' + rows + '</div>'
-    + '<div id="prepCreditsPreview" style="margin-top:10px; padding:8px 12px; background:#fff; border-radius:6px; font-size:13px; color:#7A4A00; display:none;"></div>'
     + '</div>';
 }
+// ⭐ (2026-08-14) 작업4: 체크박스 클릭 즉시 크레딧을 이 인보이스에 적용 (DB 저장 + 재렌더)
+window.applyCreditToPrepNow = function(cnId, orderId) {
+  const cn = (DB.creditNotes || []).find(function(x){ return x.id === cnId; });
+  const o = DB.orders.find(function(x){ return x.id === orderId; });
+  if (!cn || !o) return;
+  cn.appliedToOrderId = orderId;
+  cn.appliedAt = new Date().toISOString();
+  try {
+    saveEntityField('creditNotes', cnId, 'appliedToOrderId');
+    saveEntityField('creditNotes', cnId, 'appliedAt');
+  } catch(e) { console.warn('applyCreditToPrepNow save error:', e); }
+  saveLocalDB();
+  // 인보이스 준비 화면 전체 재렌더 (상단 크레딧 섹션 + 품목 리스트 + 합계)
+  if (typeof route === 'function') route();
+};
+// [✕] 클릭 시 → 크레딧 적용 해제 (상단 섹션으로 복귀)
+window.unapplyCreditFromPrep = function(cnId, orderId) {
+  const cn = (DB.creditNotes || []).find(function(x){ return x.id === cnId; });
+  if (!cn) return;
+  cn.appliedToOrderId = null;
+  cn.appliedAt = null;
+  try {
+    saveEntityField('creditNotes', cnId, 'appliedToOrderId');
+    saveEntityField('creditNotes', cnId, 'appliedAt');
+  } catch(e) { console.warn('unapplyCreditFromPrep save error:', e); }
+  saveLocalDB();
+  if (typeof route === 'function') route();
+};
 
 // ⭐ (2026-08-04) 주문 병합 — 같은 거래처·같은 배송일 계근완료 주문들을 하나로 병합
 //   방식 A: 사무실 리스트에서 [🔗 병합] 클릭.
@@ -13919,6 +14050,7 @@ function inventoryRenderReturns(days) {
   const processed = DB.inventory.returnsProcessed;
 
   const returns = [];
+  // 1) 인보이스 안의 음수 수량 라인 (기존 로직)
   (DB.orders || []).forEach(o => {
     if (!o || o.status !== 'delivered') return;
     const dateISO = toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '');
@@ -13933,6 +14065,7 @@ function inventoryRenderReturns(days) {
       if (!isReturn) return;
       const p = DB.products.find(x => x.id === it.productId);
       returns.push({
+        source: 'invoice',
         orderId: o.id, itemIdx: idx,
         dateISO, custName: cust ? cust.name : '(?)',
         invNo: o.invoiceNo || o.orderNo,
@@ -13944,6 +14077,39 @@ function inventoryRenderReturns(days) {
         weightKg: wgt,
         notes: it.notes || '',
         processedAt: processed[o.id + '::' + idx] || null
+      });
+    });
+  });
+  // 2) ⭐ (2026-08-14) 작업5-C: 크레딧 노트도 반품 이력에 자동 편입
+  //    크레딧 item schema: { productId, name, returnKg, unitPrice, amount, mode }
+  //    · mode === 'kg' : 실물 반품 (returnKg 만큼 재고에 다시 넣을 수 있음)
+  //    · mode === 'amt' : 순수 금액 조정 (실물 없음) → 반품 이력에서 제외
+  (DB.creditNotes || []).forEach(cn => {
+    if (!cn) return;
+    const dateISO = toLocalISODate(cn.issuedAt || '');
+    if (!dateISO || dateISO < cutoffISO) return;
+    const cust = DB.customers.find(c => c.id === cn.customerId);
+    (cn.items || []).forEach((it, idx) => {
+      if (!it || !it.productId) return;
+      // 크레딧: kg 모드만 실물 반품으로 취급. 금액 모드는 skip.
+      const kg = +(it.returnKg) || 0;
+      if (it.mode !== 'kg' || kg <= 0.0001) return;
+      const p = DB.products.find(x => x.id === it.productId);
+      const processedKey = 'cn::' + cn.id + '::' + idx;
+      returns.push({
+        source: 'credit',
+        creditId: cn.id, itemIdx: idx,
+        orderId: cn.orderId || '',
+        dateISO, custName: cust ? cust.name : '(?)',
+        invNo: cn.creditNo ? ('CN-' + cn.creditNo) : (cn.id.slice(0, 8)),
+        pid: it.productId,
+        pName: p ? p.name : (it.name || '(품목없음)'),
+        cut: p ? p.cut : '',
+        unit: '작업중량',   // 크레딧 반품은 kg 단위
+        qty: 0,
+        weightKg: kg,
+        notes: (cn.reason || ''),
+        processedAt: processed[processedKey] || null
       });
     });
   });
@@ -13970,20 +14136,25 @@ function inventoryRenderReturns(days) {
   html += '</tr></thead><tbody>';
   returns.forEach(r => {
     const done = !!r.processedAt;
-    const rowStyle = done ? 'background:#F5F5F5; color:#999;' : '';
+    const rowStyle = done ? 'background:#F5F5F5; color:#999;' : (r.source === 'credit' ? 'background:#FDECEA;' : '');
     const nameStyle = done ? 'text-decoration:line-through;' : '';
     const qtyDisplay = r.unit === '작업중량'
       ? Math.abs(r.weightKg).toFixed(2) + ' kg'
       : Math.abs(r.qty) + ' ' + (r.unit === '팩' ? 'pack' : (r.unit === '박스' ? 'box' : r.unit));
+    // ⭐ (2026-08-14) source 별로 processedKey 다르게 (invoice: orderId::idx, credit: cn::cnId::idx)
+    const returnKey = r.source === 'credit' ? ('cn::' + r.creditId + '::' + r.itemIdx) : (r.orderId + '::' + r.itemIdx);
+    const srcBadge = r.source === 'credit'
+      ? '<span style="background:#C0392B; color:#fff; font-size:9px; padding:1px 5px; border-radius:3px; margin-right:4px;">크레딧</span>'
+      : '';
     const btn = done
       ? '<span style="font-size:10px; color:#2E7D32; margin-right:4px;">✓ ' + (r.processedAt || '').slice(0,10) + '</span>'
-        + '<button class="btn sm secondary" onclick="inventoryUndoReturnProcessed(\''+r.orderId+'\','+r.itemIdx+')" title="처리 취소" style="padding:2px 8px; font-size:11px;">↩ 취소</button>'
-      : '<button class="btn sm" onclick="inventoryReceiveFromReturn(\''+r.orderId+'\','+r.itemIdx+',\''+r.pid+'\','+Math.abs(r.qty)+',\''+r.unit+'\','+Math.abs(r.weightKg)+')" style="background:var(--brand); color:#fff; padding:3px 10px; font-size:11px;">📥 입고 등록</button>'
-        + ' <button class="btn sm secondary" onclick="inventoryMarkReturnProcessed(\''+r.orderId+'\','+r.itemIdx+')" title="이미 다른 방법으로 처리했음" style="padding:2px 8px; font-size:11px;">✓ 완료 표시</button>';
+        + '<button class="btn sm secondary" onclick="inventoryUndoReturnProcessedKey(\'' + returnKey + '\')" title="처리 취소" style="padding:2px 8px; font-size:11px;">↩ 취소</button>'
+      : '<button class="btn sm" onclick="inventoryReceiveFromReturnKey(\'' + returnKey + '\',\'' + r.pid + '\',' + Math.abs(r.qty) + ',\'' + r.unit + '\',' + Math.abs(r.weightKg) + ')" style="background:var(--brand); color:#fff; padding:3px 10px; font-size:11px;">📥 입고 등록</button>'
+        + ' <button class="btn sm secondary" onclick="inventoryMarkReturnProcessedKey(\'' + returnKey + '\')" title="이미 다른 방법으로 처리했음" style="padding:2px 8px; font-size:11px;">✓ 완료 표시</button>';
     html += '<tr style="' + rowStyle + '">';
     html += '<td style="' + nameStyle + '">' + r.dateISO + '</td>';
     html += '<td style="' + nameStyle + '"><b>' + escapeHtmlSimple(r.custName) + '</b></td>';
-    html += '<td style="' + nameStyle + '">' + (r.invNo || '-') + '</td>';
+    html += '<td style="' + nameStyle + '">' + srcBadge + (r.invNo || '-') + '</td>';
     html += '<td style="' + nameStyle + '">' + escapeHtmlSimple(r.pName) + (r.notes ? ' <small style="color:#777;">※ '+escapeHtmlSimple(r.notes)+'</small>' : '') + '</td>';
     html += '<td class="num"><b style="color:#C0392B;">' + qtyDisplay + '</b></td>';
     html += '<td class="act" style="white-space:nowrap;">' + btn + '</td>';
@@ -14086,6 +14257,69 @@ window.inventoryMarkReturnProcessed = function(orderId, itemIdx) {
 };
 
 // [↩ 취소] — 처리완료 플래그 제거
+// ⭐ (2026-08-14) 작업5-C: returnKey 기반 래퍼 — 크레딧/인보이스 두 소스 통합 처리
+window.inventoryReceiveFromReturnKey = function(returnKey, pid, absQty, unit, absWeightKg) {
+  const p = DB.products.find(x => x.id === pid);
+  if (!p) { alert('품목 정보를 찾을 수 없습니다.'); return; }
+  let boxToAdd = 0, display = '';
+  if (unit === '작업중량') {
+    boxToAdd = inventoryBoxConvert(+absWeightKg || 0, p.cut);
+    display = (+absWeightKg).toFixed(2) + ' kg → ' + boxToAdd.toFixed(1) + ' 박스 (' + p.cut + ' 카테고리 환산)';
+  } else if (unit === '팩') {
+    boxToAdd = (typeof inventoryPackToBox === 'function') ? inventoryPackToBox(+absQty || 0, p.cut) : (+absQty || 0);
+    display = absQty + ' 팩 → ' + boxToAdd.toFixed(1) + ' 박스';
+  } else {
+    boxToAdd = +absQty || 0;
+    display = absQty + ' 박스';
+  }
+  if (boxToAdd <= 0.0001) {
+    alert('반품량이 0박스로 환산되어 재고 반영 불가.\n\n' + display);
+    return;
+  }
+  if (!confirm('반품 재고 입고 처리\n\n품목: ' + p.name + '\n반품: ' + display + '\n\n현재고에 즉시 반영합니다. 진행할까요?')) return;
+  if (typeof inventoryRolloverIfNeeded === 'function') inventoryRolloverIfNeeded();
+  const e = inventoryEnsureProduct(pid);
+  e.receivedToday = (e.receivedToday || 0) + boxToAdd;
+  e.stock = (e.stock || 0) + boxToAdd;
+  saveDB();
+  if (!DB.inventory) DB.inventory = {};
+  if (!DB.inventory.returnsProcessed) DB.inventory.returnsProcessed = {};
+  DB.inventory.returnsProcessed[returnKey] = new Date().toISOString();
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('inventory/returnsProcessed').update({ [returnKey]: DB.inventory.returnsProcessed[returnKey] }); } catch(_){}
+  }
+  try { auditLogAdd('반품 재고 입고 처리: ' + p.name + ' · ' + display + ' (' + returnKey + ')'); } catch(_){}
+  if (typeof inventoryRenderSummary === 'function') inventoryRenderSummary();
+  inventoryRenderReturns(window._returnsFilterDays || 30);
+  const detail = document.getElementById('invCatDetail_' + p.cut);
+  const row = document.getElementById('invCatRow_' + p.cut);
+  if (detail && detail.style.display === 'none') {
+    detail.style.display = '';
+    if (row && row.firstElementChild) row.firstElementChild.textContent = '▼';
+  }
+  if (typeof showToast === 'function') showToast('✅ ' + p.name + ' ' + display + ' 재고 입고 완료');
+};
+window.inventoryMarkReturnProcessedKey = function(returnKey) {
+  if (!DB.inventory) DB.inventory = {};
+  if (!DB.inventory.returnsProcessed) DB.inventory.returnsProcessed = {};
+  DB.inventory.returnsProcessed[returnKey] = new Date().toISOString();
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('inventory/returnsProcessed').update({ [returnKey]: DB.inventory.returnsProcessed[returnKey] }); } catch(_){}
+  }
+  inventoryRenderReturns(window._returnsFilterDays || 30);
+};
+window.inventoryUndoReturnProcessedKey = function(returnKey) {
+  if (!DB.inventory || !DB.inventory.returnsProcessed) return;
+  delete DB.inventory.returnsProcessed[returnKey];
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('inventory/returnsProcessed').update({ [returnKey]: null }); } catch(_){}
+  }
+  inventoryRenderReturns(window._returnsFilterDays || 30);
+};
+
 window.inventoryUndoReturnProcessed = function(orderId, itemIdx) {
   if (!DB.inventory || !DB.inventory.returnsProcessed) return;
   const key = orderId + '::' + itemIdx;
@@ -15941,6 +16175,9 @@ if (FIREBASE_READY && DB_REF) {
     if (!editing && data) {
       DB = data;
       saveLocalDB();
+      // ⭐ (2026-08-14) Firebase 실시간 동기화 후 즐겨찾기 중복 자동 정리
+      //   Firebase race 로 유입된 중복 짝을 즉시 청소 (사용자 안 눌러도 됨).
+      try { if (typeof cleanupAllFavoriteDuplicates === 'function') cleanupAllFavoriteDuplicates(); } catch(_){}
     }
     showSyncBanner(editing);
   }
