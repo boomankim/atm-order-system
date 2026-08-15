@@ -9381,6 +9381,162 @@ window.custAcClose = function(selId) {
 window.filterCustomerSelect = function(selId, query) {
   custAcInput(selId, query);
 };
+
+// ============================================================================
+// ⭐ (2026-08-15) 품목 검색 자동완성 위젯 (renderCustomerSearchSelect 의 품목 버전)
+//   재고 입고 등록 · 기타 품목 선택이 필요한 곳에서 사용
+//   호환: 숨김 <select> 유지 → 기존 .value / .options[.selectedIndex] 접근 그대로 동작
+// ============================================================================
+function renderProductSearchSelect(opts) {
+  opts = opts || {};
+  const selId = opts.selectId;
+  const searchId = selId + '_search';
+  const listId = selId + '_ac';
+  const onChange = opts.onChange || '';
+  const cats = Array.isArray(opts.categories) && opts.categories.length > 0 ? opts.categories : null;
+  const placeholder = opts.placeholder || '🔍 품목 검색 (이름·카테고리·브랜드)';
+  const filterFn = function(p) {
+    if (!p || p.active === false) return false;
+    if (cats && !cats.includes(p.cut)) return false;
+    return true;
+  };
+  const products = DB.products.filter(filterFn);
+  const selected = opts.selectedId || '';
+  const selectedP = selected ? products.find(p => p.id === selected) : null;
+  const initialText = selectedP ? ('[' + (selectedP.cut || '') + '] ' + selectedP.name) : '';
+  let html = '<div style="position:relative;" data-prod-picker="' + selId + '">';
+  html += '<input type="text" id="' + searchId + '" placeholder="' + placeholder + '"';
+  html += ' autocomplete="off"';
+  html += ' value="' + initialText.replace(/"/g,'&quot;') + '"';
+  html += ' style="width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:4px;font-size:13px;box-sizing:border-box;"';
+  html += ' oninput="prodAcInput(\'' + selId + '\', this.value)"';
+  html += ' onkeydown="prodAcKey(event, \'' + selId + '\')"';
+  html += ' onfocus="this.select(); prodAcInput(\'' + selId + '\', this.value)"';
+  html += ' onblur="setTimeout(function(){prodAcClose(\'' + selId + '\');}, 180)">';
+  html += '<div id="' + listId + '" data-ac-active="-1" data-cats="' + (cats ? cats.join(',') : '') + '"';
+  html += ' style="display:none; position:absolute; top:100%; left:0; right:0; z-index:1000;';
+  html += ' background:#fff; border:1px solid var(--brand); border-radius:4px;';
+  html += ' box-shadow:0 4px 12px rgba(0,0,0,0.15); max-height:320px; overflow-y:auto;';
+  html += ' margin-top:-2px;"></div>';
+  // 실제 select (호환성 · display:none) — onchange 콜백 · data-cut attr 보존
+  html += '<select id="' + selId + '"';
+  html += ' style="display:none;"';
+  if (onChange) html += ' onchange="' + onChange + '"';
+  html += '>';
+  html += '<option value="">— 선택 —</option>';
+  products.forEach(p => {
+    const s = (p.id === selected) ? ' selected' : '';
+    html += '<option value="' + p.id + '" data-cut="' + (p.cut || '') + '"' + s + '>[' + (p.cut || '') + '] ' + (p.name || '') + '</option>';
+  });
+  html += '</select></div>';
+  return html;
+}
+function prodAcSearch(query, cats) {
+  const q = (query || '').toLowerCase().trim();
+  const words = q.split(/\s+/).filter(Boolean);
+  const list = DB.products.filter(function(p){
+    if (!p || p.active === false) return false;
+    if (cats && cats.length > 0 && !cats.includes(p.cut)) return false;
+    return true;
+  });
+  const catOrder = (typeof INVENTORY_CATEGORIES !== 'undefined' && Array.isArray(INVENTORY_CATEGORIES)) ? INVENTORY_CATEGORIES : [];
+  if (!q) {
+    return list.slice().sort(function(a, b){
+      const ca = catOrder.indexOf(a.cut), cb = catOrder.indexOf(b.cut);
+      if (ca !== cb) return (ca < 0 ? 999 : ca) - (cb < 0 ? 999 : cb);
+      return (a.name || '').localeCompare(b.name || '', 'ko');
+    }).slice(0, 15);
+  }
+  const scored = [];
+  list.forEach(function(p){
+    const name = (p.name || '').toLowerCase();
+    const hay = name + ' ' + (p.cut || '').toLowerCase() + ' ' + (p.brand || '').toLowerCase();
+    if (!words.every(function(w){ return hay.indexOf(w) >= 0; })) return;
+    let score = 0;
+    if (name.indexOf(q) === 0) score += 100;
+    else if (name.indexOf(q) > 0) score += 50;
+    scored.push({ p: p, score: score });
+  });
+  scored.sort(function(a, b){
+    return b.score - a.score || (a.p.name || '').localeCompare(b.p.name || '', 'ko');
+  });
+  return scored.slice(0, 20).map(function(x){ return x.p; });
+}
+window.prodAcInput = function(selId, query) {
+  const listId = selId + '_ac';
+  const list = document.getElementById(listId);
+  if (!list) return;
+  const catsAttr = list.getAttribute('data-cats') || '';
+  const cats = catsAttr ? catsAttr.split(',') : null;
+  const results = prodAcSearch(query, cats);
+  if (results.length === 0) {
+    list.innerHTML = '<div style="padding:8px 12px; color:var(--muted); font-size:12px;">검색 결과 없음</div>';
+    list.style.display = 'block';
+    return;
+  }
+  list.innerHTML = results.map(function(p, i){
+    return '<div class="prod-ac-item" data-idx="' + i + '"'
+      + ' onmousedown="event.preventDefault();"'
+      + ' onclick="prodAcPick(\'' + selId + '\', \'' + p.id + '\')"'
+      + ' style="padding:6px 12px; cursor:pointer; font-size:13px; border-bottom:1px solid var(--line);"'
+      + ' onmouseover="this.style.background=\'#FFF5D6\'"'
+      + ' onmouseout="this.style.background=\'\'">'
+      + '<span style="color:var(--brand); font-size:10px; font-weight:700;">' + escapeHtmlSimple(p.cut || '') + '</span> '
+      + '<b>' + escapeHtmlSimple(p.name || '') + '</b>'
+      + (p.brand ? ' <small style="color:var(--muted);">' + escapeHtmlSimple(p.brand) + '</small>' : '')
+      + '</div>';
+  }).join('');
+  list.setAttribute('data-ac-active', '-1');
+  list.style.display = 'block';
+};
+window.prodAcKey = function(event, selId) {
+  const list = document.getElementById(selId + '_ac');
+  if (!list || list.style.display === 'none') return;
+  const items = list.querySelectorAll('.prod-ac-item');
+  if (!items.length) return;
+  let active = parseInt(list.getAttribute('data-ac-active') || '-1', 10);
+  if (event.key === 'ArrowDown') {
+    event.preventDefault();
+    active = (active + 1) % items.length;
+  } else if (event.key === 'ArrowUp') {
+    event.preventDefault();
+    active = active <= 0 ? items.length - 1 : active - 1;
+  } else if (event.key === 'Enter') {
+    event.preventDefault();
+    if (active >= 0 && items[active]) items[active].click();
+    return;
+  } else if (event.key === 'Escape') {
+    list.style.display = 'none';
+    return;
+  } else {
+    return;
+  }
+  list.setAttribute('data-ac-active', String(active));
+  items.forEach(function(el, i){
+    el.style.background = i === active ? '#FFF5D6' : '';
+  });
+  if (items[active]) items[active].scrollIntoView({ block: 'nearest' });
+};
+window.prodAcPick = function(selId, pid) {
+  const sel = document.getElementById(selId);
+  const searchInput = document.getElementById(selId + '_search');
+  const list = document.getElementById(selId + '_ac');
+  if (!sel) return;
+  sel.value = pid;
+  const p = DB.products.find(function(x){ return x.id === pid; });
+  if (p && searchInput) searchInput.value = '[' + (p.cut || '') + '] ' + p.name;
+  if (list) list.style.display = 'none';
+  try {
+    const evt = new Event('change', { bubbles: true });
+    sel.dispatchEvent(evt);
+  } catch(_) {
+    if (sel.onchange) sel.onchange();
+  }
+};
+window.prodAcClose = function(selId) {
+  const list = document.getElementById(selId + '_ac');
+  if (list) list.style.display = 'none';
+};
 // 금액 천단위 쉼표 (예: 1234.5 → "1,234.50")
 // ⭐ (2026-07-29) 금액 입력 콤마 포맷 유틸 — 금액 필드에만 사용 (kg 등 다른 숫자는 그대로).
 //   type="text" inputmode="decimal" 로 만들어야 함 (type=number 는 콤마 허용 안 됨).
@@ -14015,14 +14171,12 @@ function viewInventory() {
       <h3>📥 제품 입고 등록</h3>
       <div class="grid-3" style="margin-bottom:8px;">
         <div class="field"><label>품목</label>
-          <select id="invReceiptProduct" onchange="inventoryUpdateReceiptUnitHint()">
-            <option value="">— 선택하세요 —</option>
-            ${DB.products.filter(p => INVENTORY_CATEGORIES.includes(p.cut) && p.active !== false).sort((a,b)=>{
-              const ca = INVENTORY_CATEGORIES.indexOf(a.cut), cb = INVENTORY_CATEGORIES.indexOf(b.cut);
-              if (ca !== cb) return ca - cb;
-              return (a.name||'').localeCompare(b.name||'','ko');
-            }).map(p => `<option value="${p.id}" data-cut="${p.cut}">[${p.cut}] ${p.name}</option>`).join('')}
-          </select>
+          ${renderProductSearchSelect({
+            selectId: 'invReceiptProduct',
+            categories: INVENTORY_CATEGORIES,
+            onChange: 'inventoryUpdateReceiptUnitHint()',
+            placeholder: '🔍 품목 검색 (이름·카테고리·브랜드)'
+          })}
         </div>
         <div class="field"><label>입고 수량 <span id="invReceiptUnitHint" style="color:var(--muted); font-size:11px;">(박스/팩)</span></label>
           <input type="number" id="invReceiptQty" min="1" step="1" placeholder="예: 5">
@@ -15495,6 +15649,14 @@ window.inventoryAddReceipt = function() {
     }
   }
   document.getElementById('invReceiptQty').value = '';
+  // ⭐ (2026-08-16) 품목 검색 위젯 초기화 — 연속 입고 등록 편의
+  try {
+    const sel = document.getElementById('invReceiptProduct');
+    const search = document.getElementById('invReceiptProduct_search');
+    if (sel) sel.value = '';
+    if (search) search.value = '';
+    if (typeof inventoryUpdateReceiptUnitHint === 'function') inventoryUpdateReceiptUnitHint();
+  } catch(_){}
   // 등록 완료 — 확실한 피드백 (toast 무시 방지)
   showToast(`📥 ${p ? p.name : '품목'} ${qty}${unit} 입고 완료`);
   alert(`✅ 입고 등록되었습니다.\n\n품목: ${p ? p.name : '품목'}\n수량: ${qty}${unit}\n\n📦 카테고리 현황에 즉시 반영되었습니다.`);
