@@ -13354,19 +13354,35 @@ function _wmStepTableFor(cut) {
   return INVENTORY_STEP_TABLE.small;   // 돼지고기·오리·양고기 등
 }
 
-// 단계별 소수점 박스 환산 — 실중량(kg) → 박스 (0/0.2/0.4/0.6/0.8/1.0)
-// 경계값은 옵션 A (예: 3kg 정확히 = 0.2)
+// 단계별 소수점 박스 환산 — 실중량(kg) → 박스
+// ⭐ (2026-08-15) 대용량 반품 지원 — 전체 박스 + 나머지 분수 (예: 264kg = 17.6 박스)
+//   표준 박스 중량: 돼지·오리·양 = 15kg · 소·와규 = 19kg
+//   0-표준박스kg 구간은 기존 단계표 (0/0.2/0.4/0.6/0.8/1.0) 그대로
+//   표준박스kg 초과분은 정수 박스로 환산 후 나머지 분수 더함
 function inventoryBoxConvert(kgTotal, cut) {
   if (!kgTotal || kgTotal <= 0) return 0;
   const table = _wmStepTableFor(cut);
+  // 표준 1박스 중량 (테이블 마지막 구간의 min)
+  const isLarge = (cut === '소고기' || cut === '와규');
+  const standardBoxKg = isLarge ? 19 : 15;
+  // 전체 박스 + 나머지 kg 분리
+  let wholeBoxes = 0;
+  let remainderKg = kgTotal;
+  if (kgTotal >= standardBoxKg) {
+    wholeBoxes = Math.floor(kgTotal / standardBoxKg);
+    remainderKg = kgTotal - wholeBoxes * standardBoxKg;
+  }
+  // 나머지 kg 을 단계표로 환산
+  let fraction = 0;
   for (let i = 0; i < table.length; i++) {
     const row = table[i];
-    // min <= kg < max  (min=0인 첫 구간만 0=0 특별 처리 — 0kg 자체는 0)
-    if (kgTotal >= row.min && (kgTotal < row.max || row.max === Infinity)) {
-      return row.box;
+    if (remainderKg >= row.min && (remainderKg < row.max || row.max === Infinity)) {
+      // Infinity 구간은 이미 wholeBoxes 로 처리됐으므로 여기 안 도달
+      fraction = row.box;
+      break;
     }
   }
-  return 0;
+  return wholeBoxes + fraction;
 }
 
 // =========================================================================
