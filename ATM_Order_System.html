@@ -43,6 +43,15 @@
     -webkit-print-color-adjust: exact; print-color-adjust: exact;
     min-height: 100vh;
   }
+  /* ⭐ (2026-08-14) 숫자 입력 스피너 화살표 완전 숨김 — 실수 클릭 방지, 깔끔한 필드
+   * 데스크톱: WebKit(Chrome/Edge/Safari) + Firefox 모두 커버 */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] { -moz-appearance: textfield; appearance: textfield; }
+
   /* Top Nav */
   .nav {
     position: sticky; top: 0; z-index: 100;
@@ -1260,6 +1269,16 @@ document.addEventListener('click', _touchStaffActivity, { passive:true });
 document.addEventListener('keydown', _touchStaffActivity, { passive:true });
 // 1분마다 체크
 setInterval(_checkStaffSessionTimeout, 60 * 1000);
+
+// ⭐ (2026-08-14) 숫자 입력창 마우스 휠 값 변경 방지
+//   number input 이 포커스된 상태에서 마우스 휠·트랙패드 스크롤 시 값이 뜻하지 않게 증감되는 문제 방지.
+//   포커스만 해제하면 브라우저 기본 스크롤로 넘어감. 값은 그대로 유지.
+document.addEventListener('wheel', function(e) {
+  const el = document.activeElement;
+  if (el && el.type === 'number') {
+    el.blur();
+  }
+}, { passive: true });
 
 let _staffPinBuffer = '';
 let _staffPinFirstEntry = null;   // 신규 설정 시 첫 입력 저장
@@ -2479,7 +2498,8 @@ function getCustomerPricesForProduct(productId) {
       }
     }
   });
-  rows.sort((a,b) => b.price - a.price || b.lastUsedDate.localeCompare(a.lastUsedDate));
+  // ⭐ (2026-08-14) 최근 사용일 우선 내림차순 · 동일 날짜는 단가 내림차순
+  rows.sort((a,b) => (b.lastUsedDate || '').localeCompare(a.lastUsedDate || '') || b.price - a.price);
   return rows;
 }
 
