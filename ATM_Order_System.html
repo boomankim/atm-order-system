@@ -3774,6 +3774,7 @@ function renderCustomersAdmin() {
       <h3>거래처 마스터 (총 ${DB.customers.length}곳 · 활성 ${DB.customers.filter(c=>c.active!==false).length}곳 · <span style="color:#C62828;">차단 ${DB.customers.filter(c=>c.active===false).length}곳</span>)</h3>
       <div class="btn-row" style="margin-bottom:10px;">
         <button class="btn success" onclick="editCustomer()">+ 거래처 추가</button>
+        <button class="btn warn" onclick="showCustomerCodeAnomalies()" title="Prefix에 숫자 실수 등으로 폭주한 코드 검사">🔧 코드 이상 검사</button>
         <input id="custSearch" placeholder="거래처명 검색" style="flex:1; min-width:200px; padding:9px; border:1px solid var(--line); border-radius:6px;">
       </div>
       <div id="custList"></div>
@@ -3825,18 +3826,134 @@ function renderCustomerList(q) {
 }
 
 // 거래처 코드 다음 순번
-// 기존 거래처 코드의 끝자리 숫자 중 최댓값 + 1 (4자리 zero-pad)
+// ⚠️ (2026-08-16) 버그 수정 — 이전 정규식 `(\d+)\s*$` 이 꼬리 모든 숫자를 통째로 잡아서
+//   누군가 prefix에 숫자 실수로 넣으면(예: "YMK4" → "YMK40007") 다음 코드가 40008로 폭주함.
+//   → 표준 포맷 `^[A-Z]+\d{4,5}$` (문자 + 4~5자리) 만 카운트, 5자리 초과는 이상치로 무시.
 function nextCustomerCodeNumber() {
   let max = 0;
   for (const cc of DB.customers) {
-    const m = (cc.code || '').match(/(\d+)\s*$/);
+    const code = (cc.code || '').trim().toUpperCase();
+    const m = code.match(/^[A-Z]+(\d{4,5})$/);
     if (m) {
       const n = parseInt(m[1], 10);
-      if (!isNaN(n) && n > max) max = n;
+      if (!isNaN(n) && n > 0 && n < 10000 && n > max) max = n;
+      // 5자리(10000~99999)는 폭주 흔적으로 판단 → 카운트 제외
     }
   }
   return String(max + 1).padStart(4, '0');
 }
+
+// ⭐ (2026-08-16) 거래처 코드 이상 검사 · 폭주 흔적 찾아서 목록화
+function checkCustomerCodeAnomalies() {
+  const anomalies = [];
+  const dupMap = {};
+  for (const c of DB.customers) {
+    const code = (c.code || '').trim();
+    if (!code) { anomalies.push({ c, reason: '코드 없음' }); continue; }
+    // 표준: 문자 1~5개 + 정확히 4자리 숫자
+    const m = code.match(/^([A-Z]+)(\d+)$/i);
+    if (!m) { anomalies.push({ c, reason: '포맷 불일치 (문자+숫자 아님)' }); continue; }
+    if (m[2].length !== 4) {
+      anomalies.push({ c, reason: '숫자부 ' + m[2].length + '자리 (표준 4자리 아님)' });
+      continue;
+    }
+    // prefix에 숫자 있으면 안됨
+    if (/\d/.test(m[1])) {
+      anomalies.push({ c, reason: 'Prefix에 숫자 포함' });
+      continue;
+    }
+    dupMap[code] = (dupMap[code] || 0) + 1;
+  }
+  // 중복 코드
+  for (const c of DB.customers) {
+    if (dupMap[(c.code||'').trim().toUpperCase()] > 1) {
+      if (!anomalies.find(a => a.c.id === c.id)) {
+        anomalies.push({ c, reason: '중복 코드' });
+      }
+    }
+  }
+  return anomalies;
+}
+
+window.showCustomerCodeAnomalies = function() {
+  const list = checkCustomerCodeAnomalies();
+  if (list.length === 0) {
+    alert('✅ 이상 코드 없음. 전 ' + DB.customers.length + '개 거래처 코드 모두 표준 포맷.');
+    return;
+  }
+  const rows = list.map(function(a){
+    const auto = autoDerivePrefix(a.c.name);
+    return '<tr data-cid="' + a.c.id + '">'
+      + '<td style="font-size:12px;">' + (a.c.name || '').replace(/</g,'&lt;') + '</td>'
+      + '<td style="font-family:monospace; color:#B00; font-weight:700;">' + (a.c.code || '(없음)') + '</td>'
+      + '<td style="font-size:11px; color:var(--muted);">' + a.reason + '</td>'
+      + '<td><input class="fix-prefix" value="' + auto + '" maxlength="4" '
+      +   'style="width:60px; text-transform:uppercase; text-align:center; padding:4px; border:1px solid var(--line); border-radius:4px; font-family:monospace; font-weight:600;' + (auto ? '' : 'background:#FFF3CD;') + '" '
+      +   'oninput="this.value=this.value.replace(/[^A-Za-z]/g,\'\').toUpperCase()"></td>'
+      + '</tr>';
+  }).join('');
+  openModal(
+    '<h3>🔧 거래처 코드 이상 검사 · ' + list.length + '개 발견</h3>'
+    + '<div style="background:#FFF8E1; padding:10px; border-radius:6px; font-size:12px; margin-bottom:10px; border-left:3px solid #F57F17;">'
+    +   '<b>원인:</b> Prefix에 숫자를 실수로 입력해서 자동순번이 폭주한 흔적입니다.<br>'
+    +   '이상 코드를 <b>표준 포맷 (문자 + 0001~9999)</b>로 재번호합니다.<br>'
+    +   '• 새 순번은 현재 최대값 다음 번호부터 순차 부여<br>'
+    +   '• 다른 정상 거래처 코드는 그대로 유지'
+    + '</div>'
+    + '<div style="max-height:60vh; overflow:auto; border:1px solid var(--line); border-radius:6px;">'
+    +   '<table class="t" style="margin:0;">'
+    +     '<thead style="position:sticky; top:0; background:#fff;">'
+    +       '<tr><th>거래처명</th><th style="width:130px;">현재 코드</th><th style="width:180px;">이상 사유</th><th style="width:80px;">새 Prefix</th></tr>'
+    +     '</thead>'
+    +     '<tbody>' + rows + '</tbody>'
+    +   '</table>'
+    + '</div>'
+    + '<div class="btn-row" style="margin-top:10px;">'
+    +   '<button class="btn" onclick="applyCustomerCodeAnomaliesFix()">✅ 재번호 실행</button>'
+    +   '<button class="btn secondary" onclick="closeModal()">취소</button>'
+    + '</div>'
+  );
+};
+
+window.applyCustomerCodeAnomaliesFix = function() {
+  const rows = document.querySelectorAll('tr[data-cid]');
+  const changes = [];
+  let nextN = parseInt(nextCustomerCodeNumber(), 10);
+  const usedCodes = new Set(DB.customers.map(function(c){ return (c.code||'').trim().toUpperCase(); }));
+  for (const r of rows) {
+    const cid = r.getAttribute('data-cid');
+    const c = DB.customers.find(function(x){ return x.id === cid; });
+    if (!c) continue;
+    const prefixInput = r.querySelector('.fix-prefix');
+    const prefix = (prefixInput.value || '').trim().toUpperCase().replace(/[^A-Z]/g,'');
+    if (!prefix) { alert('❌ 「' + c.name + '」 Prefix를 입력하세요.'); prefixInput.focus(); return; }
+    // 이 거래처의 이전 코드는 재사용 pool에서 제외
+    usedCodes.delete((c.code || '').trim().toUpperCase());
+    // 중복 안 되도록 순번 증가
+    let candidate;
+    do {
+      candidate = prefix + String(nextN).padStart(4, '0');
+      nextN++;
+    } while (usedCodes.has(candidate) && nextN < 10000);
+    usedCodes.add(candidate);
+    changes.push({ c: c, oldCode: c.code, newCode: candidate });
+  }
+  if (changes.length === 0) { alert('변경할 항목이 없습니다.'); return; }
+  if (!confirm('✅ ' + changes.length + '개 거래처 코드를 재번호합니다.\n\n' +
+    changes.slice(0, 5).map(function(x){ return '  ' + (x.c.name||'').slice(0,15) + ' : ' + x.oldCode + ' → ' + x.newCode; }).join('\n') +
+    (changes.length > 5 ? '\n  … 외 ' + (changes.length - 5) + '건' : '') +
+    '\n\n계속할까요?')) return;
+  // 적용
+  for (const ch of changes) {
+    ch.c.code = ch.newCode;
+    saveEntityField('customers', ch.c.id, 'code');
+    try { auditLogAdd('거래처 코드 재번호: ' + (ch.c.name||'') + ' · ' + ch.oldCode + ' → ' + ch.newCode); } catch(_){}
+  }
+  saveLocalDB();
+  closeModal();
+  renderCustomersAdmin();
+  alert('✅ ' + changes.length + '개 재번호 완료.\n\n다음 신규 거래처 순번: ' + nextCustomerCodeNumber());
+};
 
 // 기존 코드를 prefix(문자) + number(끝의 숫자)로 분리
 function splitCustomerCode(code) {
@@ -4010,7 +4127,10 @@ function editCustomer(id) {
     <div class="grid-2">
       <div class="field"><label>코드 <span style="font-weight:400; color:var(--muted); font-size:11px;">(앞글자 + 자동순번)</span></label>
         <div style="display:flex; gap:6px; align-items:center;">
-          <input id="m_code_prefix" value="${prefixVal}" placeholder="예: MW" maxlength="10"
+          <input id="m_code_prefix" value="${prefixVal}" placeholder="예: MW (문자만)" maxlength="4"
+                 oninput="this.value=this.value.replace(/[^A-Za-z]/g,'').toUpperCase()"
+                 pattern="[A-Za-z]+"
+                 title="영문자만 입력 · 숫자 불가 (자동순번 폭주 방지)"
                  style="text-transform:uppercase; flex:1;">
           <input id="m_code_num" value="${numVal}" readonly
                  style="width:80px; background:#F5F5F5; color:#555; text-align:center; font-family:monospace;"
@@ -4142,8 +4262,11 @@ window.clearAllCustomPrices = function(custId) {
 };
 function saveCustomer(id, isNew, favs) {
   // 코드 = prefix (대문자 자동) + 자동순번
-  const codePrefix = (val('m_code_prefix') || '').trim().toUpperCase();
+  // ⚠️ (2026-08-16) prefix는 영문자만 허용 · 숫자 섞이면 자동순번 폭주 방지
+  const codePrefix = (val('m_code_prefix') || '').trim().toUpperCase().replace(/[^A-Z]/g, '');
   const codeNum = (val('m_code_num') || '').trim();
+  if (!codePrefix) return alert('❌ 코드 Prefix를 입력하세요 (영문자만, 예: MW · YK)');
+  if (!/^\d{4}$/.test(codeNum)) return alert('❌ 자동순번 오류. 관리자에게 문의하세요.');
   const combinedCode = codePrefix + codeNum;
   const obj = {
     id, code: combinedCode, name: val('m_name'), contact: val('m_contact'),
