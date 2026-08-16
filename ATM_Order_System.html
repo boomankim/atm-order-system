@@ -2231,6 +2231,7 @@ function viewAdmin(params) {
         <button class="btn ${tab==='orphan'?'':'secondary'}" onclick="location.hash='#admin?tab=orphan'">🔧 진단</button>
         <button class="btn ${tab==='audit'?'':'secondary'}" onclick="location.hash='#admin?tab=audit'">🔒 감사 로그</button>
         <button class="btn ${tab==='banklearn'?'':'secondary'}" onclick="location.hash='#admin?tab=banklearn'">📚 은행매칭 학습</button>
+        <button class="btn ${tab==='notes'?'':'secondary'}" onclick="location.hash='#admin?tab=notes'">📝 노트</button>
       </div>
       <div style="margin-top:8px; padding-top:8px; border-top:1px solid var(--border); display:flex; gap:6px; flex-wrap:wrap; align-items:center;">
         <button class="btn secondary" style="font-size:12px; padding:5px 10px;" onclick="importAll()">📂 복원</button>
@@ -2253,7 +2254,133 @@ function viewAdmin(params) {
   else if (tab === 'orphan') renderOrphanAdmin();
   else if (tab === 'audit') renderAuditAdmin();
   else if (tab === 'banklearn') renderBankLearnAdmin();
+  else if (tab === 'notes') renderSystemNotesAdmin();
 }
+
+// ⭐ (2026-08-16) 시스템 노트 · 단순 메모장 (추가 · 핀 · 삭제)
+function renderSystemNotesAdmin() {
+  const body = document.getElementById('adminBody');
+  if (!body) return;
+  if (!Array.isArray(DB.systemNotes)) DB.systemNotes = [];
+  const notes = DB.systemNotes.slice();
+  // 핀 우선 → 최근 순
+  notes.sort(function(a, b){
+    if ((b.pinned ? 1 : 0) !== (a.pinned ? 1 : 0)) return (b.pinned ? 1 : 0) - (a.pinned ? 1 : 0);
+    return (b.createdAt || '').localeCompare(a.createdAt || '');
+  });
+  const pinned = notes.filter(n => n.pinned);
+  const rest = notes.filter(n => !n.pinned);
+
+  const renderRow = (n, isPinned) => {
+    const bg = isPinned ? 'background:#FFF7E0; border-left:4px solid #E8A317;' : 'background:#fff; border-left:1px solid var(--line);';
+    const pinBadge = isPinned ? '<span style="background:#E8A317; color:#fff; font-size:10px; padding:1px 6px; border-radius:3px; margin-right:6px;">📌 핀</span>' : '';
+    const dateStr = (n.createdAt || '').slice(0, 10);
+    const pinBtn = isPinned
+      ? '<button class="btn sm secondary" onclick="unpinSystemNote(\'' + n.id + '\')" style="padding:2px 8px; font-size:11px;">핀 해제</button>'
+      : '<button class="btn sm secondary" onclick="pinSystemNote(\'' + n.id + '\')" style="padding:2px 8px; font-size:11px;">📌 핀</button>';
+    return '<div style="' + bg + ' padding:8px 12px; margin-bottom:6px; border-radius:4px; display:flex; align-items:center; gap:8px;">'
+      + '<div style="flex:1; font-size:13px; line-height:1.5;">'
+      +   pinBadge + '<span>' + escapeHtmlSimple(n.text || '') + '</span>'
+      +   '<div style="font-size:10px; color:var(--muted); margin-top:2px;">📅 ' + dateStr + '</div>'
+      + '</div>'
+      + '<div style="display:flex; gap:4px; flex-shrink:0;">'
+      +   pinBtn
+      +   '<button class="btn sm danger" onclick="deleteSystemNote(\'' + n.id + '\')" style="padding:2px 8px; font-size:11px;">✕</button>'
+      + '</div>'
+      + '</div>';
+  };
+
+  let html = '<div class="card">'
+    + '<h3>📝 시스템 노트 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">간단 기록장 · 핀 고정한 노트는 항상 최상단</span></h3>'
+    + '<div style="display:flex; gap:6px; margin-bottom:14px;">'
+    +   '<input type="text" id="sysNoteInput" placeholder="새 노트 입력 후 Enter 또는 [+ 추가]" '
+    +     'onkeydown="if(event.key===\'Enter\'){event.preventDefault(); addSystemNote();}" '
+    +     'style="flex:1; padding:8px 10px; border:1px solid var(--line); border-radius:5px; font-size:13px;">'
+    +   '<button class="btn success" onclick="addSystemNote()" style="padding:8px 16px;">+ 추가</button>'
+    + '</div>';
+
+  if (pinned.length > 0) {
+    html += '<div style="font-size:11px; font-weight:700; color:#7A4A00; margin:12px 0 6px;">📌 핀 고정 (' + pinned.length + '개)</div>';
+    pinned.forEach(function(n){ html += renderRow(n, true); });
+    html += '<div style="border-top:2px dashed var(--line); margin:14px 0;"></div>';
+  }
+  if (rest.length > 0) {
+    html += '<div style="font-size:11px; font-weight:700; color:var(--muted); margin:6px 0;">📋 일반 노트 (' + rest.length + '개)</div>';
+    rest.forEach(function(n){ html += renderRow(n, false); });
+  }
+  if (notes.length === 0) {
+    html += '<div class="empty" style="padding:30px; text-align:center; color:var(--muted);">'
+      + '<div style="font-size:32px;">📭</div>'
+      + '아직 저장된 노트가 없습니다.<br>'
+      + '<small>예: 시스템 마이그레이션 시점 · 직원 인수인계 · 계좌 변경 이력 등</small>'
+      + '</div>';
+  }
+  html += '</div>';
+  body.innerHTML = html;
+}
+
+window.addSystemNote = function() {
+  const input = document.getElementById('sysNoteInput');
+  if (!input) return;
+  const text = (input.value || '').trim();
+  if (!text) { alert('노트 내용을 입력하세요.'); input.focus(); return; }
+  if (!Array.isArray(DB.systemNotes)) DB.systemNotes = [];
+  const note = {
+    id: uid('note'),
+    text: text,
+    createdAt: new Date().toISOString(),
+    pinned: false
+  };
+  DB.systemNotes.push(note);
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('systemNotes').set(DB.systemNotes); } catch(_){}
+  }
+  try { auditLogAdd('시스템 노트 추가: "' + text.slice(0, 50) + (text.length > 50 ? '…' : '') + '"'); } catch(_){}
+  input.value = '';
+  renderSystemNotesAdmin();
+  input.focus();
+};
+
+window.pinSystemNote = function(noteId) {
+  if (!Array.isArray(DB.systemNotes)) return;
+  const n = DB.systemNotes.find(function(x){ return x.id === noteId; });
+  if (!n) return;
+  n.pinned = true;
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('systemNotes').set(DB.systemNotes); } catch(_){}
+  }
+  try { auditLogAdd('시스템 노트 핀 고정: "' + (n.text || '').slice(0, 50) + '"'); } catch(_){}
+  renderSystemNotesAdmin();
+};
+
+window.unpinSystemNote = function(noteId) {
+  if (!Array.isArray(DB.systemNotes)) return;
+  const n = DB.systemNotes.find(function(x){ return x.id === noteId; });
+  if (!n) return;
+  n.pinned = false;
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('systemNotes').set(DB.systemNotes); } catch(_){}
+  }
+  try { auditLogAdd('시스템 노트 핀 해제: "' + (n.text || '').slice(0, 50) + '"'); } catch(_){}
+  renderSystemNotesAdmin();
+};
+
+window.deleteSystemNote = function(noteId) {
+  if (!Array.isArray(DB.systemNotes)) return;
+  const n = DB.systemNotes.find(function(x){ return x.id === noteId; });
+  if (!n) return;
+  if (!confirm('이 노트를 삭제할까요?\n\n"' + (n.text || '').slice(0, 100) + '"')) return;
+  DB.systemNotes = DB.systemNotes.filter(function(x){ return x.id !== noteId; });
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('systemNotes').set(DB.systemNotes); } catch(_){}
+  }
+  try { auditLogAdd('시스템 노트 삭제: "' + (n.text || '').slice(0, 50) + '"'); } catch(_){}
+  renderSystemNotesAdmin();
+};
 
 // ⭐ (2026-08-11) 은행매칭 학습 관리 — DB.bankSenderMap 조회/삭제
 function renderBankLearnAdmin() {
