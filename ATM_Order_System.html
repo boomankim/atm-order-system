@@ -14134,16 +14134,26 @@ window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
 
     try { auditLogAdd('스테이트먼트 PDF 발송(데스크톱): ' + cust.name + ' · ' + filename); } catch(_){}
     showToast('📎 PDF 다운로드 완료 · 이메일 앱에서 첨부하세요');
-    // 안내 팝업 먼저 표시 → 사용자가 [확인] 클릭 시 이메일 앱 오픈 (navigation 순서 안전)
+    // 안내 팝업 먼저 표시 → 사용자가 [확인] 클릭 시 이메일 앱 오픈
+    // ⭐ (2026-08-17) mailto 는 anchor.click() 로 트리거 · window.open 은 Chrome 에서 조용히 실패함
+    //   anchor 방식은 OS mail handler 를 직접 호출 · 현재 탭 navigation 안 됨
     setTimeout(function(){
       alert('✅ PDF 다운로드 완료\n\n파일명: ' + filename + '\n위치: 브라우저 기본 다운로드 폴더\n\n'
           + '📧 [확인] 을 누르면 이메일 앱이 열립니다.\n다운로드된 PDF 를 이메일에 첨부(드래그 또는 [파일 첨부] 버튼)한 후 전송하세요.\n\n'
           + (toAddr ? '수신자: ' + toAddr + ' (자동 입력됨)' : '⚠️ 거래처 이메일이 저장 안 되어 있음 - 수동 입력 필요'));
-      // alert 확인 후 이메일 앱 오픈 (window.open 로 navigation 방지)
+      // alert 확인 직후 mailto 실행 (사용자 gesture 유효)
       try {
-        const w = window.open(mailto, '_self');
-        if (!w) { window.location.href = mailto; }   // 팝업 차단 시 fallback
-      } catch(_) {
+        const mailLink = document.createElement('a');
+        mailLink.href = mailto;
+        mailLink.style.display = 'none';
+        document.body.appendChild(mailLink);
+        mailLink.click();
+        setTimeout(function(){
+          if (mailLink.parentNode) mailLink.parentNode.removeChild(mailLink);
+        }, 100);
+      } catch(err) {
+        console.warn('mailto anchor click failed:', err);
+        // 최후 fallback · location.href (현재 탭 navigation 발생하지만 OS 는 mailto handler 호출)
         try { window.location.href = mailto; } catch(_){}
       }
     }, 400);
