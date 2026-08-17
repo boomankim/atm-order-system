@@ -344,6 +344,32 @@
     .invoice .tot-box { background: #ffffff !important; }
     .invoice { padding: 0 !important; }
     body { -webkit-print-color-adjust: economy; print-color-adjust: economy; }
+    /* ⭐ (2026-08-17) 스테이트먼트 인쇄 컴팩트 — A4 한 페이지 30행 목표, 여유 있는 간격 */
+    #statementPrintArea { font-size: 11px; }
+    #statementPrintArea table.t { width: 100%; border-collapse: collapse; }
+    #statementPrintArea table.t th,
+    #statementPrintArea table.t td {
+      padding: 4px 6px !important;
+      font-size: 11px !important;
+      line-height: 1.35 !important;
+      vertical-align: middle !important;
+    }
+    #statementPrintArea table.t th {
+      padding: 5px 6px !important;
+      font-size: 10.5px !important;
+      font-weight: 700;
+      border-bottom: 1.5px solid #333 !important;
+    }
+    #statementPrintArea table.t td { border-bottom: 1px solid #ddd !important; }
+    /* 헤더의 한글/한글병기 부분 인쇄 시 숨김 */
+    #statementPrintArea .kr-only { display: none !important; }
+    /* 상단 거래처 이름 살짝 축소 */
+    #statementPrintArea > div:first-child > div:first-child > div:first-child { font-size: 16px !important; }
+    /* 요약 박스도 컴팩트하게 */
+    #statementPrintArea > div[style*="margin-top:18px"] { padding: 8px 12px !important; margin-top: 10px !important; gap: 20px !important; }
+    #statementPrintArea > div[style*="margin-top:18px"] b { font-size: 14px !important; }
+    #statementPrintArea > div[style*="margin-top:18px"] span { font-size: 10px !important; }
+    @page { margin: 12mm 10mm; }
   }
   @media (max-width: 640px) {
     .grid-2, .grid-3 { grid-template-columns: 1fr; }
@@ -2108,10 +2134,12 @@ function renderStats() {
   // ⭐ 변경 (2026-07-07): 접수일(orderDate) 기준 → 배송일(deliveryDate) 기준으로 전환.
   //   사장님 요청: "오늘 현황"은 오늘 나가야 하는 물량 기준으로 표시.
   //   deliveryDate 는 이미 로컬 'YYYY-MM-DD' 형식으로 저장돼 시간대 변환 불필요.
+  // ⭐ (2026-08-17) 병합된 원본 주문(status='merged') 은 카운트에서 제외 (이중 계산 방지)
   const _dd = o => (o.deliveryDate || '').slice(0, 10);
-  const dayCount   = DB.orders.filter(o => _dd(o) === today).length;
-  const weekCount  = DB.orders.filter(o => { const d=_dd(o); return d>=weekStartStr && d<=today; }).length;
-  const monthCount = DB.orders.filter(o => _dd(o).slice(0,7) === monthStr).length;
+  const _live = o => o.status !== 'merged';
+  const dayCount   = DB.orders.filter(o => _live(o) && _dd(o) === today).length;
+  const weekCount  = DB.orders.filter(o => _live(o) && (function(){ const d=_dd(o); return d>=weekStartStr && d<=today; })()).length;
+  const monthCount = DB.orders.filter(o => _live(o) && _dd(o).slice(0,7) === monthStr).length;
 
   document.getElementById('stats').innerHTML = `
     <div style="display:flex; align-items:center; gap:0; flex-wrap:wrap; padding:8px 0;">
@@ -7525,6 +7553,7 @@ function viewOffice() {
       <button class="btn sm" style="float:right; background:var(--info);" onclick="location.hash='#history'">📊 주문 이력 / CSV →</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:var(--brand);" onclick="location.hash='#inventory'">📦 재고현황 →</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:#1d4ed8; color:#fff;" onclick="openPurchaseJournal()" title="매입일보 새 창에서 열기">📗 매입일보 →</button>
+      <button class="btn sm" style="float:right; margin-right:6px; background:#C0392B; color:#fff;" onclick="openQuickCreditModal()" title="독립 크레딧 노트 발행 · 다음 인보이스 자동 반영">🧾 크레딧 발행</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:#0EA5E9; color:#fff;" onclick="setMasterFolder()" title="매출일보·매입일보·재고현황·인보이스 PDF·전체 백업을 저장할 통합 폴더를 1회만 지정">📁 통합 저장 폴더</button>
     </h2>
     <div id="masterFolderInfo" style="margin: -6px 0 8px; font-size: 11px; color: var(--muted);"></div>
@@ -7570,40 +7599,6 @@ function viewOffice() {
           }).join('')}
         </tbody>
       </table>`}
-    </div>
-    <div class="card">
-      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-        <h3 style="margin:0;">🧾 크레딧 노트 · 빠른 발행
-          <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">거래처의 다음 인보이스에 자동 반영됨</span>
-        </h3>
-        <button class="btn sm secondary" onclick="renderQuickCreditUnusedList()" title="미적용 크레딧 목록 갱신">🔄 미적용 목록</button>
-      </div>
-      <div class="grid-2" style="gap:10px;">
-        <div>
-          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">거래처 *</label>
-          ${renderCustomerSearchSelect({selectId:'qcCust', placeholder:'거래처 검색'})}
-        </div>
-        <div>
-          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">품목 (선택 안 하면 사유만 표시)</label>
-          ${renderProductSearchSelect({selectId:'qcProd'})}
-        </div>
-      </div>
-      <div style="display:grid; grid-template-columns:1fr 1fr 2fr auto; gap:8px; margin-top:8px; align-items:end;">
-        <div>
-          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">반품 중량 (kg)</label>
-          <input type="number" id="qcKg" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">
-        </div>
-        <div>
-          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">단가 ($/kg)</label>
-          <input type="number" id="qcPrice" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">
-        </div>
-        <div>
-          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">사유 / 메모 *</label>
-          <input type="text" id="qcReason" placeholder="예: 상품 하자 · 재고 반품 · 배송 오류" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px;">
-        </div>
-        <button class="btn" onclick="submitQuickCredit()" style="padding:8px 16px; font-size:13px; white-space:nowrap; background:var(--brand);">+ 크레딧 발행</button>
-      </div>
-      <div id="qcUnusedList" style="margin-top:10px;"></div>
     </div>
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
@@ -7711,9 +7706,45 @@ function viewOffice() {
   setTimeout(() => { if (typeof renderDailyReport === 'function') renderDailyReport(); }, 0);
   // ⭐ (2026-08-11) 통합 저장 폴더 상태 표시
   setTimeout(() => { if (typeof refreshMasterFolderInfo === 'function') refreshMasterFolderInfo(); }, 0);
-  // ⭐ (2026-08-17) 크레딧 빠른 발행 · 미적용 목록 초기화
-  setTimeout(() => { if (typeof renderQuickCreditUnusedList === 'function') renderQuickCreditUnusedList(); }, 0);
 }
+
+// ⭐ (2026-08-17 v2) 사무실 툴바 · 크레딧 발행 모달
+window.openQuickCreditModal = function() {
+  openModal(
+    '<h3 style="margin:0 0 8px;">🧾 크레딧 노트 발행</h3>'
+    + '<div style="font-size:11px; color:var(--muted); margin-bottom:10px;">거래처의 다음 인보이스 준비 화면에서 자동 선택되어 반영됩니다.</div>'
+    + '<div class="grid-2" style="gap:10px;">'
+    +   '<div>'
+    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">거래처 *</label>'
+    +     renderCustomerSearchSelect({selectId:'qcCust', placeholder:'거래처 검색'})
+    +   '</div>'
+    +   '<div>'
+    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">품목 (선택 안 하면 사유만 표시)</label>'
+    +     renderProductSearchSelect({selectId:'qcProd'})
+    +   '</div>'
+    + '</div>'
+    + '<div style="display:grid; grid-template-columns:1fr 1fr 2fr; gap:8px; margin-top:8px;">'
+    +   '<div>'
+    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">반품 중량 (kg)</label>'
+    +     '<input type="number" id="qcKg" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">'
+    +   '</div>'
+    +   '<div>'
+    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">단가 ($/kg)</label>'
+    +     '<input type="number" id="qcPrice" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">'
+    +   '</div>'
+    +   '<div>'
+    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">사유 / 메모 *</label>'
+    +     '<input type="text" id="qcReason" placeholder="예: 상품 하자 · 재고 반품 · 원본 INV-201122 반품" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px;">'
+    +   '</div>'
+    + '</div>'
+    + '<div style="margin-top:12px; text-align:right;">'
+    +   '<button class="btn" onclick="submitQuickCredit()" style="padding:8px 20px; background:#C0392B; color:#fff;">+ 크레딧 발행</button>'
+    + '</div>'
+    + '<div id="qcUnusedList" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;"></div>'
+    + '<div class="btn-row" style="margin-top:14px;"><button class="btn secondary" onclick="closeModal()">닫기</button></div>'
+  );
+  setTimeout(function(){ if (typeof renderQuickCreditUnusedList === 'function') renderQuickCreditUnusedList(); }, 0);
+};
 
 // ⭐ (2026-08-17) 사무실 · 크레딧 빠른 발행 (거래처 다음 인보이스에 자동 반영)
 window.submitQuickCredit = function() {
@@ -7787,35 +7818,56 @@ window.submitQuickCredit = function() {
   renderQuickCreditUnusedList();
 };
 
-// 사무실 · 미적용 크레딧 목록 (전체 거래처)
+// 사무실 · 전체 크레딧 리스트 (미적용 + 적용됨 취소선)
 window.renderQuickCreditUnusedList = function() {
   const box = document.getElementById('qcUnusedList');
   if (!box) return;
-  const unused = (DB.creditNotes || []).filter(function(cn){ return !cn.appliedToOrderId; });
-  if (unused.length === 0) {
-    box.innerHTML = '<div style="padding:8px 12px; background:#F5F5F5; border-radius:4px; font-size:12px; color:var(--muted); text-align:center;">미적용 크레딧 없음</div>';
+  const all = (DB.creditNotes || []).slice();
+  if (all.length === 0) {
+    box.innerHTML = '<div style="padding:8px 12px; background:#F5F5F5; border-radius:4px; font-size:12px; color:var(--muted); text-align:center;">발행된 크레딧이 없습니다.</div>';
     return;
   }
-  // 최근순
-  unused.sort(function(a,b){ return (b.issuedAt || '').localeCompare(a.issuedAt || ''); });
-  let html = '<div style="font-size:11px; font-weight:700; color:var(--brand-dark); margin:6px 0;">📋 미적용 크레딧 (' + unused.length + '건) · 다음 인보이스 발행 시 자동 노출</div>';
-  html += '<div style="max-height:200px; overflow-y:auto; border:1px solid var(--line); border-radius:4px;">';
+  // 최근순 (미적용 우선, 그 안에서 최근순)
+  all.sort(function(a,b){
+    const aa = a.appliedToOrderId ? 1 : 0;
+    const bb = b.appliedToOrderId ? 1 : 0;
+    if (aa !== bb) return aa - bb;
+    return (b.issuedAt || '').localeCompare(a.issuedAt || '');
+  });
+  const unusedCount = all.filter(function(c){ return !c.appliedToOrderId; }).length;
+  const appliedCount = all.length - unusedCount;
+  let html = '<div style="font-size:11px; font-weight:700; color:var(--brand-dark); margin:6px 0;">'
+    + '📋 발행 크레딧 · 미적용 <span style="color:#C0392B;">' + unusedCount + '건</span> · '
+    + '적용됨 <span style="color:var(--muted);">' + appliedCount + '건</span> '
+    + '<span style="font-weight:400; color:var(--muted);">— 미적용은 다음 인보이스 준비 시 자동 선택됨</span>'
+    + '</div>';
+  html += '<div style="max-height:280px; overflow-y:auto; border:1px solid var(--line); border-radius:4px;">';
   html += '<table class="t" style="margin:0; font-size:12px;">';
   html += '<thead><tr><th>발행일</th><th>거래처</th><th>CN#</th><th>내용</th><th class="num">금액</th><th class="act"></th></tr></thead><tbody>';
-  unused.forEach(function(cn){
+  all.forEach(function(cn){
     const c = DB.customers.find(function(x){ return x.id === cn.customerId; });
     const totals = computeCreditNoteTotals(cn);
     const dateStr = (cn.issuedAt || '').slice(0,10);
     const itemDesc = (cn.items || []).map(function(it){ return it.name + (it.returnKg > 0 ? ' ' + it.returnKg.toFixed(2) + 'kg' : ''); }).join(', ');
-    html += '<tr>'
+    const isApplied = !!cn.appliedToOrderId;
+    // 적용된 크레딧 · 전체 행 취소선 + 회색 + 원본 인보이스 배지
+    let rowStyle = '';
+    let appliedBadge = '';
+    if (isApplied) {
+      rowStyle = 'text-decoration:line-through; color:#888; background:#F8F8F8; opacity:0.75;';
+      const appliedOrder = DB.orders.find(function(x){ return x.id === cn.appliedToOrderId; });
+      const invNo = appliedOrder ? (appliedOrder.invoiceNo || appliedOrder.orderNo || '?') : '?';
+      appliedBadge = '<br><span style="text-decoration:none; display:inline-block; margin-top:2px; padding:1px 6px; background:#2E7D32; color:#fff; border-radius:3px; font-size:10px; font-weight:700;">✅ 적용됨 · ' + invNo + '</span>';
+    }
+    html += '<tr style="' + rowStyle + '">'
       + '<td>' + dateStr + '</td>'
-      + '<td><b>' + (c ? c.name : '(?)') + '</b></td>'
-      + '<td><b style="color:#C0392B;">CN' + (cn.creditNo || '') + '</b></td>'
-      + '<td style="font-size:11px;">' + itemDesc + (cn.reason ? '<br><small style="color:var(--muted);">💬 ' + cn.reason + '</small>' : '') + '</td>'
-      + '<td class="num" style="color:#C0392B; font-weight:600;">-$' + fmtMoney(totals.grand) + '</td>'
-      + '<td class="act">'
-      +   '<button class="btn sm secondary" onclick="location.hash=\'#creditNote?id=' + cn.id + '\'">보기</button>'
-      +   '<button class="btn sm danger" onclick="deleteQuickCredit(\'' + cn.id + '\')">✕</button>'
+      + '<td><b>' + (c ? c.name : '(?)') + '</b>' + appliedBadge + '</td>'
+      + '<td><b style="' + (isApplied ? 'color:#888;' : 'color:#C0392B;') + '">CN' + (cn.creditNo || '') + '</b></td>'
+      + '<td style="font-size:11px;">' + itemDesc + (cn.reason ? '<br><small style="color:' + (isApplied ? '#999' : 'var(--muted)') + ';">💬 ' + cn.reason + '</small>' : '') + '</td>'
+      + '<td class="num" style="' + (isApplied ? 'color:#888;' : 'color:#C0392B;') + ' font-weight:600;">-$' + fmtMoney(totals.grand) + '</td>'
+      + '<td class="act" style="text-decoration:none;">'
+      +   '<button class="btn sm secondary" onclick="location.hash=\'#creditNote?id=' + cn.id + '\'" style="text-decoration:none;">보기</button>'
+      +   (isApplied ? '' : '<button class="btn sm danger" onclick="deleteQuickCredit(\'' + cn.id + '\')" style="text-decoration:none;">✕</button>')
       + '</td>'
       + '</tr>';
   });
@@ -8029,7 +8081,7 @@ function formatDateShort(iso) {
 function dailyReportComputeRows(dateISO) {
   const custs = DB.customers.filter(c => c.active !== false);
   const todayCutoff = new Date(dateISO + 'T00:00:00');
-  const rows = custs.map(c => {
+  let rows = custs.map(c => {
     const days = termsDays(c.terms);
     // 매출일보는 '배송완료(delivered)' 주문만 집계 — 배송완료 시점 자동 반영
     // 날짜는 deliveredAt 우선 → invoicedAt → orderDate 순으로 폴백
@@ -11402,7 +11454,6 @@ function viewInvoice(params) {
       ${isInvoiceEditable(o)
         ? `<button class="btn" style="background:#B8860B;color:#fff;" onclick="attemptEditInvoice('${o.id}')" title="발행 후 ${INVOICE_EDIT_DAYS}일 이내 수정 가능 — 보스 권한 필요">✏️ 인보이스 수정</button>`
         : `<button class="btn secondary" style="cursor:not-allowed;opacity:0.55;" onclick="alert('편집 불가: '+ (invoiceEditLockReason(DB.orders.find(x=>x.id==='${o.id}'))||'')); return false;" title="편집 잠금">🔒 편집 잠금</button>`}
-      <button class="btn" style="background:#C0392B;color:#fff;" onclick="location.hash='#creditIssue?orderId=${o.id}'">🧾 크레딧 노트 발행 (반품)</button>
       <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
     </div>
     ${isInvoiceEditable(o) ? `
@@ -11846,15 +11897,75 @@ function getAppliedCreditNotesForOrder(orderId) {
 }
 
 // ⭐ (2026-08-04) invoicePrep 화면 - 미사용 크레딧 알림 박스 렌더
+// ⭐ (2026-08-17) 자동 반영 · 이 거래처의 미적용 크레딧을 화면 진입 시 모두 자동 적용 (하단 라인으로 이동).
+//   원래 체크박스 방식이었으나, 사장님 요청으로 위치가 바뀌어도 자동 반영되도록 변경.
+//   취소 원하면 하단 크레딧 라인의 [✕] 버튼으로 즉시 해제 가능.
 function _renderUnusedCreditsPanel(o, cust) {
   if (!o || !cust) return '';
-  // ⭐ (2026-08-14) 작업4: 미적용 크레딧만 상단 섹션에 표시.
-  //   이미 이 인보이스에 적용된 크레딧은 하단 품목 리스트에 라인으로 나타남 (renderPrepTbody 에서 처리).
   const unused = getUnusedCreditNotesForCustomer(cust.id).filter(cn => cn.appliedToOrderId !== o.id);
+  // ✨ 자동 적용
+  let autoAppliedCount = 0;
+  if (unused.length > 0) {
+    // ⚠️ (2026-08-17) Firebase 연결 · 온라인 상태 확인 후 자동 적용
+    //   저장 실패 시 로컬만 반영되면 다음 세션에서 크레딧 부활 → 이중 차감 위험
+    //   → 오프라인이거나 DB_REF 없으면 사장님에게 경고 팝업 후 skip
+    const fbAvailable = (typeof DB_REF !== 'undefined' && DB_REF);
+    const isOnline = (typeof navigator === 'undefined') || navigator.onLine !== false;
+    if (!fbAvailable || !isOnline) {
+      alert('⚠️ Firebase 서버 연결 불가 · 크레딧 자동 적용을 건너뜁니다.\n\n' +
+            '· 상태: ' + (!isOnline ? '오프라인' : 'Firebase 연결 안 됨') + '\n' +
+            '· 미적용 크레딧 ' + unused.length + '건이 있습니다.\n\n' +
+            '인터넷 연결 확인 후 새로고침(Ctrl+F5) 하면 다시 자동 적용됩니다.');
+    } else {
+      unused.forEach(function(cn){
+        cn.appliedToOrderId = o.id;
+        cn.appliedAt = new Date().toISOString();
+        try { saveEntityField('creditNotes', cn.id, 'appliedToOrderId'); } catch(_){}
+        try { saveEntityField('creditNotes', cn.id, 'appliedAt'); } catch(_){}
+        autoAppliedCount++;
+      });
+      try { saveLocalDB(); } catch(_){}
+      try { auditLogAdd('크레딧 자동 적용 · 주문 ' + (o.orderNo||o.id) + ' · ' + autoAppliedCount + '건'); } catch(_){}
+      // ⭐ 저장 후 300ms 뒤 Firebase 실제 반영 확인 (fire-and-forget 저장의 실패 감지)
+      setTimeout(function(){
+        try {
+          if (DB_REF && unused.length > 0) {
+            DB_REF.child('creditNotes').once('value').then(function(snap){
+              const remote = snap.val();
+              if (!remote) return;
+              const remoteArr = Array.isArray(remote) ? remote : Object.values(remote);
+              const missing = unused.filter(function(cn){
+                const found = remoteArr.find(function(r){ return r && r.id === cn.id; });
+                return !found || found.appliedToOrderId !== o.id;
+              });
+              if (missing.length > 0) {
+                alert('⚠️ 크레딧 자동 적용 저장 실패 (' + missing.length + '건)\n\n' +
+                      'Firebase 서버에 저장이 확인되지 않았습니다.\n' +
+                      '· 로컬 화면에는 반영되어 보이지만 서버에는 미저장 상태\n' +
+                      '· 이 상태로 인보이스 발행하면 다음 세션에서 크레딧이 부활할 수 있음\n\n' +
+                      '조치: 인터넷 연결 확인 후 새로고침(Ctrl+F5), 다시 진입하세요.');
+              }
+            }).catch(function(err){
+              alert('⚠️ Firebase 저장 확인 실패\n\n' + (err.message || err) + '\n\n' +
+                    '크레딧이 서버에 정상 저장됐는지 확인 필요. 새로고침 후 재진입 권장.');
+            });
+          }
+        } catch(e) { console.warn('credit save verify failed:', e); }
+      }, 300);
+    }
+  }
   // 자동 세팅: 이미 적용된 크레딧은 _prepSelectedCreditIds 에 자동 포함 (issueInvoice 호환)
   const alreadyApplied = getAppliedCreditNotesForOrder(o.id);
   window._prepSelectedCreditIds = alreadyApplied.map(cn => cn.id);
-  if (unused.length === 0) return '';
+  // 방금 자동 적용된 것이 있으면 알림 배너
+  if (autoAppliedCount > 0) {
+    return '<div class="card" id="prepCreditsSection" style="border-left:4px solid #2E7D32; background:#E8F5E9;">'
+      + '<h3 style="margin:0 0 4px 0; color:#1B5E20;">✅ 미적용 크레딧 ' + autoAppliedCount + '건 자동 반영됨</h3>'
+      + '<div style="font-size:12px; color:#2E7D32;">하단 품목 리스트에 크레딧 라인이 추가되었습니다. 취소하려면 라인의 <b>[✕]</b> 버튼을 클릭하세요.</div>'
+      + '</div>';
+  }
+  return '';
+  // (이하 코드는 unused.length === 0 일 때 도달하지 않으므로 유지 불필요 — 배너만 반환)
   const rows = unused.map(function(cn){
     const grand = (computeCreditNoteTotals(cn).grand || 0);
     const dateStr = (cn.issuedAt || '').slice(0,10);
@@ -13713,12 +13824,21 @@ function viewStatement(params) {
     }
     const overdueColor = overdue > 0.001 ? '#D32F2F' : 'var(--muted)';
 
+    // ⭐ (2026-08-17) 화면에서만 email/phone 표시 (인쇄 시 no-print 로 숨김)
+    const _contactLine = [];
+    if (cust.contact) _contactLine.push('👤 ' + escapeHtmlSimple(cust.contact));
+    if (cust.phone) _contactLine.push('📞 ' + escapeHtmlSimple(cust.phone));
+    if (cust.email) _contactLine.push('📧 <a href="mailto:' + escapeHtmlSimple(cust.email) + '" style="color:var(--brand); text-decoration:none;">' + escapeHtmlSimple(cust.email) + '</a>');
+    const _custInfoHtml = _contactLine.length > 0
+      ? '<div class="no-print" style="font-size:12px; color:var(--muted); margin-top:4px; display:flex; gap:14px; flex-wrap:wrap;">' + _contactLine.join(' <span style="color:#ccc;">|</span> ') + '</div>'
+      : '';
+
     return '<div id="statementPrintArea">' +
       '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">' +
         '<div>' +
           '<div style="font-size:20px;font-weight:800;color:var(--brand-dark);">' + cust.name + '</div>' +
           '<div style="font-size:13px;color:var(--muted);margin-top:2px;">거래내역서 (Statement) · 기준일: ' + today + '</div>' +
-          (cust.contact ? '<div style="font-size:12px;color:var(--muted);">' + cust.contact + ' · ' + (cust.phone||'') + '</div>' : '') +
+          _custInfoHtml +
         '</div>' +
         '<div style="text-align:right;font-size:12px;color:var(--muted);">' +
           '<div style="font-weight:700;color:var(--brand-dark);">ALL THAT MEAT WHOLESALE PTY LTD</div>' +
@@ -13726,7 +13846,14 @@ function viewStatement(params) {
           '<div>결제조건 / Terms: ' + termsLabel(cust.terms) + '</div>' +
         '</div>' +
       '</div>' +
-      '<table class="t"><thead><tr><th>날짜 / Date</th><th>인보이스 번호 / Invoice No.</th><th class="num">금액 / Amount</th><th class="num">크레딧 / Credit</th><th class="num">입금 / Payment</th><th class="num">발란스 / Balance</th></tr></thead><tbody>' + rows + '</tbody></table>' +
+      '<table class="t"><thead><tr>'
+      + '<th><span class="kr-only">날짜 / </span>Date</th>'
+      + '<th><span class="kr-only">인보이스 번호 / </span>Invoice No.</th>'
+      + '<th class="num"><span class="kr-only">금액 / </span>Amount</th>'
+      + '<th class="num"><span class="kr-only">크레딧 / </span>Credit</th>'
+      + '<th class="num"><span class="kr-only">입금 / </span>Payment</th>'
+      + '<th class="num"><span class="kr-only">발란스 / </span>Balance</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>' +
       '<div style="margin-top:18px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
         '<div><span style="color:var(--muted);font-size:12px;">총 인보이스 / Total Invoiced <small style="font-size:10px;">(크레딧 반영 후)</small></span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
         '<div><span style="color:var(--muted);font-size:12px;">총 입금 / Total Paid</span><br><b style="font-size:18px;color:var(--success);">$' + fmtMoney(totPay) + '</b></div>' +
