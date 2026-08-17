@@ -14085,9 +14085,18 @@ window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
       + '감사합니다.\n'
       + (DB.company && DB.company.name ? DB.company.name : '');
 
-    // ── 모바일: Web Share API (파일 첨부 가능) ──
+    // ── 모바일에서만 Web Share API 사용 (파일 첨부 자동) ──
+    //   ⭐ (2026-08-17) Windows 데스크톱 공유 시트 → Outlook 이 파일 첨부 실패하는
+    //   알려진 버그가 있어서, 데스크톱에서는 Web Share 를 건너뛰고 mailto 방식 사용
+    //   (거래처 이메일 자동 채움 · 사장님이 PDF 드래그로 첨부)
     const pdfFile = new File([pdfBlob], filename, { type: 'application/pdf' });
-    const canShareFiles = (typeof navigator !== 'undefined')
+    const _isMobile = (typeof navigator !== 'undefined')
+      && (
+        (navigator.userAgentData && navigator.userAgentData.mobile === true)
+        || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || '')
+      );
+    const canShareFiles = _isMobile
+      && (typeof navigator !== 'undefined')
       && (typeof navigator.canShare === 'function')
       && navigator.canShare({ files: [pdfFile] });
     if (canShareFiles) {
