@@ -344,31 +344,34 @@
     .invoice .tot-box { background: #ffffff !important; }
     .invoice { padding: 0 !important; }
     body { -webkit-print-color-adjust: economy; print-color-adjust: economy; }
-    /* ⭐ (2026-08-17) 스테이트먼트 인쇄 컴팩트 — A4 한 페이지 30행 목표, 여유 있는 간격 */
-    #statementPrintArea { font-size: 11px; }
-    #statementPrintArea table.t { width: 100%; border-collapse: collapse; }
-    #statementPrintArea table.t th,
-    #statementPrintArea table.t td {
-      padding: 4px 6px !important;
-      font-size: 11px !important;
-      line-height: 1.35 !important;
-      vertical-align: middle !important;
-    }
-    #statementPrintArea table.t th {
-      padding: 5px 6px !important;
+    /* ⭐ (2026-08-17 v2) 스테이트먼트 XERO 스타일 인쇄 — A4 한 페이지 30행 목표 */
+    #statementPrintArea { font-size: 11px; color: #222; }
+    #statementPrintArea table.stmtTable { width: 100%; border-collapse: collapse; margin: 0; }
+    #statementPrintArea table.stmtTable th,
+    #statementPrintArea table.stmtTable td {
+      padding: 3px 5px !important;
       font-size: 10.5px !important;
-      font-weight: 700;
-      border-bottom: 1.5px solid #333 !important;
+      line-height: 1.3 !important;
+      vertical-align: middle !important;
+      background: #fff !important;
     }
-    #statementPrintArea table.t td { border-bottom: 1px solid #ddd !important; }
-    /* 헤더의 한글/한글병기 부분 인쇄 시 숨김 */
-    #statementPrintArea .kr-only { display: none !important; }
-    /* 상단 거래처 이름 살짝 축소 */
-    #statementPrintArea > div:first-child > div:first-child > div:first-child { font-size: 16px !important; }
-    /* 요약 박스도 컴팩트하게 */
-    #statementPrintArea > div[style*="margin-top:18px"] { padding: 8px 12px !important; margin-top: 10px !important; gap: 20px !important; }
-    #statementPrintArea > div[style*="margin-top:18px"] b { font-size: 14px !important; }
-    #statementPrintArea > div[style*="margin-top:18px"] span { font-size: 10px !important; }
+    #statementPrintArea table.stmtTable th {
+      padding: 4px 5px !important;
+      font-size: 10px !important;
+      font-weight: 700 !important;
+      text-transform: uppercase;
+      letter-spacing: 0.3px;
+      border-bottom: 1.5px solid #333 !important;
+      border-top: 1px solid #999 !important;
+      background: #F8F8F8 !important;
+    }
+    #statementPrintArea table.stmtTable td { border-bottom: 1px solid #E5E5E5 !important; }
+    #statementPrintArea table.stmtTable tr:last-child td { border-bottom: 1px solid #999 !important; }
+    /* 헤더 · 하단 여백 축소 */
+    #statementPrintArea > div:first-child { margin-bottom: 14px !important; }
+    #statementPrintArea > div:nth-child(3) { margin-top: 16px !important; }
+    /* 은행/BALANCE 하단은 폰트 유지, 살짝 축소 */
+    #statementPrintArea > div:nth-child(3) > div:last-child > div:last-child { font-size: 22px !important; }
     @page { margin: 12mm 10mm; }
   }
   @media (max-width: 640px) {
@@ -7590,7 +7593,7 @@ function viewOffice() {
               <td>${o.items.length}개</td>
               <td class="num">${totals.totalKg.toFixed(1)} kg</td>
               <td class="num">$${fmtMoney(totals.grand)}</td>
-              <td>${renderDeliveryBadge(o.deliveryDate)}</td>
+              <td style="cursor:pointer;" title="클릭하면 배송일 변경" onmouseover="this.style.background='#FFF7E0';" onmouseout="this.style.background='';" onclick="event.stopPropagation(); officeEditDeliveryDate('${o.id}');">${renderDeliveryBadge(o.deliveryDate)}<span style="font-size:10px; color:var(--muted); margin-left:4px;">✏️</span></td>
               <td class="act">
                 ${_mergeBtn}
                 <button class="btn sm" onclick="event.stopPropagation(); location.hash='#invoicePrep?id=${o.id}'">📂 펼쳐보기 →</button>
@@ -7904,6 +7907,70 @@ window.openPurchaseJournal = function() {
   }
 };
 
+// ⭐ (2026-08-17) 사무실 인보이스 발행 대기 · 희망 배송일 인라인 편집
+//   뱃지 클릭 → date input 모달 → 오늘 이후만 · confirm 팝업 → 저장 + 감사로그
+window.officeEditDeliveryDate = function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return;
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  const todayISO = todayLocalISO();
+  const currentDate = o.deliveryDate || '';
+  const currentDisp = currentDate ? formatDateDMY(currentDate) : '미지정';
+  openModal(
+    '<h3 style="margin:0 0 8px;">🚚 배송일 변경</h3>'
+    + '<div style="background:#F5F5F5; padding:8px 12px; border-radius:4px; margin-bottom:12px; font-size:13px;">'
+    +   '<b>' + (cust ? cust.name : '(?)') + '</b> · 주문 <b style="color:var(--brand);">' + o.orderNo + '</b><br>'
+    +   '<span style="color:var(--muted); font-size:12px;">현재 배송일: <b>' + currentDisp + '</b></span>'
+    + '</div>'
+    + '<div class="field">'
+    +   '<label>새 배송일 <small style="color:var(--muted);">(오늘 이후만 선택 가능)</small></label>'
+    +   '<input type="date" id="odDatePicker" value="' + (currentDate && currentDate >= todayISO ? currentDate : todayISO) + '" '
+    +     'min="' + todayISO + '" '
+    +     'style="width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:6px; font-size:14px;">'
+    + '</div>'
+    + '<div class="btn-row" style="margin-top:14px;">'
+    +   '<button class="btn" onclick="officeCommitDeliveryDate(\'' + orderId + '\')">✅ 변경 확인</button>'
+    +   '<button class="btn secondary" onclick="closeModal()">취소</button>'
+    + '</div>'
+  );
+  setTimeout(function(){ const el = document.getElementById('odDatePicker'); if (el) el.focus(); }, 50);
+};
+
+window.officeCommitDeliveryDate = function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) return;
+  const el = document.getElementById('odDatePicker');
+  if (!el) return;
+  const newDate = (el.value || '').trim();
+  const todayISO = todayLocalISO();
+  if (!newDate || !/^\d{4}-\d{2}-\d{2}$/.test(newDate)) {
+    alert('❌ 올바른 날짜를 선택해 주세요.');
+    return;
+  }
+  if (newDate < todayISO) {
+    alert('❌ 오늘 이전 날짜는 선택할 수 없습니다.');
+    return;
+  }
+  const oldDate = o.deliveryDate || '(없음)';
+  if (newDate === o.deliveryDate) {
+    closeModal();
+    return;
+  }
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  const oldDisp = oldDate === '(없음)' ? '(없음)' : formatDateDMY(oldDate);
+  const newDisp = formatDateDMY(newDate);
+  if (!confirm('배송일을 변경할까요?\n\n거래처: ' + (cust ? cust.name : '(?)') + '\n주문번호: ' + o.orderNo +
+               '\n\n' + oldDisp + '  →  ' + newDisp)) return;
+  o.deliveryDate = newDate;
+  try { saveEntityField('orders', o.id, 'deliveryDate'); }
+  catch(e) { console.warn('배송일 저장 실패:', e); alert('저장 실패: ' + e.message); return; }
+  try { auditLogAdd('배송일 변경(사무실): ' + (cust ? cust.name : '') + ' · ' + o.orderNo + ' · ' + oldDisp + ' → ' + newDisp); } catch(_){}
+  closeModal();
+  showToast('✅ 배송일 변경 완료: ' + newDisp);
+  // 사무실 뷰 재렌더 (병합 그룹 재계산 · 색상 유지)
+  if (typeof route === 'function') route();
+};
+
 window.togglePaymentPanel = function() {
   const el = document.getElementById('inlinePaymentPanel');
   if (!el) return;
@@ -8142,7 +8209,10 @@ function dailyReportComputeRows(dateISO) {
       let totalPaymentAsOf = allPayments
         .filter(p => (p.date||'') <= dateISO)
         .reduce((s,p)=>s+p.amount,0);
+      // ⭐ (2026-08-17) 마이너스 인보이스(크레딧) 을 payment pool 에 미리 추가 → overdue 이중 계산 방지
+      invoicesAsOf.forEach(function(x){ if (x.amount < 0) totalPaymentAsOf += Math.abs(x.amount); });
       for (const inv of invoicesAsOf) {
+        if (inv.amount < 0) continue;
         let unpaid = inv.amount;
         if (unpaid < 0) unpaid = 0;
         if (totalPaymentAsOf > 0 && unpaid > 0) {
@@ -13674,8 +13744,14 @@ function viewStatement(params) {
     const _todayISO_stmt = toLocalISODate(new Date());
     const _invUnpaidMap = {};
     const _sortedInvEvents = invEvents.slice().sort((a,b) => a.date < b.date ? -1 : 1);
+    // ⭐ (2026-08-17) 버그 수정 — 마이너스 인보이스(크레딧 반영으로 net 음수) 를 payment pool 에 추가
+    //   기존: 마이너스 무시 → 원본 인보이스만 계산 → overdue 뻥튀기
     let _payPool = payEvents.reduce((s,p) => s + (p.amount || 0), 0);
     _sortedInvEvents.forEach(function(inv){
+      if (inv.amount < 0) _payPool += Math.abs(inv.amount);   // 크레딧을 payment 로 취급
+    });
+    _sortedInvEvents.forEach(function(inv){
+      if (inv.amount < 0) return;   // 마이너스는 위에서 이미 pool 에 흡수
       const net = Math.max(0, inv.amount);
       const applied = Math.min(_payPool, net);
       _invUnpaidMap[inv.invId] = net - applied;
@@ -13707,14 +13783,26 @@ function viewStatement(params) {
     let openingBal = null;
 
     // 각 이벤트 walkthrough — pre-period는 상태만 갱신, in-period는 행 출력 + 총계 반영
+    // ⭐ (2026-08-17) XERO 스타일 재설계 · 컬럼: Date · Activity · Reference · Due Date · Invoice Amount · Payments · Balance
+    const _fmtDMY = function(iso){
+      if (!iso) return '';
+      const p = iso.split('-');
+      if (p.length !== 3) return iso;
+      const monthNames = ['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+      const m = parseInt(p[1],10);
+      return parseInt(p[2],10) + ' ' + (monthNames[m-1]||m) + ' ' + p[0];
+    };
+    const _fmtBal = function(n){
+      return n < -0.001 ? '-$' + fmtMoney(Math.abs(n)) : '$' + fmtMoney(n);
+    };
     const emitOpening = () => {
       if (openingBal !== null) return;
       openingBal = bal;
-      const openDisp = openingBal < -0.001 ? '-$' + fmtMoney(Math.abs(openingBal)) : '$' + fmtMoney(openingBal);
-      rows += '<tr style="color:var(--muted);">'
-        + '<td>' + dateFrom + '</td><td>이월 잔액</td>'
-        + '<td class="num">—</td><td class="num">—</td><td class="num">—</td>'
-        + '<td class="num"><b>' + openDisp + '</b></td></tr>';
+      rows += '<tr style="color:#666;">'
+        + '<td>' + _fmtDMY(dateFrom) + '</td>'
+        + '<td>Opening Balance</td>'
+        + '<td></td><td></td><td class="num"></td><td class="num"></td>'
+        + '<td class="num"><b>' + _fmtBal(openingBal) + '</b></td></tr>';
     };
 
     for (const ev of allEvents) {
@@ -13726,51 +13814,71 @@ function viewStatement(params) {
         bal += ev.amount;
         if (inPeriod) {
           totInv += ev.amount;
-          const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
-          // ⭐ (2026-08-06) 결제 지연일수 텍스트 (미결제 인보이스에만, 색상 없음)
+          // 결제 지연일수 (미결제분에만)
           let delayText = '';
           const _unpaidForInv = _invUnpaidMap[ev.invId] || 0;
           if (_unpaidForInv > 0.001 && _termsDaysCust > 0) {
             const delayDays = _dateDiffDaysStmt(ev.date, _todayISO_stmt) - _termsDaysCust;
             if (delayDays > 0) {
-              delayText = ' <small style="color:var(--muted); font-weight:400;">+' + delayDays + '일</small>';
+              delayText = ' <small style="color:#888; font-weight:400;">+' + delayDays + 'd</small>';
             }
           }
+          // Due Date 계산 (인보이스 날짜 + 결제조건 일수)
+          let dueDateDisp = '';
+          if (_termsDaysCust > 0) {
+            const dd = new Date(ev.date + 'T00:00:00');
+            dd.setDate(dd.getDate() + _termsDaysCust);
+            dueDateDisp = _fmtDMY(toLocalISODate(dd));
+          }
+          // 마이너스 인보이스 (크레딧 반영) 처리
+          const isCredit = ev.amount < 0;
+          const activity = isCredit
+            ? 'Credit Note applied to Invoice # ' + ev.invNo
+            : 'Invoice # ' + ev.invNo;
+          const amtDisp = isCredit
+            ? '<span style="color:#C0392B;">-$' + fmtMoney(Math.abs(ev.amount)) + '</span>'
+            : '$' + fmtMoney(ev.amount);
           rows += '<tr>'
-            + '<td>' + ev.date + '</td>'
-            + '<td><b>' + ev.invNo + '</b>' + delayText + '</td>'
-            + '<td class="num">$' + fmtMoney(ev.amount) + '</td>'
-            + '<td class="num">—</td>'
-            + '<td class="num">—</td>'
-            + '<td class="num"><b>' + balDisp + '</b></td>'
+            + '<td>' + _fmtDMY(ev.date) + '</td>'
+            + '<td>' + activity + delayText + '</td>'
+            + '<td></td>'
+            + '<td>' + dueDateDisp + '</td>'
+            + '<td class="num">' + amtDisp + '</td>'
+            + '<td class="num"></td>'
+            + '<td class="num"><b>' + _fmtBal(bal) + '</b></td>'
             + '</tr>';
         }
       } else if (ev.kind === 'pay') {
-        // 입금 — 입력한 그대로 1행. 분할·선입금 개념 없음.
-        // ⭐ (2026-08-06) 음수 입금 (리펀드) 지원 — 라벨·색상·메모 표시.
+        // 입금 — 각 payment 개별 행 (CSV 등록도 개별 저장)
         if (inPeriod) totPay += ev.amount;
         bal -= ev.amount;
         if (inPeriod) {
           const isRefund = ev.amount < 0;
-          const balDisp = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
-          const balColor = bal < -0.001 ? 'var(--success)' : (bal > 0 ? 'var(--warn)' : 'var(--muted)');
           const amtDisp = isRefund ? '-$' + fmtMoney(Math.abs(ev.amount)) : '$' + fmtMoney(ev.amount);
-          const rowColor = isRefund ? 'var(--warn)' : 'var(--success)';
-          const bgColor = isRefund ? '#FDECEA' : '#E8F5E9';
-          const label = isRefund ? '입금 <b>(환급/리펀드)</b>' : '입금';
-          // 메모(notes)와 참조번호(ref) 표시 — 왜 이 입금인지 알 수 있게
           const _esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-          const noteParts = [];
-          if (ev.notes) noteParts.push(_esc(ev.notes));
-          if (ev.ref) noteParts.push('참조: ' + _esc(ev.ref));
-          const noteInline = noteParts.length ? ' <small style="color:var(--muted);">— ' + noteParts.join(' · ') + '</small>' : '';
-          rows += '<tr style="background:' + bgColor + ';">'
-            + '<td>' + ev.date + '</td>'
-            + '<td style="color:' + rowColor + ';">' + label + noteInline + '</td>'
-            + '<td class="num">—</td>'
-            + '<td class="num">—</td>'
-            + '<td class="num" style="color:' + rowColor + ';">' + amtDisp + '</td>'
-            + '<td class="num" style="color:' + balColor + ';"><b>' + balDisp + '</b></td>'
+          // Activity 문구 · Reference 컬럼 자동 구성
+          let activity, referenceText = '';
+          if (isRefund) {
+            activity = 'Refund';
+          } else {
+            // ev.ref 예: "INV 200241" · "REF 31672462"
+            const refStr = String(ev.ref || '');
+            const invMatch = refStr.match(/INV\s+(\S+)/i);
+            if (invMatch) {
+              activity = 'Payment on Invoice # ' + invMatch[1];
+            } else {
+              activity = 'Payment';
+            }
+            referenceText = _esc(refStr);
+          }
+          rows += '<tr>'
+            + '<td>' + _fmtDMY(ev.date) + '</td>'
+            + '<td>' + activity + '</td>'
+            + '<td style="color:#666; font-size:11px;">' + referenceText + '</td>'
+            + '<td></td>'
+            + '<td class="num"></td>'
+            + '<td class="num">' + amtDisp + '</td>'
+            + '<td class="num"><b>' + _fmtBal(bal) + '</b></td>'
             + '</tr>';
         }
       }
@@ -13803,7 +13911,10 @@ function viewStatement(params) {
       let totalPaymentAsOf = DB.payments
         .filter(p => p.customerId === cust.id && (p.date||'') <= dateTo)
         .reduce((s,p)=>s+p.amount, 0);
+      // ⭐ (2026-08-17) 마이너스 인보이스(크레딧) 를 payment pool 에 미리 추가
+      invoicesAsOf.forEach(function(x){ if (x.amount < 0) totalPaymentAsOf += Math.abs(x.amount); });
       for (const inv of invoicesAsOf) {
+        if (inv.amount < 0) continue;   // 마이너스는 이미 pool 에 흡수
         let unpaid = inv.amount;
         if (unpaid < 0) unpaid = 0;
         if (totalPaymentAsOf > 0 && unpaid > 0) {
@@ -13833,42 +13944,70 @@ function viewStatement(params) {
       ? '<div class="no-print" style="font-size:12px; color:var(--muted); margin-top:4px; display:flex; gap:14px; flex-wrap:wrap;">' + _contactLine.join(' <span style="color:#ccc;">|</span> ') + '</div>'
       : '';
 
-    return '<div id="statementPrintArea">' +
-      '<div style="display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:16px;">' +
-        '<div>' +
-          '<div style="font-size:20px;font-weight:800;color:var(--brand-dark);">' + cust.name + '</div>' +
-          '<div style="font-size:13px;color:var(--muted);margin-top:2px;">거래내역서 (Statement) · 기준일: ' + today + '</div>' +
-          _custInfoHtml +
-        '</div>' +
-        '<div style="text-align:right;font-size:12px;color:var(--muted);">' +
-          '<div style="font-weight:700;color:var(--brand-dark);">ALL THAT MEAT WHOLESALE PTY LTD</div>' +
-          '<div>기간 / Period: ' + dateFrom + ' ~ ' + dateTo + '</div>' +
-          '<div>결제조건 / Terms: ' + termsLabel(cust.terms) + '</div>' +
-        '</div>' +
-      '</div>' +
-      '<table class="t"><thead><tr>'
-      + '<th><span class="kr-only">날짜 / </span>Date</th>'
-      + '<th><span class="kr-only">인보이스 번호 / </span>Invoice No.</th>'
-      + '<th class="num"><span class="kr-only">금액 / </span>Amount</th>'
-      + '<th class="num"><span class="kr-only">크레딧 / </span>Credit</th>'
-      + '<th class="num"><span class="kr-only">입금 / </span>Payment</th>'
-      + '<th class="num"><span class="kr-only">발란스 / </span>Balance</th>'
-      + '</tr></thead><tbody>' + rows + '</tbody></table>' +
-      '<div style="margin-top:18px;padding:14px 18px;background:var(--surface);border-radius:8px;border:1px solid var(--line);display:flex;gap:32px;flex-wrap:wrap;">' +
-        '<div><span style="color:var(--muted);font-size:12px;">총 인보이스 / Total Invoiced <small style="font-size:10px;">(크레딧 반영 후)</small></span><br><b style="font-size:18px;">$' + fmtMoney(totInv) + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">총 입금 / Total Paid</span><br><b style="font-size:18px;color:var(--success);">$' + fmtMoney(totPay) + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">현 미수금 / Balance Due</span><br><b style="font-size:20px;color:' + balColor + ';">' + balDisplay + '</b></div>' +
-        '<div><span style="color:var(--muted);font-size:12px;">Overdue<br><small style="font-size:10px;">(결제일 + 7일 경고 / +14일 심각)</small></span><br>' +
-          (overdueSevereAsOf > 0.001 ? '<b style="font-size:16px;color:#D32F2F;">🔴 심각 $' + fmtMoney(overdueSevereAsOf) + '</b>' : '') +
-          (overdueSevereAsOf > 0.001 && overdueMildAsOf > 0.001 ? '<br>' : '') +
-          (overdueMildAsOf > 0.001 ? '<b style="font-size:16px;color:#E8A317;">🟡 경고 $' + fmtMoney(overdueMildAsOf) + '</b>' : '') +
-          (overdue < 0.001 ? '<b style="font-size:20px;color:var(--muted);">$0.00</b>' : '') +
-        '</div>' +
-      '</div></div>' +
-      '<div style="margin-top:20px;display:flex;gap:8px;flex-wrap:wrap;" class="no-print">' +
-        '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>' +
-        '<button class="btn secondary" onclick="shareStatementKakao(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📤 카톡/이메일 공유</button>' +
-      '</div>';
+    // ⭐ (2026-08-17) XERO 스타일 재설계
+    const _co = DB.company || {};
+    const _esc = s => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    // 거래처 주소 · ABN (없으면 생략)
+    const _custLines = [];
+    if (cust.address) _esc(cust.address).split(/\n/).forEach(function(ln){ if (ln.trim()) _custLines.push(_esc(ln.trim())); });
+    if (cust.abn) _custLines.push('ABN: ' + _esc(cust.abn));
+    // 회사 정보 (오른쪽 상단)
+    const _coLines = [];
+    if (_co.address) _esc(_co.address).split(/\n/).forEach(function(ln){ if (ln.trim()) _coLines.push(_esc(ln.trim())); });
+    if (_co.abn) _coLines.push('ABN: ' + _esc(_co.abn));
+    // 은행 정보 (하단 · invoiceBankInfo 사용)
+    const _bankInfoRaw = (_co.invoiceBankInfo || '').trim();
+    const _bankHtml = _bankInfoRaw
+      ? _esc(_bankInfoRaw).replace(/\n/g, '<br>')
+      : ('Bank: ' + (_co.bank||'—') + '<br>Name: ' + _esc(_co.name||'') + '<br>BSB: —<br>Account: —');
+
+    return '<div id="statementPrintArea">'
+      // ─── 헤더: 좌(거래처) / 우(회사) ───
+      + '<div style="display:flex; justify-content:space-between; align-items:flex-start; margin-bottom:18px; gap:20px;">'
+      +   '<div style="flex:1;">'
+      +     '<div style="font-size:22px; font-weight:800; color:var(--brand-dark); letter-spacing:0.5px;">' + _esc(cust.name) + '</div>'
+      +     (_custLines.length > 0 ? '<div style="font-size:11px; color:#555; margin-top:3px; line-height:1.5;">' + _custLines.join('<br>') + '</div>' : '')
+      +     _custInfoHtml
+      +   '</div>'
+      +   '<div style="text-align:right; font-size:11px; color:#333; line-height:1.5;">'
+      +     '<div style="font-size:22px; font-weight:800; color:var(--brand-dark); letter-spacing:2px; margin-bottom:6px;">거래내역서 (Statement)</div>'
+      +     '<div style="display:inline-block; text-align:left; margin-top:4px;">'
+      +       '<div><b>From Date:</b> ' + _fmtDMY(dateFrom) + '</div>'
+      +       '<div><b>To Date:</b> ' + _fmtDMY(dateTo) + '</div>'
+      +       '<div><b>Terms:</b> ' + termsLabel(cust.terms) + '</div>'
+      +     '</div>'
+      +     '<div style="margin-top:10px; border-top:1px solid #ddd; padding-top:6px;">'
+      +       '<div style="font-weight:700; color:var(--brand-dark);">' + _esc(_co.name || 'ALL THAT MEAT WHOLESALE PTY LTD') + '</div>'
+      +       (_coLines.length > 0 ? '<div style="font-size:10px; color:#666;">' + _coLines.join('<br>') + '</div>' : '')
+      +     '</div>'
+      +   '</div>'
+      + '</div>'
+      // ─── 테이블: 7 컬럼 ───
+      + '<table class="t stmtTable"><thead><tr>'
+      +   '<th style="width:80px;">Date</th>'
+      +   '<th>Activity</th>'
+      +   '<th style="width:110px;">Reference</th>'
+      +   '<th style="width:80px;">Due Date</th>'
+      +   '<th class="num" style="width:100px;">Invoice Amount</th>'
+      +   '<th class="num" style="width:100px;">Payments</th>'
+      +   '<th class="num" style="width:110px;">Balance AUD</th>'
+      + '</tr></thead><tbody>' + rows + '</tbody></table>'
+      // ─── 하단: 좌(은행) / 우(BALANCE DUE) ───
+      + '<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:flex-end; gap:24px;">'
+      +   '<div style="font-size:11px; color:#333; line-height:1.6; min-width:240px;">'
+      +     _bankHtml
+      +   '</div>'
+      +   '<div style="text-align:right;">'
+      +     '<div style="font-size:14px; font-weight:600; color:#333; letter-spacing:1px;">BALANCE DUE AUD</div>'
+      +     '<div style="font-size:28px; font-weight:800; color:' + (bal > 0.001 ? '#C0392B' : (bal < -0.001 ? '#2E7D32' : '#333')) + '; letter-spacing:1px; margin-top:2px;">' + balDisplay + '</div>'
+      +   '</div>'
+      + '</div>'
+      + '</div>'
+      // ─── 화면용 액션 버튼 (인쇄 시 숨김) ───
+      + '<div style="margin-top:20px; display:flex; gap:8px; flex-wrap:wrap;" class="no-print">'
+      +   '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>'
+      +   '<button class="btn secondary" onclick="shareStatementKakao(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📤 카톡/이메일 공유</button>'
+      + '</div>';
   }
 
   app.innerHTML =
@@ -13984,11 +14123,9 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
     }
   }
 
-  txt += '\n총 입금 (기간): $' + fmtMoney(totalPaid);
+  // ⭐ (2026-08-17) 옵션 B · 카톡/이메일 복사 시 현 미수금 한 줄만 표시 (심각/경고/총 입금 제거)
   const balDisplayTxt = balance < -0.001 ? '-$' + fmtMoney(Math.abs(balance)) : '$' + fmtMoney(balance);
-  txt += '\n현 미수금: ' + balDisplayTxt;
-  if (overdueSevere > 0.001) txt += '\n🔴 심각: $' + fmtMoney(overdueSevere) + ' (결제일 + 14일 초과)';
-  if (overdueMild > 0.001) txt += '\n🟡 경고: $' + fmtMoney(overdueMild) + ' (결제일 + 7일 초과)';
+  txt += '\n💰 BALANCE DUE AUD: ' + balDisplayTxt;
 
   if (navigator.clipboard) {
     navigator.clipboard.writeText(txt).then(function() {
