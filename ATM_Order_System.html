@@ -14140,6 +14140,12 @@ window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
       const toAddrEsc = (toAddr || '').replace(/</g, '&lt;');
       const filenameEsc = filename.replace(/</g, '&lt;');
       const mailtoEsc = mailto.replace(/"/g, '&quot;');
+      // Gmail 웹메일 compose URL (Chrome/Windows mailto handler 미설정 상황에서도 확실히 열림)
+      const gmailUrl = 'https://mail.google.com/mail/?view=cm&fs=1'
+        + '&to=' + encodeURIComponent(toAddr)
+        + '&su=' + encodeURIComponent(subject)
+        + '&body=' + encodeURIComponent(body);
+      const gmailEsc = gmailUrl.replace(/"/g, '&quot;');
       openModal(
         '<h3 style="margin:0 0 10px;">✅ PDF 다운로드 완료</h3>'
         + '<div style="background:#F5F5F5; padding:10px 14px; border-radius:6px; font-size:13px; line-height:1.6; margin-bottom:12px;">'
@@ -14147,16 +14153,21 @@ window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
         +   '<div><b>위치:</b> 브라우저 기본 다운로드 폴더</div>'
         + '</div>'
         + '<div style="font-size:13px; line-height:1.7; margin-bottom:14px;">'
-        +   '<div>📧 아래 <b>[이메일 열기]</b> 버튼을 눌러 Outlook 창을 여세요.</div>'
-        +   '<div>다운로드된 PDF 파일을 이메일 창에 <b>드래그</b> 하거나 [파일 첨부] 버튼으로 첨부 후 전송하세요.</div>'
+        +   '<div>📧 아래 버튼을 눌러 이메일 창을 여세요. 다운로드된 PDF 를 <b>드래그</b> 하거나 [파일 첨부] 로 붙여 전송.</div>'
         +   (toAddr
               ? '<div style="margin-top:8px; color:#2E7D32;">수신자: <b>' + toAddrEsc + '</b> (자동 입력됨)</div>'
               : '<div style="margin-top:8px; color:#B71C1C;">⚠️ 거래처 이메일 미저장 - 수동 입력 필요</div>')
         + '</div>'
-        + '<div class="btn-row" style="gap:8px;">'
+        + '<div class="btn-row" style="gap:8px; flex-wrap:wrap;">'
+        +   '<a class="btn" href="' + gmailEsc + '" target="_blank" rel="noopener" onclick="closeModal();" '
+        +     'style="background:#DB4437; color:#fff; text-decoration:none; padding:10px 18px;">✉️ Gmail 열기 (권장)</a>'
         +   '<a class="btn" href="' + mailtoEsc + '" onclick="closeModal();" '
-        +     'style="background:#2E7D32; color:#fff; text-decoration:none; padding:10px 20px;">📧 이메일 열기</a>'
+        +     'style="background:#2E7D32; color:#fff; text-decoration:none; padding:10px 18px;">📧 Outlook 열기</a>'
         +   '<button class="btn secondary" onclick="closeModal()">닫기</button>'
+        + '</div>'
+        + '<div style="font-size:11px; color:var(--muted); margin-top:10px; line-height:1.5;">'
+        +   '💡 <b>Gmail 열기</b>: 브라우저에서 새 탭으로 Gmail 작성 창 열림 (확실히 열림)<br>'
+        +   '💡 <b>Outlook 열기</b>: PC 에 Outlook 앱 설치 + Windows 기본 메일 앱 설정 필요'
         + '</div>'
       );
     }, 400);
