@@ -14006,7 +14006,6 @@ function viewStatement(params) {
       + '<div style="margin-top:20px; display:flex; gap:8px; flex-wrap:wrap;" class="no-print">'
       +   '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>'
       +   '<button class="btn" style="background:#2E7D32; color:#fff;" onclick="sendStatementPDF(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📎 PDF 이메일/카톡</button>'
-      +   '<button class="btn secondary" onclick="shareStatementKakao(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📤 텍스트 복사</button>'
       + '</div>';
   }
 
@@ -14056,19 +14055,41 @@ window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
     const canvas = await html2canvas(container.firstElementChild, {
       scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
     });
-    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    // ⭐ (2026-08-17 v4) A4 여백 추가 + 다중 페이지는 캔버스 슬라이싱 (모든 뷰어 호환)
     const pageW = 210, pageH = 297;
-    const imgH = canvas.height * pageW / canvas.width;
+    const marginX = 10, marginY = 10;              // 좌우 · 상하 여백
+    const printW = pageW - marginX * 2;            // 190mm
+    const printH = pageH - marginY * 2;            // 277mm
     const { jsPDF } = window.jspdf;
     const doc = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
-    if (imgH <= pageH) {
-      doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+    // 캔버스 → mm 스케일
+    const pxPerMm = canvas.width / printW;
+    const pageHeightPx = printH * pxPerMm;
+    const totalHeightMm = canvas.height / pxPerMm;
+    if (totalHeightMm <= printH) {
+      // 단일 페이지 · 그대로 배치
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      doc.addImage(imgData, 'JPEG', marginX, marginY, printW, totalHeightMm);
     } else {
-      let yOff = 0;
-      while (yOff < imgH) {
-        if (yOff > 0) doc.addPage();
-        doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
-        yOff += pageH;
+      // 다중 페이지 · 원본 캔버스를 페이지 높이만큼 물리적으로 잘라 각 페이지에 독립 이미지로 삽입
+      let sy = 0;
+      let pageIndex = 0;
+      while (sy < canvas.height) {
+        const remainingPx = canvas.height - sy;
+        const sliceHeightPx = Math.min(pageHeightPx, remainingPx);
+        const sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = Math.ceil(sliceHeightPx);
+        const ctx = sliceCanvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+        ctx.drawImage(canvas, 0, sy, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx);
+        const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.95);
+        const sliceHeightMm = sliceHeightPx / pxPerMm;
+        if (pageIndex > 0) doc.addPage();
+        doc.addImage(sliceData, 'JPEG', marginX, marginY, printW, sliceHeightMm);
+        sy += pageHeightPx;
+        pageIndex++;
       }
     }
     // 파일명
