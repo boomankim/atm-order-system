@@ -14005,7 +14005,8 @@ function viewStatement(params) {
       // ─── 화면용 액션 버튼 (인쇄 시 숨김) ───
       + '<div style="margin-top:20px; display:flex; gap:8px; flex-wrap:wrap;" class="no-print">'
       +   '<button class="btn" onclick="window.print()">🖨️ 출력 / PDF</button>'
-      +   '<button class="btn secondary" onclick="shareStatementKakao(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📤 카톡/이메일 공유</button>'
+      +   '<button class="btn" style="background:#2E7D32; color:#fff;" onclick="sendStatementPDF(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📎 PDF 이메일/카톡</button>'
+      +   '<button class="btn secondary" onclick="shareStatementKakao(\'' + cid + '\',\'' + dateFrom + '\',\'' + dateTo + '\')">📤 텍스트 복사</button>'
       + '</div>';
   }
 
@@ -14032,6 +14033,121 @@ function viewStatement(params) {
     document.getElementById('stmtBody').innerHTML = buildStatement(cid, from, to);
   };
 }
+
+// ⭐ (2026-08-17) 스테이트먼트 PDF 이메일/카톡 발송 · 하이브리드 (모바일 Web Share · 데스크톱 다운로드 + mailto)
+window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
+  const cust = DB.customers.find(function(c){ return c.id === cid; });
+  if (!cust) { alert('거래처 정보를 찾을 수 없습니다.'); return; }
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+    alert('PDF 라이브러리 로딩 중입니다. 잠시 후 다시 시도해 주세요.');
+    return;
+  }
+  // 현재 화면에 렌더된 스테이트먼트 영역 (statementPrintArea) 캡처
+  const src = document.getElementById('statementPrintArea');
+  if (!src) { alert('먼저 [조회] 를 눌러 스테이트먼트를 표시해 주세요.'); return; }
+  showToast('📄 스테이트먼트 PDF 생성 중...');
+  // ⭐ 오프스크린 container 를 try/finally 밖에서 선언 → 예외 시에도 확실히 제거 (DOM leak 방지)
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;padding:20px;font-family:-apple-system,BlinkMacSystemFont,"맑은 고딕",sans-serif;';
+  container.innerHTML = src.outerHTML;
+  document.body.appendChild(container);
+  try {
+    await new Promise(function(r){ setTimeout(r, 120); });
+    const canvas = await html2canvas(container.firstElementChild, {
+      scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+    });
+    const imgData = canvas.toDataURL('image/jpeg', 0.95);
+    const pageW = 210, pageH = 297;
+    const imgH = canvas.height * pageW / canvas.width;
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
+    if (imgH <= pageH) {
+      doc.addImage(imgData, 'JPEG', 0, 0, pageW, imgH);
+    } else {
+      let yOff = 0;
+      while (yOff < imgH) {
+        if (yOff > 0) doc.addPage();
+        doc.addImage(imgData, 'JPEG', 0, -yOff, pageW, imgH);
+        yOff += pageH;
+      }
+    }
+    // 파일명
+    const custName = (cust.name || '거래처').replace(/[\/:*?"<>|]/g, '_');
+    const filename = 'Statement_' + custName + '_' + dateTo + '.pdf';
+    const pdfBlob = doc.output('blob');
+
+    // 이메일 본문 (금액 미포함 · 인사말 + 첨부 안내만)
+    const subject = 'ALL THAT MEAT · Statement · ' + cust.name + ' · ' + dateTo;
+    const body = (cust.contact ? cust.contact + ' 님, ' : '') + '안녕하세요.\n\n'
+      + cust.name + ' 거래내역서 (Statement) 첨부드립니다.\n'
+      + '기간: ' + dateFrom + ' ~ ' + dateTo + '\n\n'
+      + '확인 부탁드리며, 문의사항 있으시면 언제든 연락 주세요.\n\n'
+      + '감사합니다.\n'
+      + (DB.company && DB.company.name ? DB.company.name : '');
+
+    // ── 모바일: Web Share API (파일 첨부 가능) ──
+    const pdfFile = new File([pdfBlob], filename, { type: 'application/pdf' });
+    const canShareFiles = (typeof navigator !== 'undefined')
+      && (typeof navigator.canShare === 'function')
+      && navigator.canShare({ files: [pdfFile] });
+    if (canShareFiles) {
+      try {
+        await navigator.share({
+          files: [pdfFile],
+          title: subject,
+          text: body
+        });
+        try { auditLogAdd('스테이트먼트 PDF 공유(Web Share): ' + cust.name); } catch(_){}
+        showToast('✅ 공유 시트 열림 · 카톡/이메일 선택');
+        return;
+      } catch(err) {
+        // 사용자가 취소했거나 실패 → 데스크톱 방식으로 fallback
+        if (err && err.name === 'AbortError') return;   // 취소는 조용히
+        console.warn('Web Share 실패, 다운로드로 fallback:', err);
+      }
+    }
+
+    // ── 데스크톱: PDF 다운로드 + 이메일 앱 오픈 ──
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+
+    // 이메일 앱 자동 오픈 (수신자 자동 채움 · 본문 자동 채움)
+    const toAddr = (cust.email || '').trim();
+    const mailto = 'mailto:' + encodeURIComponent(toAddr)
+      + '?subject=' + encodeURIComponent(subject)
+      + '&body=' + encodeURIComponent(body);
+
+    try { auditLogAdd('스테이트먼트 PDF 발송(데스크톱): ' + cust.name + ' · ' + filename); } catch(_){}
+    showToast('📎 PDF 다운로드 완료 · 이메일 앱에서 첨부하세요');
+    // 안내 팝업 먼저 표시 → 사용자가 [확인] 클릭 시 이메일 앱 오픈 (navigation 순서 안전)
+    setTimeout(function(){
+      alert('✅ PDF 다운로드 완료\n\n파일명: ' + filename + '\n위치: 브라우저 기본 다운로드 폴더\n\n'
+          + '📧 [확인] 을 누르면 이메일 앱이 열립니다.\n다운로드된 PDF 를 이메일에 첨부(드래그 또는 [파일 첨부] 버튼)한 후 전송하세요.\n\n'
+          + (toAddr ? '수신자: ' + toAddr + ' (자동 입력됨)' : '⚠️ 거래처 이메일이 저장 안 되어 있음 - 수동 입력 필요'));
+      // alert 확인 후 이메일 앱 오픈 (window.open 로 navigation 방지)
+      try {
+        const w = window.open(mailto, '_self');
+        if (!w) { window.location.href = mailto; }   // 팝업 차단 시 fallback
+      } catch(_) {
+        try { window.location.href = mailto; } catch(_){}
+      }
+    }, 400);
+  } catch(e) {
+    console.warn('sendStatementPDF error:', e);
+    alert('PDF 생성 실패: ' + e.message);
+  } finally {
+    // ⭐ 예외 여부 무관 · 오프스크린 container 확실히 제거 (DOM leak 방지)
+    if (container.parentNode) {
+      try { container.parentNode.removeChild(container); } catch(_){}
+    }
+  }
+};
 
 window.shareStatementKakao = function(cid, dateFrom, dateTo) {
   const cust = DB.customers.find(c => c.id === cid);
