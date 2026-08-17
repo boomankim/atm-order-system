@@ -491,6 +491,18 @@
   </div>
 </div>
 
+<!-- ============ 미지급 인보이스 일괄 지급 모달 (2026-08-17) ============ -->
+<div class="modal-back" id="bulkPayModal">
+  <div class="modal wide">
+    <h3 id="bulkPayTitle">💰 미지급 인보이스 일괄 지급</h3>
+    <div id="bulkPayBody"></div>
+    <div class="modal-actions">
+      <button class="success" id="bulkPaySaveBtn" onclick="submitBulkPay()" disabled>💾 선택 일괄 지급</button>
+      <button onclick="closeBulkPayModal()">닫기</button>
+    </div>
+  </div>
+</div>
+
 <!-- ============ 전자 사인 캔버스 모달 ============ -->
 <div class="modal-back" id="sigModal">
   <div class="modal" style="max-width:480px;">
@@ -844,7 +856,7 @@ function renderMainTable(){
     const nm = escapeHtml(v.name);
     rowsHtml += '<tr>'
       + '<td><div class="cell-name"><span class="vname" onclick="openVendorHistory(\''+ v.id +'\')" title="이력 조회">' + nm + '</span></div></td>'
-      + '<td class="' + numClass(r.unpaidCarry) + '"><div class="cell-num ' + emptyCls(r.unpaidCarry) + '">' + fmtOrDash(r.unpaidCarry) + '</div></td>'
+      + '<td class="' + numClass(r.unpaidCarry) + '"><div class="cell-num ' + emptyCls(r.unpaidCarry) + (r.unpaidCarry > 0.005 ? ' emp' : '') + '"' + (r.unpaidCarry > 0.005 ? ' onclick="openBulkPayModal(\'' + v.id + '\')" title="미지급 인보이스 일괄 지급"' : '') + '>' + fmtOrDash(r.unpaidCarry) + '</div></td>'
       + '<td><div class="cell-num ' + emptyClsClickable(r.todayPurchase, 'openPurchaseFor', v.id) + '" ' + (r.todayPurchase ? 'onclick="openPurchaseFor(\'' + v.id + '\')" title="매입 이력 편집"' : '') + '>' + fmtOrDash(r.todayPurchase) + '</div></td>'
       + '<td><div class="cell-num ' + emptyClsClickable(r.todayPayment, 'openPaymentFor', v.id) + '" ' + (r.todayPayment ? 'onclick="openPaymentFor(\'' + v.id + '\')" title="지급 이력 편집"' : '') + '>' + fmtOrDash(r.todayPayment) + '</div></td>'
       + '<td><div class="cell-note">' + (r.notes ? escapeHtml(r.notes) : '') + '</div></td>'
@@ -1448,6 +1460,146 @@ window.closeHistoryModal = function(){
   document.getElementById('historyModal').classList.remove('open');
 };
 
+// =========== (2026-08-17) 미지급 인보이스 일괄 지급 모달 ===========
+let _bulkPayVendorId = null;
+
+window.openBulkPayModal = function(vendorId){
+  const v = findVendorById(vendorId);
+  if (!v) return;
+  _bulkPayVendorId = vendorId;
+  const list = getUnpaidPurchasesForVendor(vendorId);
+  const today = todayLocalISO();
+  document.getElementById('bulkPayTitle').textContent = '💰 ' + v.name + ' · 미지급 인보이스 (' + list.length + '건)';
+  if (list.length === 0) {
+    document.getElementById('bulkPayBody').innerHTML =
+      '<div class="empty-msg" style="color:var(--success); padding:20px;">✅ 미지급 인보이스 없음 — 이 업체는 모두 지급 완료</div>';
+    document.getElementById('bulkPaySaveBtn').disabled = true;
+  } else {
+    const totalUnpaid = list.reduce(function(s,x){ return s + x.unpaid; }, 0);
+    let html = ''
+      + '<div style="background:#fef3c7; padding:10px 14px; border-radius:6px; font-size:13px; margin-bottom:12px;">'
+      +   '총 미지급 합계: <b style="color:#dc2626; font-size:15px;">$' + fmtMoney(totalUnpaid) + '</b> · '
+      +   '인보이스를 체크해서 일괄 지급 (전액만 · 부분지급은 기존 지급 등록 패널)'
+      + '</div>'
+      + '<div style="max-height:340px; overflow-y:auto; border:1px solid var(--line); border-radius:6px;">'
+      + '<table class="hist-table" style="width:100%; border-collapse:collapse;">'
+      + '<thead><tr>'
+      +   '<th style="width:36px; text-align:center;"></th>'
+      +   '<th style="width:100px;">매입일</th>'
+      +   '<th>인보이스 #</th>'
+      +   '<th class="num" style="width:120px;">원 매입액</th>'
+      +   '<th class="num" style="width:120px;">미지급 잔액</th>'
+      + '</tr></thead><tbody>';
+    list.forEach(function(x){
+      html += '<tr style="border-bottom:1px solid #f1f5f9;">'
+        + '<td style="text-align:center;"><input type="checkbox" class="bulkPayCk" data-pid="' + x.p.id + '" data-amt="' + x.unpaid + '" onchange="updateBulkPaySummary()" style="width:18px; height:18px; cursor:pointer;"></td>'
+        + '<td>' + escapeHtml(x.p.date) + '</td>'
+        + '<td><b>' + escapeHtml(x.p.invoiceNo || '(번호 없음)') + '</b></td>'
+        + '<td class="num">$' + fmtMoney(x.p.amount) + '</td>'
+        + '<td class="num" style="font-weight:700; color:#dc2626;">$' + fmtMoney(x.unpaid) + '</td>'
+        + '</tr>';
+    });
+    html += '</tbody></table></div>'
+      + '<div style="margin-top:14px; padding:12px 14px; background:#f8fafc; border-radius:6px; border:1px solid var(--line);">'
+      +   '<div style="font-size:12px; color:var(--muted); margin-bottom:4px;">선택 요약</div>'
+      +   '<div id="bulkPaySummary" style="font-size:14px; font-weight:700; color:var(--muted);">아직 선택된 인보이스 없음</div>'
+      + '</div>'
+      + '<div class="grid" style="grid-template-columns:1fr 1fr 2fr; gap:10px; margin-top:12px;">'
+      +   '<div class="field"><label>지급일 * <small style="color:var(--muted);">(오늘 기본)</small></label>'
+      +     '<input type="date" id="bulkPayDate" value="' + today + '"></div>'
+      +   '<div class="field"><label>지급방법 *</label>'
+      +     '<select id="bulkPayMethod">'
+      +       '<option value="bank" selected>은행이체</option>'
+      +       '<option value="cash">현금</option>'
+      +       '<option value="cheque">체크</option>'
+      +     '</select></div>'
+      +   '<div class="field"><label>메모 (선택)</label>'
+      +     '<input type="text" id="bulkPayNote" placeholder="예: 8월 정산"></div>'
+      + '</div>';
+    document.getElementById('bulkPayBody').innerHTML = html;
+    document.getElementById('bulkPaySaveBtn').disabled = true;
+  }
+  document.getElementById('bulkPayModal').classList.add('open');
+};
+
+window.updateBulkPaySummary = function(){
+  const checks = document.querySelectorAll('.bulkPayCk:checked');
+  const n = checks.length;
+  let sum = 0;
+  checks.forEach(function(el){ sum += parseFloat(el.dataset.amt) || 0; });
+  const summary = document.getElementById('bulkPaySummary');
+  const btn = document.getElementById('bulkPaySaveBtn');
+  if (n === 0) {
+    summary.style.color = 'var(--muted)';
+    summary.innerHTML = '아직 선택된 인보이스 없음';
+    btn.disabled = true;
+    btn.textContent = '💾 선택 일괄 지급';
+  } else {
+    summary.style.color = 'var(--brand-dark, #1e293b)';
+    summary.innerHTML = '선택 <b>' + n + '건</b> · 합계 <b style="color:#059669;">$' + fmtMoney(sum) + '</b>';
+    btn.disabled = false;
+    btn.textContent = '💾 선택 일괄 지급 (' + n + '건 · $' + fmtMoney(sum) + ')';
+  }
+};
+
+window.submitBulkPay = function(){
+  const vendorId = _bulkPayVendorId;
+  if (!vendorId) return;
+  const vendor = findVendorById(vendorId);
+  if (!vendor) return;
+  const checks = document.querySelectorAll('.bulkPayCk:checked');
+  if (checks.length === 0) { alert('인보이스를 하나 이상 선택하세요.'); return; }
+  const date = document.getElementById('bulkPayDate').value;
+  const method = document.getElementById('bulkPayMethod').value;
+  const note = (document.getElementById('bulkPayNote').value || '').trim();
+  if (!date) { alert('지급일을 선택하세요.'); return; }
+  let sum = 0;
+  const items = [];
+  checks.forEach(function(el){
+    const pid = el.dataset.pid;
+    const amt = parseFloat(el.dataset.amt) || 0;
+    if (amt > 0.005) { items.push({ purchaseId: pid, amount: amt }); sum += amt; }
+  });
+  if (items.length === 0) { alert('유효한 인보이스가 없습니다.'); return; }
+  const methodLbl = { bank:'은행이체', cash:'현금', cheque:'체크' }[method] || method;
+  if (!confirm('아래 내용으로 일괄 지급 처리할까요?\n\n'
+    + '업체: ' + vendor.name + '\n'
+    + '건수: ' + items.length + '건\n'
+    + '합계: $' + fmtMoney(sum) + '\n'
+    + '지급일: ' + date + '\n'
+    + '방법: ' + methodLbl)) return;
+  // 각 인보이스마다 개별 payment 레코드 생성
+  let ok = 0, fail = 0;
+  items.forEach(function(it){
+    try {
+      addPayment({
+        vendorId: vendorId,
+        date: date,
+        amount: round2(it.amount),
+        method: method,
+        ref: '',
+        note: note || '',
+        purchaseId: it.purchaseId
+      });
+      ok++;
+    } catch(e) { console.warn('일괄 지급 실패:', it, e); fail++; }
+  });
+  showToast('💾 일괄 지급 완료 · ' + ok + '건 · $' + fmtMoney(sum) + (fail > 0 ? ' (' + fail + '건 실패)' : ''));
+  closeBulkPayModal();
+  renderMainTable();
+  // 지급 등록 패널이 열려있으면 해당 업체 리스트 갱신
+  const pv = document.getElementById('payVendor');
+  if (pv && pv.value === vendorId) {
+    if (typeof renderUnpaidInvoiceList === 'function') renderUnpaidInvoiceList(vendorId);
+    if (typeof renderPaymentHistoryList === 'function') renderPaymentHistoryList(vendorId);
+  }
+};
+
+window.closeBulkPayModal = function(){
+  document.getElementById('bulkPayModal').classList.remove('open');
+  _bulkPayVendorId = null;
+};
+
 // =========== PDF 저장·인쇄 ===========
 let _folderHandle = null;
 let _masterDirHandle = null;  // ⭐ (2026-08-11) Order System과 공유하는 마스터 폴더
@@ -1875,6 +2027,9 @@ function bindEvents(){
   document.getElementById('sigModal').addEventListener('click', function(e){
     if (e.target === this) closeSigPad();
   });
+  document.getElementById('bulkPayModal').addEventListener('click', function(e){
+    if (e.target === this) closeBulkPayModal();
+  });
 
   // Enter key on modal
   ['vfName','vfPhone','vfManager','vfMgrPhone','vfEmail','vfOpening'].forEach(function(id){
@@ -1889,6 +2044,7 @@ function bindEvents(){
       closeVendorModal();
       closeHistoryModal();
       closeSigPad();
+      closeBulkPayModal();
     }
   });
 }
