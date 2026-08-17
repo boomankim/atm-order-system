@@ -7055,8 +7055,8 @@ const WH_COLORS = {
   red:    { bg: '#FFEBEE', border: '#E57373', dot: '#E53935', label: 'Strathfield' },
   yellow: { bg: '#FFF9C4', border: '#FFD54F', dot: '#F9A825', label: 'Eastwood' },
   purple: { bg: '#F3E5F5', border: '#BA68C8', dot: '#8E24AA', label: 'City' },
-  blue:   { bg: '#E3F2FD', border: '#64B5F6', dot: '#1976D2', label: '파랑' },
-  green:  { bg: '#E8F5E9', border: '#81C784', dot: '#388E3C', label: 'Backup' }
+  green:  { bg: '#E8F5E9', border: '#81C784', dot: '#388E3C', label: 'Backup' },
+  blue:   { bg: '#E3F2FD', border: '#64B5F6', dot: '#1976D2', label: '파랑' }
 };
 window._whActiveColor = window._whActiveColor || null;   // 지정 브러시 색상 (null=지우개)
 window._whFilterColor = window._whFilterColor || null;   // 필터 색상 (null=전체)
@@ -13955,11 +13955,10 @@ function viewStatement(params) {
     const _coLines = [];
     if (_co.address) _esc(_co.address).split(/\n/).forEach(function(ln){ if (ln.trim()) _coLines.push(_esc(ln.trim())); });
     if (_co.abn) _coLines.push('ABN: ' + _esc(_co.abn));
-    // 은행 정보 (하단 · invoiceBankInfo 사용)
+    // ⭐ (2026-08-17) 은행 정보 — 관리자 → 회사 정보 → 인보이스 Bank/EFT 안내문 그대로 표시
+    //   admin 에 저장 안 되어 있으면 하단 은행 블록 자체를 숨김
     const _bankInfoRaw = (_co.invoiceBankInfo || '').trim();
-    const _bankHtml = _bankInfoRaw
-      ? _esc(_bankInfoRaw).replace(/\n/g, '<br>')
-      : ('Bank: ' + (_co.bank||'—') + '<br>Name: ' + _esc(_co.name||'') + '<br>BSB: —<br>Account: —');
+    const _bankHtml = _bankInfoRaw ? _esc(_bankInfoRaw).replace(/\n/g, '<br>') : '';
 
     return '<div id="statementPrintArea">'
       // ─── 헤더: 좌(거래처) / 우(회사) ───
@@ -13994,7 +13993,7 @@ function viewStatement(params) {
       + '</tr></thead><tbody>' + rows + '</tbody></table>'
       // ─── 하단: 좌(은행) / 우(BALANCE DUE) ───
       + '<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:flex-end; gap:24px;">'
-      +   '<div style="font-size:11px; color:#333; line-height:1.6; min-width:240px;">'
+      +   '<div style="font-size:11px; color:#333; line-height:1.6; min-width:240px; white-space:pre-line;">'
       +     _bankHtml
       +   '</div>'
       +   '<div style="text-align:right;">'
