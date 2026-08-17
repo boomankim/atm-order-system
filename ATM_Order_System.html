@@ -1977,101 +1977,109 @@ function renderProcessingToday() {
   }
   // 이하 거래처별 뷰 (기존)
 
-  // 작업육 품목 추출 → 배송일 기준으로 오늘/내일 2그룹으로 나눔
-  // (실측중량은 item.procPreviewKg 라는 작업육 전용 필드만 사용 — actualWeightKg 와 분리)
-  const groups = { today: {}, tomorrow: {} };
+  // ⭐ (2026-08-17) 재구성: 인쇄용 리스트
+  //   - 입력칸/상태 pill 제거 → 거래처 + 품목 나열만
+  //   - 오더별 그룹핑, 오더 입력 순서(createdAt ASC)
+  //   - 상단 [🖨️ 인쇄] 버튼
+  //   - 작업육만 필터
+  //   - 오늘/내일 2섹션 유지
+  const bucketOrders = { today: [], tomorrow: [] };
   DB.orders.forEach(o => {
     const dDate = (o.deliveryDate || '').slice(0,10);
     let bucket;
     if (dDate === today) bucket = 'today';
     else if (dDate === tomorrow) bucket = 'tomorrow';
     else return;
-    o.items.forEach(it => {
+    // 작업육 아이템만 필터
+    const workItems = (o.items || []).filter(it => {
       const p = DB.products.find(x => x.id === it.productId);
-      if (!p) return;
-      if (p.cut !== '작업육' && !p.name.includes('작업')) return;
-      if (!groups[bucket][o.customerId]) groups[bucket][o.customerId] = [];
-      groups[bucket][o.customerId].push({ product: p, item: it, order: o });
+      return p && (p.cut === '작업육' || (p.name || '').includes('작업'));
     });
+    if (workItems.length === 0) return;
+    bucketOrders[bucket].push({ order: o, items: workItems });
+  });
+  // 오더 입력 순서 (createdAt ASC — 먼저 들어온 것 위로)
+  ['today','tomorrow'].forEach(k => {
+    bucketOrders[k].sort((a,b) => (a.order.createdAt || '').localeCompare(b.order.createdAt || ''));
   });
 
-  const hasAny = Object.values(groups).some(g => Object.keys(g).length > 0);
+  const hasAny = bucketOrders.today.length > 0 || bucketOrders.tomorrow.length > 0;
   if (!hasAny) {
-    div.innerHTML = `<div class="empty" style="padding:24px;"><div class="icon">🥩</div>오늘·내일 배송 예정 작업육이 없습니다.<br><small style="color:var(--muted);">배송일이 오늘 또는 내일인 "작업육" 분류 주문이 여기에 표시됩니다.</small></div>`;
+    div.innerHTML = '<div class="empty" style="padding:24px;"><div class="icon">🥩</div>오늘·내일 배송 예정 작업육이 없습니다.<br><small style="color:var(--muted);">배송일이 오늘 또는 내일인 "작업육" 분류 주문이 여기에 표시됩니다.</small></div>';
     return;
   }
 
-  function renderGroupHTML(label, color, byCust) {
-    const custIds = Object.keys(byCust);
-    if (custIds.length === 0) return '';
-    let totalItems = 0, totalKg = 0;
-    custIds.forEach(cid => byCust[cid].forEach(e => {
-      totalItems++;
-      if (e.item.procPreviewKg != null) totalKg += Number(e.item.procPreviewKg) || 0;
-    }));
-    let inner = `
-      <div style="margin:18px 0 10px; display:flex; justify-content:space-between; align-items:baseline; border-bottom:2px solid ${color}; padding-bottom:6px;">
-        <h4 style="margin:0; color:${color}; font-size:15px;">${label}</h4>
-        <span style="font-size:12px; color:var(--muted);">거래처 ${custIds.length}곳 · 품목 ${totalItems}건 · 입력완료 합계 ${totalKg.toFixed(2)} kg</span>
-      </div>
-    `;
-    custIds.forEach(cid => {
-      const c = DB.customers.find(x => x.id === cid);
-      const items = byCust[cid];
-      let custKg = 0;
-      items.forEach(e => { if (e.item.procPreviewKg != null) custKg += Number(e.item.procPreviewKg) || 0; });
-      inner += `
-        <div style="margin-bottom:12px; padding:12px 14px; background:#FBF8F4; border-radius:8px; border-left:4px solid ${color};">
-          <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
-            <b style="font-size:14px; color:var(--brand-dark);">🏪 ${c ? c.name : '(거래처 없음)'}</b>
-            <span style="font-size:12px; color:var(--muted);">${items.length}건 · ${custKg.toFixed(2)} kg</span>
-          </div>
-          <table style="width:100%; font-size:13px; border-collapse:collapse;">
-            <thead>
-              <tr style="color:var(--muted); font-size:11px;">
-                <th style="text-align:left; padding:4px 6px;">품목</th>
-                <th style="text-align:left; padding:4px 6px;">브랜드</th>
-                <th style="text-align:left; padding:4px 6px;">주문</th>
-                <th style="text-align:right; padding:4px 6px;">실측 중량 (직접 입력)</th>
-                <th style="text-align:center; padding:4px 6px;">상태</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${items.map(({product, item, order}) => {
-                const w = item.procPreviewKg;
-                const hasW = w != null && w !== '';
-                const orderDisp = item.unit === '작업중량' ? `${item.quantity} kg` : `${item.quantity} ${item.unit}`;
-                const statusHtml = hasW
-                  ? `<span class="pill weighed" style="font-size:10px;">계근완료</span>`
-                  : `<span class="pill new" style="font-size:10px;">신규</span>`;
-                return `<tr style="border-top:1px solid #EDE3D6;">
-                  <td style="padding:6px 6px;"><b>${product.name}</b>${item.notes ? '<br><small style="color:var(--brand-dark); font-weight:600;">📝 ' + item.notes + '</small>' : ''}</td>
-                  <td style="padding:6px 6px;">${product.brand}</td>
-                  <td style="padding:6px 6px;">${orderDisp}</td>
-                  <td style="text-align:right; padding:6px 6px;">
-                    <input type="number" step="0.01"
-                      value="${hasW ? Number(w).toFixed(2) : ''}"
-                      placeholder="kg"
-                      style="width:90px; padding:5px; border:2px solid ${hasW ? 'var(--ok)' : 'var(--warn)'}; border-radius:4px; font-size:13px; text-align:right; font-weight:700; color:${hasW ? 'var(--ok)' : 'var(--text)'};"
-                      onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"
-                      onchange="updateProcPreviewKg('${order.id}', '${item.productId}', this.value)">
-                  </td>
-                  <td style="text-align:center; padding:6px 6px;">${statusHtml}</td>
-                </tr>`;
-              }).join('')}
-            </tbody>
-          </table>
-        </div>
-      `;
+  function renderBucket(label, color, entries) {
+    if (entries.length === 0) return '';
+    const totalOrders = entries.length;
+    const totalItems = entries.reduce((s, e) => s + e.items.length, 0);
+    let html = ''
+      + '<div style="margin:14px 0 8px; display:flex; justify-content:space-between; align-items:baseline; border-bottom:2px solid ' + color + '; padding-bottom:5px;">'
+      +   '<h4 style="margin:0; color:' + color + '; font-size:14px;">' + label + '</h4>'
+      +   '<span style="font-size:11px; color:var(--muted);">주문 ' + totalOrders + '건 · 품목 ' + totalItems + '건</span>'
+      + '</div>';
+    entries.forEach((e, idx) => {
+      const o = e.order;
+      const c = DB.customers.find(x => x.id === o.customerId);
+      const timeStr = (o.createdAt || '').slice(11,16);
+      html += ''
+        + '<div style="margin-bottom:8px; padding:8px 12px; background:#FBF8F4; border-radius:6px; border-left:3px solid ' + color + '; page-break-inside:avoid;">'
+        +   '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">'
+        +     '<b style="font-size:13px; color:var(--brand-dark);">' + (idx+1) + '. 🏪 ' + (c ? c.name : '(거래처 없음)') + '</b>'
+        +     '<span style="font-size:10px; color:var(--muted);">📥 ' + timeStr + ' · #' + (o.orderNo || '') + '</span>'
+        +   '</div>'
+        +   '<div style="padding-left:14px;">'
+        +     e.items.map(it => {
+                const p = DB.products.find(x => x.id === it.productId);
+                const pName = p ? p.name : '(품목없음)';
+                const pBrand = p ? p.brand : '';
+                const orderDisp = it.unit === '작업중량' ? (it.quantity + ' kg') : (it.quantity + ' ' + it.unit);
+                const noteHtml = it.notes ? ' <span style="color:var(--brand-dark); font-weight:600; font-size:11px;">📝 ' + it.notes + '</span>' : '';
+                return '<div style="font-size:12px; line-height:1.6;">'
+                  + '· <b>' + pName + '</b> '
+                  + '<span style="color:var(--muted); font-size:11px;">' + pBrand + '</span>'
+                  + ' — <b style="color:var(--brand);">' + orderDisp + '</b>'
+                  + noteHtml
+                  + '</div>';
+              }).join('')
+        +   '</div>'
+        + '</div>';
     });
-    return inner;
+    return html;
   }
 
-  let html = '';
-  html += renderGroupHTML('📅 오늘 (' + today + ') 배송 작업', '#C62828', groups.today);
-  html += renderGroupHTML('🌅 내일 (' + tomorrow + ') 배송 작업', '#1565C0', groups.tomorrow);
+  let html = ''
+    + '<div style="display:flex; justify-content:flex-end; margin-bottom:8px;" class="no-print">'
+    +   '<button class="btn sm" onclick="printProcessingToday()" style="background:var(--info); color:#fff; padding:6px 14px; font-size:12px;">🖨️ 인쇄</button>'
+    + '</div>'
+    + '<div id="procTodayPrintArea">'
+    +   renderBucket('📅 오늘 (' + today + ') 배송 작업', '#C62828', bucketOrders.today)
+    +   renderBucket('🌅 내일 (' + tomorrow + ') 배송 작업', '#1565C0', bucketOrders.tomorrow)
+    + '</div>';
   div.innerHTML = html;
 }
+
+// ⭐ (2026-08-17) 오늘의 배송작업 인쇄 — 컨테이너만 담아 새 창으로 열어 인쇄
+window.printProcessingToday = function() {
+  const src = document.getElementById('procTodayPrintArea');
+  if (!src) { alert('인쇄할 내용이 없습니다.'); return; }
+  const html = '<!doctype html><html><head><meta charset="utf-8"><title>오늘의 배송작업 · ' + todayLocalISO() + '</title>'
+    + '<style>'
+    +   'body{font-family:-apple-system,BlinkMacSystemFont,"맑은 고딕",sans-serif; padding:16px; color:#222;}'
+    +   'h2{margin:0 0 10px; font-size:18px;}'
+    +   'h4{margin:12px 0 6px; font-size:14px; border-bottom:2px solid #999; padding-bottom:4px;}'
+    +   '.no-print{display:none !important;}'
+    +   '@media print { @page { margin:12mm; } }'
+    + '</style></head><body>'
+    + '<h2>🥩 오늘의 배송작업 · ' + todayLocalISO() + '</h2>'
+    + src.innerHTML
+    + '<script>window.onload=function(){window.print(); setTimeout(function(){window.close();}, 500);};</' + 'script>'
+    + '</body></html>';
+  const w = window.open('', '_blank', 'width=800,height=900');
+  if (!w) { alert('팝업 차단 해제 후 다시 시도하세요.'); return; }
+  w.document.write(html);
+  w.document.close();
+};
 
 // 오늘의 작업육 전용: procPreviewKg 만 업데이트 (actualWeightKg 와 분리, 다른 화면에 영향 없음)
 function updateProcPreviewKg(orderId, productId, val) {
@@ -7013,11 +7021,11 @@ async function submitOrder(custId, deliveryDateISO) {
 //   색상 데이터: order.assignedColor ('red'|'blue'|'yellow'|'pink'|'green'|null)
 //   활성 색상·필터 상태는 localStorage 에 태블릿별 저장.
 const WH_COLORS = {
-  red:    { bg: '#FFEBEE', border: '#E57373', dot: '#E53935', label: '빨강' },
-  yellow: { bg: '#FFF9C4', border: '#FFD54F', dot: '#F9A825', label: '노랑' },
-  purple: { bg: '#F3E5F5', border: '#BA68C8', dot: '#8E24AA', label: '자주' },
+  red:    { bg: '#FFEBEE', border: '#E57373', dot: '#E53935', label: 'Strathfield' },
+  yellow: { bg: '#FFF9C4', border: '#FFD54F', dot: '#F9A825', label: 'Eastwood' },
+  purple: { bg: '#F3E5F5', border: '#BA68C8', dot: '#8E24AA', label: 'City' },
   blue:   { bg: '#E3F2FD', border: '#64B5F6', dot: '#1976D2', label: '파랑' },
-  green:  { bg: '#E8F5E9', border: '#81C784', dot: '#388E3C', label: '녹색' }
+  green:  { bg: '#E8F5E9', border: '#81C784', dot: '#388E3C', label: 'Backup' }
 };
 window._whActiveColor = window._whActiveColor || null;   // 지정 브러시 색상 (null=지우개)
 window._whFilterColor = window._whFilterColor || null;   // 필터 색상 (null=전체)
@@ -7532,16 +7540,24 @@ function viewOffice() {
             const totals = computeTotals(o);
             const _groupKey = o.customerId + '::' + o.deliveryDate;
             const _isMergeable = _mergeableCustomerIds.has(_groupKey);
-            const _rowBg = _isMergeable ? 'background:#FFF7E0;' : '';
+            // ⭐ (2026-08-17) 계근에서 배정한 색상을 인보이스 대기에도 유지
+            const _clr = o.assignedColor && typeof WH_COLORS !== 'undefined' && WH_COLORS[o.assignedColor] ? WH_COLORS[o.assignedColor] : null;
+            const _rowBg = _clr
+              ? `background:${_clr.bg}; border-left:4px solid ${_clr.dot};`
+              : (_isMergeable ? 'background:#FFF7E0;' : '');
             const _mergeGroup = _mergeGroups[_groupKey] || [];
             // 병합 버튼: 그룹 첫 주문에만 표시 (같은 배송일·거래처 다른 주문들과 병합)
             const _isFirstInGroup = _isMergeable && _mergeGroup.length >= 2 && _mergeGroup[0].id === o.id;
             const _mergeBtn = _isFirstInGroup
               ? `<button class="btn sm" style="background:#E68A00; color:#fff; margin-right:4px;" onclick="event.stopPropagation(); mergeOrdersInGroup('${o.customerId}', '${o.deliveryDate}')" title="같은 거래처·같은 배송일 계근완료 주문 ${_mergeGroup.length}건 병합">🔗 병합 (${_mergeGroup.length})</button>`
               : '';
+            // 색상 지역 라벨 뱃지 (배정된 경우)
+            const _colorBadge = _clr
+              ? `<span style="margin-left:6px; padding:1px 7px; background:${_clr.dot}; color:#fff; border-radius:8px; font-size:10px; font-weight:700; white-space:nowrap;">${_clr.label}</span>`
+              : '';
             return `<tr style="cursor:pointer; ${_rowBg}" onclick="location.hash='#invoicePrep?id=${o.id}'">
               <td><b style="color:var(--brand);">${o.orderNo}</b></td>
-              <td><b>${c?c.name:'-'}</b>${_isMergeable ? '<span style="margin-left:6px; padding:1px 6px; background:#E68A00; color:#fff; border-radius:8px; font-size:10px; font-weight:700;">중복</span>' : ''}${c&&c.contact?`<br><small style="color:var(--muted);">${c.contact} · ${c.phone||''}</small>`:''}</td>
+              <td><b>${c?c.name:'-'}</b>${_colorBadge}${_isMergeable ? '<span style="margin-left:6px; padding:1px 6px; background:#E68A00; color:#fff; border-radius:8px; font-size:10px; font-weight:700;">중복</span>' : ''}${c&&c.contact?`<br><small style="color:var(--muted);">${c.contact} · ${c.phone||''}</small>`:''}</td>
               <td>${o.items.length}개</td>
               <td class="num">${totals.totalKg.toFixed(1)} kg</td>
               <td class="num">$${fmtMoney(totals.grand)}</td>
@@ -7554,6 +7570,40 @@ function viewOffice() {
           }).join('')}
         </tbody>
       </table>`}
+    </div>
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
+        <h3 style="margin:0;">🧾 크레딧 노트 · 빠른 발행
+          <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">거래처의 다음 인보이스에 자동 반영됨</span>
+        </h3>
+        <button class="btn sm secondary" onclick="renderQuickCreditUnusedList()" title="미적용 크레딧 목록 갱신">🔄 미적용 목록</button>
+      </div>
+      <div class="grid-2" style="gap:10px;">
+        <div>
+          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">거래처 *</label>
+          ${renderCustomerSearchSelect({selectId:'qcCust', placeholder:'거래처 검색'})}
+        </div>
+        <div>
+          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">품목 (선택 안 하면 사유만 표시)</label>
+          ${renderProductSearchSelect({selectId:'qcProd'})}
+        </div>
+      </div>
+      <div style="display:grid; grid-template-columns:1fr 1fr 2fr auto; gap:8px; margin-top:8px; align-items:end;">
+        <div>
+          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">반품 중량 (kg)</label>
+          <input type="number" id="qcKg" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">
+        </div>
+        <div>
+          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">단가 ($/kg)</label>
+          <input type="number" id="qcPrice" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">
+        </div>
+        <div>
+          <label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">사유 / 메모 *</label>
+          <input type="text" id="qcReason" placeholder="예: 상품 하자 · 재고 반품 · 배송 오류" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px;">
+        </div>
+        <button class="btn" onclick="submitQuickCredit()" style="padding:8px 16px; font-size:13px; white-space:nowrap; background:var(--brand);">+ 크레딧 발행</button>
+      </div>
+      <div id="qcUnusedList" style="margin-top:10px;"></div>
     </div>
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
@@ -7661,7 +7711,134 @@ function viewOffice() {
   setTimeout(() => { if (typeof renderDailyReport === 'function') renderDailyReport(); }, 0);
   // ⭐ (2026-08-11) 통합 저장 폴더 상태 표시
   setTimeout(() => { if (typeof refreshMasterFolderInfo === 'function') refreshMasterFolderInfo(); }, 0);
+  // ⭐ (2026-08-17) 크레딧 빠른 발행 · 미적용 목록 초기화
+  setTimeout(() => { if (typeof renderQuickCreditUnusedList === 'function') renderQuickCreditUnusedList(); }, 0);
 }
+
+// ⭐ (2026-08-17) 사무실 · 크레딧 빠른 발행 (거래처 다음 인보이스에 자동 반영)
+window.submitQuickCredit = function() {
+  const custSel = document.getElementById('qcCust');
+  const prodSel = document.getElementById('qcProd');
+  const kgEl = document.getElementById('qcKg');
+  const priceEl = document.getElementById('qcPrice');
+  const reasonEl = document.getElementById('qcReason');
+  if (!custSel || !reasonEl) return;
+  const custId = custSel.value;
+  const cust = DB.customers.find(function(c){ return c.id === custId; });
+  if (!cust) { alert('❌ 거래처를 선택하세요.'); return; }
+  const reason = (reasonEl.value || '').trim();
+  if (!reason) { alert('❌ 사유/메모를 입력하세요.'); reasonEl.focus(); return; }
+  const kg = parseFloat(kgEl.value) || 0;
+  const price = parseFloat(priceEl.value) || 0;
+  const prodId = prodSel ? prodSel.value : '';
+  const prod = prodId ? DB.products.find(function(p){ return p.id === prodId; }) : null;
+  // 금액 계산 (GST inclusive 관례 · kg × 단가)
+  const amount = +(kg * price).toFixed(2);
+  if (kg <= 0 || price <= 0) {
+    if (!confirm('⚠️ 중량 또는 단가가 0 입니다.\n계산 금액: $' + fmtMoney(amount) + '\n\n이대로 발행할까요?')) return;
+  }
+  const itemName = prod ? (prod.name + (prod.brand ? ' (' + prod.brand + ')' : '')) : reason;
+  const cnItem = {
+    productId: prodId || '',
+    name: itemName,
+    returnKg: kg,
+    unitPrice: price,
+    amount: amount,
+    mode: 'kg'
+  };
+  // 크레딧 번호 (인보이스 시퀀스 공유)
+  if (!DB.settings) DB.settings = {};
+  if (!DB.settings.invoiceNoNext) DB.settings.invoiceNoNext = 200001;
+  const cnNo = String(DB.settings.invoiceNoNext++);
+  const cnId = 'cn_' + Date.now() + '_' + Math.random().toString(36).slice(2,7);
+  const cn = {
+    id: cnId,
+    creditNo: cnNo,
+    orderId: null,               // 독립 크레딧 (원본 주문 없음)
+    invoiceNo: '',
+    customerId: custId,
+    issuedAt: new Date().toISOString(),
+    reason: reason,
+    notes: '',
+    items: [cnItem]
+  };
+  if (!Array.isArray(DB.creditNotes)) DB.creditNotes = [];
+  DB.creditNotes.push(cn);
+  saveLocalDB();
+  // Firebase 부분 저장
+  try {
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      _lastSaveTime = Date.now();
+      const idx = DB.creditNotes.length - 1;
+      DB_REF.child('creditNotes/' + idx).set(cn);
+      DB_REF.child('settings/invoiceNoNext').set(DB.settings.invoiceNoNext);
+    }
+  } catch(e) { console.warn('quick credit save failed:', e); }
+  try { auditLogAdd('크레딧 빠른 발행: ' + (cust.name||'') + ' · CN' + cnNo + ' · ' + itemName + ' · -$' + fmtMoney(amount)); } catch(_){}
+  showToast('✅ 크레딧 노트 CN' + cnNo + ' 발행됨 · ' + cust.name + '의 다음 인보이스에 자동 적용');
+  // 폼 초기화
+  document.getElementById('qcCust_search').value = '';
+  custSel.value = '';
+  document.getElementById('qcProd_search').value = '';
+  if (prodSel) prodSel.value = '';
+  kgEl.value = '';
+  priceEl.value = '';
+  reasonEl.value = '';
+  renderQuickCreditUnusedList();
+};
+
+// 사무실 · 미적용 크레딧 목록 (전체 거래처)
+window.renderQuickCreditUnusedList = function() {
+  const box = document.getElementById('qcUnusedList');
+  if (!box) return;
+  const unused = (DB.creditNotes || []).filter(function(cn){ return !cn.appliedToOrderId; });
+  if (unused.length === 0) {
+    box.innerHTML = '<div style="padding:8px 12px; background:#F5F5F5; border-radius:4px; font-size:12px; color:var(--muted); text-align:center;">미적용 크레딧 없음</div>';
+    return;
+  }
+  // 최근순
+  unused.sort(function(a,b){ return (b.issuedAt || '').localeCompare(a.issuedAt || ''); });
+  let html = '<div style="font-size:11px; font-weight:700; color:var(--brand-dark); margin:6px 0;">📋 미적용 크레딧 (' + unused.length + '건) · 다음 인보이스 발행 시 자동 노출</div>';
+  html += '<div style="max-height:200px; overflow-y:auto; border:1px solid var(--line); border-radius:4px;">';
+  html += '<table class="t" style="margin:0; font-size:12px;">';
+  html += '<thead><tr><th>발행일</th><th>거래처</th><th>CN#</th><th>내용</th><th class="num">금액</th><th class="act"></th></tr></thead><tbody>';
+  unused.forEach(function(cn){
+    const c = DB.customers.find(function(x){ return x.id === cn.customerId; });
+    const totals = computeCreditNoteTotals(cn);
+    const dateStr = (cn.issuedAt || '').slice(0,10);
+    const itemDesc = (cn.items || []).map(function(it){ return it.name + (it.returnKg > 0 ? ' ' + it.returnKg.toFixed(2) + 'kg' : ''); }).join(', ');
+    html += '<tr>'
+      + '<td>' + dateStr + '</td>'
+      + '<td><b>' + (c ? c.name : '(?)') + '</b></td>'
+      + '<td><b style="color:#C0392B;">CN' + (cn.creditNo || '') + '</b></td>'
+      + '<td style="font-size:11px;">' + itemDesc + (cn.reason ? '<br><small style="color:var(--muted);">💬 ' + cn.reason + '</small>' : '') + '</td>'
+      + '<td class="num" style="color:#C0392B; font-weight:600;">-$' + fmtMoney(totals.grand) + '</td>'
+      + '<td class="act">'
+      +   '<button class="btn sm secondary" onclick="location.hash=\'#creditNote?id=' + cn.id + '\'">보기</button>'
+      +   '<button class="btn sm danger" onclick="deleteQuickCredit(\'' + cn.id + '\')">✕</button>'
+      + '</td>'
+      + '</tr>';
+  });
+  html += '</tbody></table></div>';
+  box.innerHTML = html;
+};
+
+window.deleteQuickCredit = function(cnId) {
+  const cn = (DB.creditNotes || []).find(function(x){ return x.id === cnId; });
+  if (!cn) return;
+  if (cn.appliedToOrderId) { alert('이미 적용된 크레딧은 삭제할 수 없습니다. 인보이스에서 [✕] 로 먼저 적용 해제하세요.'); return; }
+  if (!confirm('CN' + (cn.creditNo || '') + ' 크레딧을 삭제할까요?')) return;
+  DB.creditNotes = DB.creditNotes.filter(function(x){ return x.id !== cnId; });
+  saveLocalDB();
+  try {
+    if (typeof DB_REF !== 'undefined' && DB_REF) {
+      _lastSaveTime = Date.now();
+      DB_REF.child('creditNotes').set(DB.creditNotes);
+    }
+  } catch(_){}
+  try { auditLogAdd('크레딧 삭제: CN' + (cn.creditNo || '')); } catch(_){}
+  renderQuickCreditUnusedList();
+};
 // ⭐ (2026-07-08) 매입일보 새 창 열기 — 별도 HTML 파일(ATM_Purchase_Journal.html) 로드.
 //   같은 디렉토리 기준 상대경로 → GitHub Pages / 로컬 파일 / PWA 모두 동작.
 window.openPurchaseJournal = function() {
@@ -7876,8 +8053,14 @@ function dailyReportComputeRows(dateISO) {
     const priorBalance = priorInvoiced - priorPaid;
 
     // 당일 매출액 / 입금액 — net 그대로 사용
-    const todaySales = allInvoices.filter(x => x.dateISO === dateISO).reduce((s,x)=>s+x.amount,0);
-    const todayPaid = allPayments.filter(p => (p.date||'') === dateISO).reduce((s,p)=>s+p.amount,0);
+    const todayInvList = allInvoices.filter(x => x.dateISO === dateISO);
+    const todaySales = todayInvList.reduce((s,x)=>s+x.amount,0);
+    // ⭐ (2026-08-17) 당일 발행 건수 (인보이스 수)
+    const todayInvCount = todayInvList.length;
+    const todayPmts = allPayments.filter(p => (p.date||'') === dateISO);
+    const todayPaid = todayPmts.reduce((s,p)=>s+p.amount,0);
+    // ⭐ (2026-08-17) 당일 캐쉬(현금) 입금액만 별도 집계
+    const todayPaidCash = todayPmts.filter(p => p.method === 'cash').reduce((s,p)=>s+p.amount,0);
 
     // 현잔액 = 전미수금 + 당일 매출 - 당일 입금
     const currentBalance = priorBalance + todaySales - todayPaid;
@@ -7933,7 +8116,7 @@ function dailyReportComputeRows(dateISO) {
         }
       }
     }
-    return { c, priorBalance, todaySales, todayPaid, currentBalance, overdue, overdueMild, overdueSevere, overdueInvoices, todayCredit };
+    return { c, priorBalance, todaySales, todayPaid, todayInvCount, todayPaidCash, currentBalance, overdue, overdueMild, overdueSevere, overdueInvoices, todayCredit };
   });
   // ⭐ (2026-07-25) 정렬 방식 사용자 선택 — 매출일보/스테이트먼트 상단 드롭다운.
   //   기본값 'alpha' (알파벳순). 화면 진입할 때마다 초기화 (마지막 선택 기억 X).
@@ -7985,11 +8168,14 @@ function dailyReportTotals(rows) {
     priorBalance: t.priorBalance + r.priorBalance,
     todaySales: t.todaySales + r.todaySales,
     todayPaid: t.todayPaid + r.todayPaid,
+    // ⭐ (2026-08-17) 발행 건수 / 캐쉬 입금 합계
+    todayInvCount: (t.todayInvCount||0) + (r.todayInvCount||0),
+    todayPaidCash: (t.todayPaidCash||0) + (r.todayPaidCash||0),
     currentBalance: t.currentBalance + r.currentBalance,
     overdue: t.overdue + r.overdue,
     overdueMild: (t.overdueMild||0) + (r.overdueMild||0),
     overdueSevere: (t.overdueSevere||0) + (r.overdueSevere||0),
-  }), {priorBalance:0, todaySales:0, todayPaid:0, currentBalance:0, overdue:0, overdueMild:0, overdueSevere:0});
+  }), {priorBalance:0, todaySales:0, todayPaid:0, todayInvCount:0, todayPaidCash:0, currentBalance:0, overdue:0, overdueMild:0, overdueSevere:0});
 }
 
 // ⭐ (2026-08-06) Overdue 컬럼 셀 렌더 — 심각 우선 색상, 단일 값
@@ -8065,10 +8251,10 @@ function dailyReportScreenTableHTML(rows) {
     </thead>
     <tbody>
       <tr style="background:#FBF8F4; border-bottom:2px solid var(--brand); color:${txt};">
-        <td colspan="2" style="font-weight:700; color:var(--brand); font-size:13px;">📊 합계 (${rows.length}건)</td>
+        <td colspan="2" style="font-weight:700; color:var(--brand); font-size:13px;">📊 합계 (${rows.length}건) <span style="font-weight:600; color:#5C0F0F; font-size:11px; margin-left:4px;">[발행 ${totals.todayInvCount||0}건]</span></td>
         <td class="num" style="font-weight:700; font-size:14px; color:${txt};">$${fmtMoney(totals.priorBalance)}</td>
         <td class="num" style="font-weight:700; font-size:14px; color:${totals.todaySales > 0.001 ? 'var(--brand)' : 'var(--muted)'};">${totals.todaySales > 0.001 ? '$' + fmtMoney(totals.todaySales) : '–'}</td>
-        <td class="num" style="font-weight:700; font-size:14px; color:${totals.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${totals.todayPaid > 0.001 ? '$' + fmtMoney(totals.todayPaid) : '–'}</td>
+        <td class="num" style="font-weight:700; font-size:14px; color:${totals.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${totals.todayPaid > 0.001 ? '$' + fmtMoney(totals.todayPaid) + ((totals.todayPaidCash||0) > 0.001 ? ' <small style="color:#E65100; font-weight:700;">($' + fmtMoney(totals.todayPaidCash) + ')</small>' : '') : '–'}</td>
         <td class="num" style="font-weight:700; font-size:14px; color:${totals.currentBalance > 0 ? 'var(--warn)' : (totals.currentBalance < -0.001 ? 'var(--success)' : txt)};">$${fmtMoney(totals.currentBalance)}</td>
         ${_overdueCellHTML(totals, true)}
       </tr>
@@ -8079,7 +8265,7 @@ function dailyReportScreenTableHTML(rows) {
           <td><small style="color:var(--muted);">${termsLabel(r.c.terms)}</small></td>
           <td class="num">$${fmtMoney(r.priorBalance)}</td>
           <td class="num" style="color:${r.todaySales > 0.001 ? 'var(--brand)' : 'var(--muted)'};">${r.todaySales > 0.001 ? '$' + fmtMoney(r.todaySales) : '–'}</td>
-          <td class="num" style="color:${r.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${r.todayPaid > 0.001 ? '$' + fmtMoney(r.todayPaid) : '–'}</td>
+          <td class="num" style="color:${r.todayPaid > 0.001 ? 'var(--success)' : 'var(--muted)'};">${r.todayPaid > 0.001 ? '$' + fmtMoney(r.todayPaid) + ((r.todayPaidCash||0) > 0.001 ? ' <small style="color:#E65100; font-weight:700;">($' + fmtMoney(r.todayPaidCash) + ')</small>' : '') : '–'}</td>
           <td class="num" style="font-weight:700; color:${balColor};">$${fmtMoney(r.currentBalance)}</td>
           ${_overdueCellHTML(r, false)}
         </tr>`;
@@ -11331,7 +11517,7 @@ function viewInvoice(params) {
             const w = it.actualWeightKg;
             const price = lineUnitPrice(it, p, cust);
             const orderDisplay = it.unit === '작업중량'
-              ? `${it.quantity}kg 작업`
+              ? `${it.quantity}kg`
               : `${it.quantity}${unitEn(it.unit)}`;
             const noteInline = it.notes ? ` <span style="color:#777;font-size:9px;">※ ${it.notes}</span>` : '';
             if (w == null) {
@@ -11479,7 +11665,7 @@ function sendInvoice(id) {
     const p = DB.products.find(x => x.id === it.productId);
     const w = it.actualWeightKg;
     const price = lineUnitPrice(it, p, cust);
-    const orderText = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity}${unitEn(it.unit)}`;
+    const orderText = it.unit === '작업중량' ? `${it.quantity}kg` : `${it.quantity}${unitEn(it.unit)}`;
     if (w == null) {
       msg += `· ${p.name}(${p.brand}) ${orderText} → 계근 대기\n`;
     } else {
@@ -12601,7 +12787,7 @@ function buildInvoiceHTML(o, cust, totals) {
     const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
     const w = it.actualWeightKg;
     const price = lineUnitPrice(it, p, cust);
-    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity}${unitEn(it.unit)}`;
+    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg` : `${it.quantity}${unitEn(it.unit)}`;
     // 흑백 인쇄 시 회색 음영도 토너 소모 — zebra striping 제거. 행 구분은 셀 하단선만.
     const rowStyle = 'border-bottom:1px solid #E5DCD3;';
     // 요청사항(notes)은 같은 셀 안에 작게 inline 표기 (줄바꿈 회피)
@@ -12750,7 +12936,7 @@ function buildOrderSheetHTML(o, cust) {
   const itemRows = o.items.map((it, idx) => {
     const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
     const w = it.actualWeightKg;
-    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg 작업` : `${it.quantity}${unitEn(it.unit)}`;
+    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg` : `${it.quantity}${unitEn(it.unit)}`;
     const bg = idx % 2 === 1 ? '#FAF6F1' : '#ffffff';
     const weightCell = (w == null)
       ? `<td style="padding:7px 8px; text-align:right; color:#B8860B;">계근 대기</td>`
