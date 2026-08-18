@@ -7052,10 +7052,10 @@ async function submitOrder(custId, deliveryDateISO) {
 //   색상 데이터: order.assignedColor ('red'|'blue'|'yellow'|'pink'|'green'|null)
 //   활성 색상·필터 상태는 localStorage 에 태블릿별 저장.
 const WH_COLORS = {
-  red:    { bg: '#FFEBEE', border: '#E57373', dot: '#E53935', label: 'Strathfield' },
+  red:    { bg: '#FFCDD2', border: '#EF5350', dot: '#C62828', label: 'Strathfield' },
   yellow: { bg: '#FFF9C4', border: '#FFD54F', dot: '#F9A825', label: 'Eastwood' },
   purple: { bg: '#F3E5F5', border: '#BA68C8', dot: '#8E24AA', label: 'City' },
-  green:  { bg: '#E8F5E9', border: '#81C784', dot: '#388E3C', label: 'Backup' },
+  green:  { bg: '#C8E6C9', border: '#66BB6A', dot: '#2E7D32', label: 'Backup' },
   blue:   { bg: '#E3F2FD', border: '#64B5F6', dot: '#1976D2', label: '파랑' }
 };
 window._whActiveColor = window._whActiveColor || null;   // 지정 브러시 색상 (null=지우개)
@@ -7146,7 +7146,7 @@ function viewWarehouse() {
       <span class="sub">박스/팩 챙기고 실제 중량 입력</span></h2>
     <div class="card">
       <div style="display:flex; justify-content:flex-end; margin-bottom:8px;">
-        <button class="btn sm" style="background:#5C0F0F; color:#fff;" onclick="openBulkDeliveryChange()">📅 배송일 일괄 변경</button>
+        <button class="btn sm" style="background:#5C0F0F; color:#fff;" onclick="openBulkDeliveryChange()">📅 배송일 변경</button>
       </div>
       <div id="whPaletteBar"></div>
       <div id="whList"></div>
@@ -7154,7 +7154,7 @@ function viewWarehouse() {
     <!-- 배송일 일괄 변경 모달 -->
     <div id="bulkDeliveryModal" class="no-print" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.4); z-index:100; align-items:center; justify-content:center; padding:20px;">
       <div style="background:#fff; border-radius:10px; padding:20px 24px; max-width:640px; width:100%; max-height:90vh; overflow-y:auto; box-shadow:0 10px 30px rgba(0,0,0,0.25);">
-        <h3 style="margin:0 0 12px; font-size:16px; font-weight:800; color:var(--brand-dark);">📅 배송일 일괄 변경</h3>
+        <h3 style="margin:0 0 12px; font-size:16px; font-weight:800; color:var(--brand-dark);">📅 배송일 변경</h3>
         <div style="font-size:12px; color:var(--muted); margin-bottom:12px;">
           변경할 주문을 체크한 뒤 새 배송일 지정 → [일괄 저장]. 토요일·휴무일 제한 없음.
         </div>
@@ -7607,7 +7607,7 @@ function viewOffice() {
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
         <h3 style="margin:0;">오늘 발행 완료 (${all.length}건)
           ${(() => {
-            const todayTotal = all.reduce((sum, o) => sum + (computeTotals(o).grand || 0), 0);
+            const todayTotal = all.reduce((sum, o) => sum + (computeTotalsWithCredits(o).net || 0), 0);
             return all.length > 0 ? '<span style="font-weight:800; font-size:15px; color:var(--brand-dark); margin-left:10px;">총 $' + fmtMoney(todayTotal) + '</span>' : '';
           })()}
           <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span>
@@ -7632,7 +7632,7 @@ function viewOffice() {
               <td><b>${o.invoiceNo||'-'}</b></td>
               <td>${o.orderNo || '-'}</td>
               <td>${c?c.name:'-'}</td>
-              <td class="num">$${fmtMoney(computeTotals(o).grand)}</td>
+              <td class="num">$${fmtMoney(computeTotalsWithCredits(o).net)}</td>
               <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
               <td class="act"><button class="btn sm secondary" onclick="location.hash='#invoice?id=${o.id}'">보기</button></td>
             </tr>`;
