@@ -423,11 +423,11 @@
     <div class="title-row">
       <div class="sync-tag" id="syncTag">☁️ 로컬</div>
       <h1 class="title">ATM 매입일보</h1>
-      <span id="dailyBadges" style="display:inline-flex; gap:8px; margin-left:auto; margin-right:12px; font-size:14px; vertical-align:middle;">
+      <div id="dailyBadges" style="position:absolute; right:130px; bottom:0; display:inline-flex; gap:8px; font-size:14px;">
         <span id="badgePurch"  style="background:#dbeafe; color:#1e40af; padding:5px 14px; border-radius:14px; font-weight:700;">매입 0건</span>
         <span id="badgePay"    style="background:#dcfce7; color:#166534; padding:5px 14px; border-radius:14px; font-weight:700;">지급 0건</span>
         <span id="badgeUnpaid" style="background:#fee2e2; color:#991b1b; padding:5px 14px; border-radius:14px; font-weight:700;">미지급 0건</span>
-      </span>
+      </div>
       <div class="date-tag" id="dateTag"></div>
     </div>
     <table id="mainTable">
