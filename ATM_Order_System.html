@@ -13465,9 +13465,9 @@ async function exportAllFull() {
   const pdfResult = await exportInvoicePDFs(true, async (cur, tot, name) => {
     await updateBackupProgress('인보이스 PDF', cur, tot, name ? `· ${name}` : '');
   });
-  const orderResult = await exportOrderPDFs(true, async (cur, tot, name) => {
-    await updateBackupProgress('주문서 PDF', cur, tot, name ? `· ${name}` : '');
-  });
+  // ⭐ (2026-08-18) 주문서 PDF 백업 스킵 · 시스템 관점에서 인보이스 PDF + DB.orders 로 충분
+  //   필요 시 콘솔에서 exportOrderPDFs() 수동 호출 가능
+  const orderResult = { saved: 0, failed: 0, skipped: '주문서 PDF 백업 스킵 (2026-08-18 정책)' };
   hideBackupProgress();
   // ⭐ (2026-07-07) 전체 백업 성공 시각 기록 — 편집 잠금 & 배너 트리거 기준.
   //   Firebase 부분 업데이트로 다른 기기에도 즉시 전파.
@@ -13699,7 +13699,11 @@ function viewStatement(params) {
   if (!ADMIN_UNLOCKED && !STAFF_UNLOCKED) { showStaffLogin(); return; }
   const app = document.getElementById('app');
   const today = toLocalISODate(new Date());
-  const firstDate = toLocalISODate(new Date(new Date().getFullYear(), 0, 1)); // 올해 1월 1일
+  // ⭐ (2026-08-18) 시작일 기본값 · 전달 1일 (예: 8월이면 7/1)
+  //   전달 계산 · 이번달 - 1 = 0 이하면 전년 12월로 롤오버
+  const _nowD = new Date();
+  const _prevM = new Date(_nowD.getFullYear(), _nowD.getMonth() - 1, 1);
+  const firstDate = toLocalISODate(_prevM);
   const preCid = (params && params.cid) || '';
 
   function buildStatement(cid, dateFrom, dateTo) {
@@ -13991,14 +13995,29 @@ function viewStatement(params) {
       +   '<th class="num" style="width:100px;">Payments</th>'
       +   '<th class="num" style="width:110px;">Balance AUD</th>'
       + '</tr></thead><tbody>' + rows + '</tbody></table>'
-      // ─── 하단: 좌(은행) / 우(BALANCE DUE) ───
+      // ─── 하단: 좌(은행) / 우(OverDue+7 · OverDue+14 · BALANCE DUE) ───
+      // ⭐ (2026-08-18) BALANCE DUE 앞에 OverDue +7 / +14 표시 · 값 있을 때만
       + '<div style="margin-top:24px; display:flex; justify-content:space-between; align-items:flex-end; gap:24px;">'
       +   '<div style="font-size:11px; color:#333; line-height:1.6; min-width:240px; white-space:pre-line;">'
       +     _bankHtml
       +   '</div>'
-      +   '<div style="text-align:right;">'
-      +     '<div style="font-size:14px; font-weight:600; color:#333; letter-spacing:1px;">BALANCE DUE AUD</div>'
-      +     '<div style="font-size:28px; font-weight:800; color:' + (bal > 0.001 ? '#C0392B' : (bal < -0.001 ? '#2E7D32' : '#333')) + '; letter-spacing:1px; margin-top:2px;">' + balDisplay + '</div>'
+      +   '<div style="display:flex; gap:20px; align-items:flex-end;">'
+      +     (overdueMildAsOf > 0.001
+        ? '<div style="text-align:right;">'
+        +   '<div style="font-size:11px; font-weight:600; color:#E8A317; letter-spacing:0.5px;">OVER DUE +7</div>'
+        +   '<div style="font-size:18px; font-weight:700; color:#E8A317; letter-spacing:0.5px; margin-top:2px;">$' + fmtMoney(overdueMildAsOf) + '</div>'
+        + '</div>'
+        : '')
+      +     (overdueSevereAsOf > 0.001
+        ? '<div style="text-align:right;">'
+        +   '<div style="font-size:11px; font-weight:600; color:#C0392B; letter-spacing:0.5px;">OVER DUE +14</div>'
+        +   '<div style="font-size:18px; font-weight:700; color:#C0392B; letter-spacing:0.5px; margin-top:2px;">$' + fmtMoney(overdueSevereAsOf) + '</div>'
+        + '</div>'
+        : '')
+      +     '<div style="text-align:right;' + ((overdueMildAsOf > 0.001 || overdueSevereAsOf > 0.001) ? ' border-left:1px solid #ccc; padding-left:20px;' : '') + '">'
+      +       '<div style="font-size:12px; font-weight:600; color:#333; letter-spacing:1px;">BALANCE DUE AUD</div>'
+      +       '<div style="font-size:22px; font-weight:800; color:' + (bal > 0.001 ? '#333' : (bal < -0.001 ? '#2E7D32' : '#888')) + '; letter-spacing:1px; margin-top:2px;">' + balDisplay + '</div>'
+      +     '</div>'
       +   '</div>'
       + '</div>'
       + '</div>'
