@@ -223,53 +223,50 @@
   @page { size: A4 portrait; margin: 10mm; }
   @media print{
     .toolbar, .panel, .hint, .modal-back, #toast, #sync-banner, #folderInfo { display:none !important; }
+    /* ⭐ (2026-08-18) 인쇄 시 배지는 숨김 (h1 타이틀과 겹침 방지) */
+    #dailyBadges { display:none !important; }
     body{ background:#fff; margin:0; font-size:10px; }
     .wrap{ padding:0; overflow:visible; }
-    .sheet{ box-shadow:none; max-width:none; width:100%; padding:4px 8px; margin:0; border-radius:0; }
+    /* ⭐ (2026-08-18) sheet 를 flex column · A4 세로 높이 채워 · 표가 남은 공간 모두 차지 */
+    .sheet{ box-shadow:none; max-width:none; width:100%; padding:4px 8px; margin:0; border-radius:0;
+            display:flex; flex-direction:column; min-height:275mm; }
     .sync-tag, .date-tag{ font-size:9px; }
     h1.title{ font-size:16px; margin:0 0 6px; padding-bottom:0; text-underline-offset:3px; }
-    .title-row{ margin:0 0 8px; }
-    /* 표 축소 */
-    table { table-layout:fixed; }
+    .title-row{ margin:0 0 8px; flex-shrink:0; }
+    .footnote{ flex-shrink:0; }
+    /* 표는 남은 공간 모두 사용 · 행 높이 auto 로 분배 */
+    #mainTable { flex:1; table-layout:fixed; height:100%; }
     th, td { padding:0 !important; font-size:9.5px !important; border-color:#374151 !important; }
     thead th { padding:3px 4px !important; height:auto !important; }
-    td .cell-name{ padding:2px 6px !important; min-height:0 !important; font-size:10px !important; }
+    tbody tr { height:auto; }
+    td .cell-name{ padding:4px 6px !important; min-height:0 !important; font-size:10px !important; }
     td .cell-name .del, td .cell-name button{ display:none !important; }
-    td .cell-num{ padding:2px 6px !important; font-size:10px !important; }
-    td .cell-note{ padding:2px 6px !important; font-size:9px !important; }
-    tr.total td { padding:3px 4px !important; }
-    /* 서명란 축소 */
-    .sign-area{ margin-top:10px; gap:24px; padding-right:12px; }
-    .sig-slot{ cursor:default; width:160px; padding:2px; }
-    .sig-slot:hover{ background:transparent; }
-    .sig-img-wrap{ height:32px; }
-    .sig-img{ max-height:32px; }
-    .sig-label{ font-size:9px; margin-top:2px; }
-    .sig-slot .sig-img:not(.show) + .sig-line + .sig-label::after{ content:''; }
+    td .cell-num{ padding:4px 6px !important; font-size:10px !important; }
+    td .cell-note{ padding:4px 6px !important; font-size:9px !important; }
+    tr.total td { padding:4px 6px !important; }
     .footnote{ margin-top:6px; font-size:8px; }
   }
 
-  /* PDF 모드 (html2canvas 렌더 시) — A4 가로 한 페이지 맞춤. 인쇄 스타일과 동일 규칙. */
+  /* PDF 모드 (html2canvas 렌더 시) — A4 세로 한 페이지 맞춤. 인쇄 스타일과 동일 규칙. */
   body.pdf-mode .toolbar, body.pdf-mode .panel, body.pdf-mode .hint,
   body.pdf-mode #folderInfo, body.pdf-mode #sync-banner{ display:none; }
+  body.pdf-mode #dailyBadges { display:none !important; }
   body.pdf-mode{ background:#fff; font-size:10px; }
   body.pdf-mode .wrap{ padding:0; }
-  body.pdf-mode .sheet{ max-width:none; box-shadow:none; padding:4px 8px; border-radius:0; }
+  body.pdf-mode .sheet{ max-width:none; box-shadow:none; padding:4px 8px; border-radius:0;
+                        display:flex; flex-direction:column; min-height:275mm; }
   body.pdf-mode h1.title{ font-size:16px; margin:0 0 6px; }
-  body.pdf-mode .title-row{ margin:0 0 8px; }
+  body.pdf-mode .title-row{ margin:0 0 8px; flex-shrink:0; }
+  body.pdf-mode .footnote{ flex-shrink:0; }
+  body.pdf-mode #mainTable { flex:1; table-layout:fixed; height:100%; }
   body.pdf-mode th, body.pdf-mode td{ padding:0 !important; font-size:9.5px !important; border-color:#374151 !important; }
   body.pdf-mode thead th{ padding:3px 4px !important; height:auto !important; }
-  body.pdf-mode td .cell-name{ padding:2px 6px !important; min-height:0 !important; font-size:10px !important; }
+  body.pdf-mode tbody tr { height:auto; }
+  body.pdf-mode td .cell-name{ padding:4px 6px !important; min-height:0 !important; font-size:10px !important; }
   body.pdf-mode td .cell-name .del, body.pdf-mode td .cell-name button{ display:none !important; }
-  body.pdf-mode td .cell-num{ padding:2px 6px !important; font-size:10px !important; }
-  body.pdf-mode td .cell-note{ padding:2px 6px !important; font-size:9px !important; }
-  body.pdf-mode tr.total td{ padding:3px 4px !important; }
-  body.pdf-mode .sign-area{ margin-top:10px; gap:24px; padding-right:12px; }
-  body.pdf-mode .sig-slot{ width:160px; }
-  body.pdf-mode .sig-img-wrap{ height:32px; }
-  body.pdf-mode .sig-img{ max-height:32px; }
-  body.pdf-mode .sig-label{ font-size:9px; margin-top:2px; }
-  body.pdf-mode .sig-slot .sig-img:not(.show) + .sig-line + .sig-label::after{ content:''; }
+  body.pdf-mode td .cell-num{ padding:4px 6px !important; font-size:10px !important; }
+  body.pdf-mode td .cell-note{ padding:4px 6px !important; font-size:9px !important; }
+  body.pdf-mode tr.total td{ padding:4px 6px !important; }
   body.pdf-mode .footnote{ margin-top:6px; font-size:8px; }
 </style>
 </head>
