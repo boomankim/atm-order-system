@@ -11519,7 +11519,7 @@ function viewInvoice(params) {
   app.innerHTML = `
     <div class="btn-row" style="margin-bottom:14px;">
       <button class="btn" onclick="window.print()">🖨️ 인쇄 / PDF 저장</button>
-      <button class="btn kakao" onclick="sendInvoice('${o.id}')">📤 카톡/이메일 공유</button>
+      <button class="btn" style="background:#2E7D32; color:#fff;" onclick="sendInvoicePDF('${o.id}')">📎 PDF 이메일/카톡</button>
       ${o.status==='invoiced' ? `<button class="btn secondary" onclick="markDelivered('${o.id}')">배송완료 처리</button>` : ''}
       ${isInvoiceEditable(o)
         ? `<button class="btn" style="background:#B8860B;color:#fff;" onclick="attemptEditInvoice('${o.id}')" title="발행 후 ${INVOICE_EDIT_DAYS}일 이내 수정 가능 — 보스 권한 필요">✏️ 인보이스 수정</button>`
@@ -11774,6 +11774,156 @@ function markDelivered(id) {
   alert(msg);
   route();
 }
+// ⭐ (2026-08-18) 인보이스 PDF 이메일/카톡 발송 · 스테이트먼트 v3 로직 재사용
+//   모바일: Web Share API · 데스크톱: PDF 다운로드 + Gmail/Outlook 선택 모달
+//   본문: 인사말 + 첨부 안내만 (금액 · Due Date 미포함)
+window.sendInvoicePDF = async function(orderId) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
+  const cust = DB.customers.find(c => c.id === o.customerId);
+  if (!cust) { alert('거래처 정보를 찾을 수 없습니다.'); return; }
+  if (typeof window.jspdf === 'undefined' || typeof window.html2canvas === 'undefined') {
+    alert('PDF 라이브러리 로딩 중입니다. 잠시 후 다시 시도해 주세요.');
+    return;
+  }
+  showToast('📄 인보이스 PDF 생성 중...');
+  const container = document.createElement('div');
+  container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
+  const totals = computeTotals(o);
+  container.innerHTML = buildInvoiceHTML(o, cust, totals);
+  document.body.appendChild(container);
+  try {
+    await new Promise(function(r){ setTimeout(r, 120); });
+    const canvas = await html2canvas(container.firstElementChild, {
+      scale: 2, useCORS: true, backgroundColor: '#ffffff', logging: false
+    });
+    // 여백 10mm · 다중페이지 슬라이싱
+    const pageW = 210, pageH = 297;
+    const marginX = 10, marginY = 10;
+    const printW = pageW - marginX * 2;
+    const printH = pageH - marginY * 2;
+    const { jsPDF } = window.jspdf;
+    const doc = new jsPDF({ unit:'mm', format:'a4', orientation:'portrait' });
+    const pxPerMm = canvas.width / printW;
+    const totalHmm = canvas.height / pxPerMm;
+    if (totalHmm <= printH) {
+      const imgData = canvas.toDataURL('image/jpeg', 0.95);
+      doc.addImage(imgData, 'JPEG', marginX, marginY, printW, totalHmm);
+    } else {
+      const pageHeightPx = printH * pxPerMm;
+      let sy = 0, pageIdx = 0;
+      while (sy < canvas.height) {
+        const remainingPx = canvas.height - sy;
+        const sliceHeightPx = Math.min(pageHeightPx, remainingPx);
+        const sliceCanvas = document.createElement('canvas');
+        sliceCanvas.width = canvas.width;
+        sliceCanvas.height = Math.ceil(sliceHeightPx);
+        const ctx = sliceCanvas.getContext('2d');
+        ctx.fillStyle = '#ffffff';
+        ctx.fillRect(0, 0, sliceCanvas.width, sliceCanvas.height);
+        ctx.drawImage(canvas, 0, sy, canvas.width, sliceHeightPx, 0, 0, canvas.width, sliceHeightPx);
+        const sliceData = sliceCanvas.toDataURL('image/jpeg', 0.95);
+        const sliceHmm = sliceHeightPx / pxPerMm;
+        if (pageIdx > 0) doc.addPage();
+        doc.addImage(sliceData, 'JPEG', marginX, marginY, printW, sliceHmm);
+        sy += pageHeightPx;
+        pageIdx++;
+      }
+    }
+    const custName = (cust.name || '거래처').replace(/[\/:*?"<>|]/g, '_');
+    const invNo = o.invoiceNo || o.orderNo || 'INV';
+    const dateStr = toLocalISODate(o.invoicedAt || o.orderDate || new Date());
+    const filename = 'Invoice_' + invNo + '_' + custName + '_' + dateStr + '.pdf';
+    const pdfBlob = doc.output('blob');
+
+    // 이메일 본문 (금액 없음 · 인사말 + 첨부 안내만)
+    const subject = 'ALL THAT MEAT · Invoice ' + invNo + ' · ' + cust.name + ' · ' + dateStr;
+    const body = (cust.contact ? cust.contact + ' 님, ' : '') + '안녕하세요.\n\n'
+      + cust.name + ' 인보이스 ' + invNo + ' 첨부드립니다.\n'
+      + '발행일: ' + dateStr + '\n\n'
+      + '확인 부탁드리며, 문의사항 있으시면 언제든 연락 주세요.\n\n'
+      + '감사합니다.\n'
+      + (DB.company && DB.company.name ? DB.company.name : '');
+
+    // 모바일에서만 Web Share (Windows 데스크톱 Outlook 첨부 버그 회피)
+    const pdfFile = new File([pdfBlob], filename, { type: 'application/pdf' });
+    const _isMobile = (typeof navigator !== 'undefined')
+      && ((navigator.userAgentData && navigator.userAgentData.mobile === true)
+          || /Mobi|Android|iPhone|iPad|iPod/i.test(navigator.userAgent || ''));
+    const canShareFiles = _isMobile
+      && (typeof navigator !== 'undefined')
+      && (typeof navigator.canShare === 'function')
+      && navigator.canShare({ files: [pdfFile] });
+    if (canShareFiles) {
+      try {
+        await navigator.share({ files: [pdfFile], title: subject, text: body });
+        try { auditLogAdd('인보이스 PDF 공유(Web Share): ' + cust.name + ' · Invoice ' + invNo); } catch(_){}
+        showToast('✅ 공유 시트 열림 · 카톡/이메일 선택');
+        return;
+      } catch(err) {
+        if (err && err.name === 'AbortError') return;
+        console.warn('Web Share 실패, 다운로드로 fallback:', err);
+      }
+    }
+
+    // 데스크톱 · PDF 다운로드
+    const url = URL.createObjectURL(pdfBlob);
+    const a = document.createElement('a');
+    a.href = url; a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    document.body.removeChild(a);
+    setTimeout(function(){ URL.revokeObjectURL(url); }, 60000);
+
+    const toAddr = (cust.email || '').trim();
+    const mailto = 'mailto:' + encodeURIComponent(toAddr)
+      + '?subject=' + encodeURIComponent(subject)
+      + '&body=' + encodeURIComponent(body);
+    const gmailUrl = 'https://mail.google.com/mail/?view=cm&fs=1'
+      + '&to=' + encodeURIComponent(toAddr)
+      + '&su=' + encodeURIComponent(subject)
+      + '&body=' + encodeURIComponent(body);
+
+    try { auditLogAdd('인보이스 PDF 발송(데스크톱): ' + cust.name + ' · Invoice ' + invNo + ' · ' + filename); } catch(_){}
+    showToast('📎 PDF 다운로드 완료 · 아래 [이메일 열기] 클릭');
+    setTimeout(function(){
+      const toAddrEsc = toAddr.replace(/</g, '&lt;');
+      const filenameEsc = filename.replace(/</g, '&lt;');
+      const mailtoEsc = mailto.replace(/"/g, '&quot;');
+      const gmailEsc = gmailUrl.replace(/"/g, '&quot;');
+      openModal(
+        '<h3 style="margin:0 0 10px;">✅ 인보이스 PDF 다운로드 완료</h3>'
+        + '<div style="background:#F5F5F5; padding:10px 14px; border-radius:6px; font-size:13px; line-height:1.6; margin-bottom:12px;">'
+        +   '<div><b>파일명:</b> ' + filenameEsc + '</div>'
+        +   '<div><b>위치:</b> 브라우저 기본 다운로드 폴더</div>'
+        + '</div>'
+        + '<div style="font-size:13px; line-height:1.7; margin-bottom:14px;">'
+        +   '<div>📧 아래 버튼을 눌러 이메일 창을 여세요. 다운로드된 PDF 를 <b>드래그</b> 하거나 [파일 첨부] 로 붙여 전송.</div>'
+        +   (toAddr
+              ? '<div style="margin-top:8px; color:#2E7D32;">수신자: <b>' + toAddrEsc + '</b> (자동 입력됨)</div>'
+              : '<div style="margin-top:8px; color:#B71C1C;">⚠️ 거래처 이메일 미저장 - 수동 입력 필요</div>')
+        + '</div>'
+        + '<div class="btn-row" style="gap:8px; flex-wrap:wrap;">'
+        +   '<a class="btn" href="' + gmailEsc + '" target="_blank" rel="noopener" onclick="closeModal();" style="background:#DB4437; color:#fff; text-decoration:none; padding:10px 18px;">✉️ Gmail 열기 (권장)</a>'
+        +   '<a class="btn" href="' + mailtoEsc + '" onclick="closeModal();" style="background:#2E7D32; color:#fff; text-decoration:none; padding:10px 18px;">📧 Outlook 열기</a>'
+        +   '<button class="btn secondary" onclick="closeModal()">닫기</button>'
+        + '</div>'
+        + '<div style="font-size:11px; color:var(--muted); margin-top:10px; line-height:1.5;">'
+        +   '💡 <b>Gmail 열기</b>: 브라우저 새 탭 Gmail 작성 (확실히 열림)<br>'
+        +   '💡 <b>Outlook 열기</b>: PC Outlook 앱 + Windows 기본 메일 앱 설정 필요'
+        + '</div>'
+      );
+    }, 400);
+  } catch(e) {
+    console.warn('sendInvoicePDF error:', e);
+    alert('PDF 생성 실패: ' + e.message);
+  } finally {
+    if (container.parentNode) {
+      try { container.parentNode.removeChild(container); } catch(_){}
+    }
+  }
+};
+
 function sendInvoice(id) {
   const o = DB.orders.find(x => x.id === id);
   const cust = DB.customers.find(c => c.id === o.customerId);
