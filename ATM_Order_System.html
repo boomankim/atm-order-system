@@ -1781,6 +1781,23 @@ function route() {
   // Track whether user is actively entering an order (suppress auto-rerender)
   _isOrderEntry = (path === 'order' || path === 'enter');
 }
+// ⭐ (2026-08-20) 이전 hash 추적 · viewInvoice [← 이전 페이지] 버튼에서 사용
+//   route 리스너 등록 전에 등록해서 event.oldURL 을 먼저 캡처
+window._prevHashForBack = '';
+window.addEventListener('hashchange', function(e){
+  try {
+    if (e && e.oldURL) {
+      const oldHash = e.oldURL.split('#')[1] || '';
+      // 현재로 돌아오는 경우 (invoice → invoice) 는 저장 안 함 (같은 페이지 재진입)
+      const newHash = (location.hash || '').replace(/^#/, '');
+      const oldPath = oldHash.split('?')[0];
+      const newPath = newHash.split('?')[0];
+      if (oldPath !== newPath && oldPath !== 'invoice') {
+        window._prevHashForBack = '#' + oldHash;
+      }
+    }
+  } catch(_){}
+});
 window.addEventListener('hashchange', route);
 
 // =========================================================================
@@ -11524,7 +11541,7 @@ function viewInvoice(params) {
       ${isInvoiceEditable(o)
         ? `<button class="btn" style="background:#B8860B;color:#fff;" onclick="attemptEditInvoice('${o.id}')" title="발행 후 ${INVOICE_EDIT_DAYS}일 이내 수정 가능 — 보스 권한 필요">✏️ 인보이스 수정</button>`
         : `<button class="btn secondary" style="cursor:not-allowed;opacity:0.55;" onclick="alert('편집 불가: '+ (invoiceEditLockReason(DB.orders.find(x=>x.id==='${o.id}'))||'')); return false;" title="편집 잠금">🔒 편집 잠금</button>`}
-      <button class="btn secondary" onclick="if (history.length > 1) { history.back(); } else { location.hash='#office'; }">← 이전 페이지</button>
+      <button class="btn secondary" onclick="location.hash = window._prevHashForBack || '#office';">← 이전 페이지</button>
     </div>
     ${isInvoiceEditable(o) ? `
     <div class="no-print" style="margin-bottom:12px; padding:8px 12px; background:#FFF7E0; border-left:4px solid #B8860B; border-radius:4px; font-size:12px; color:#5C3A00;">
