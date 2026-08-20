@@ -1231,10 +1231,12 @@ const STAFF_LAST_ACTIVITY_KEY = 'atm_staff_last_activity';
 const STAFF_PIN_MIGRATED_KEY = 'atm_staff_pin_migrated_v1';  // localStorage 마이그레이션 마커
 
 // 기존 비번이 문자열이었는지 감지 (6자리 숫자 PIN 인지) → 마이그레이션 필요 여부
+// ⚠️ (2026-08-20 fix) 이전 구현은 localStorage 마커에만 의존해서 cross-device 버그 발생:
+//   다른 기기/브라우저/시크릿창에서 접속하면 마커 없음 → legacy 로 오판 → 새 PIN 설정 강제 →
+//   Firebase hash 덮어씀 → 다른 직원 PIN 무효화. 3명이 서로 서로 덮어쓰는 사이클 반복됨.
+//   2026-08-06 이후 배포된 모든 환경은 이미 6자리 PIN 체계이므로 legacy 감지 자체를 무효화.
 function _isLegacyStaffPassword() {
-  // 마커 있으면 이미 새 PIN 체계로 이관됨
-  try { if (localStorage.getItem(STAFF_PIN_MIGRATED_KEY) === '1') return false; } catch(_){}
-  return !!DB.settings.staffPasswordHash;   // 기존 hash 있으면 legacy 로 간주
+  return false;
 }
 
 // PIN 잠금 상태 확인
