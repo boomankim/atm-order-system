@@ -7765,7 +7765,12 @@ window.openQuickCreditModal = function() {
     + '<div id="qcUnusedList" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;"></div>'
     + '<div class="btn-row" style="margin-top:14px;"><button class="btn secondary" onclick="closeModal()">닫기</button></div>'
   );
-  setTimeout(function(){ if (typeof renderQuickCreditUnusedList === 'function') renderQuickCreditUnusedList(); }, 0);
+  // ⭐ (2026-08-20) 크레딧 발행 모달 폭 확대 (500 → 750px, 1.5배)
+  setTimeout(function(){
+    const _m = document.querySelector('#modalBg .modal');
+    if (_m) _m.style.maxWidth = '750px';
+    if (typeof renderQuickCreditUnusedList === 'function') renderQuickCreditUnusedList();
+  }, 0);
 };
 
 // ⭐ (2026-08-17) 사무실 · 크레딧 빠른 발행 (거래처 다음 인보이스에 자동 반영)
