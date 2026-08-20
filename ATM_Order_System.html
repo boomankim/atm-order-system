@@ -11524,7 +11524,7 @@ function viewInvoice(params) {
       ${isInvoiceEditable(o)
         ? `<button class="btn" style="background:#B8860B;color:#fff;" onclick="attemptEditInvoice('${o.id}')" title="발행 후 ${INVOICE_EDIT_DAYS}일 이내 수정 가능 — 보스 권한 필요">✏️ 인보이스 수정</button>`
         : `<button class="btn secondary" style="cursor:not-allowed;opacity:0.55;" onclick="alert('편집 불가: '+ (invoiceEditLockReason(DB.orders.find(x=>x.id==='${o.id}'))||'')); return false;" title="편집 잠금">🔒 편집 잠금</button>`}
-      <button class="btn secondary" onclick="location.hash='#office'">← 사무실로</button>
+      <button class="btn secondary" onclick="if (history.length > 1) { history.back(); } else { location.hash='#office'; }">← 이전 페이지</button>
     </div>
     ${isInvoiceEditable(o) ? `
     <div class="no-print" style="margin-bottom:12px; padding:8px 12px; background:#FFF7E0; border-left:4px solid #B8860B; border-radius:4px; font-size:12px; color:#5C3A00;">
