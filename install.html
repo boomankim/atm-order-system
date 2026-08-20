@@ -1,0 +1,478 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+<title>ATM 주문 앱 설치 안내 / Install Guide</title>
+<style>
+@import url("https://cdnjs.cloudflare.com/ajax/libs/pretendard/1.3.9/static/pretendard-dynamic-subset.min.css");
+
+:root{
+  --maroon:#6B1414; --maroon-deep:#4A0E0E;
+  --paper:#F6F1E9; --card:#FFFFFF;
+  --ink:#241C1A; --sub:#7A6E68; --faint:#A99D91; --line:#ECE2D3;
+  --ios:#0A84FF; --iosBg:#EAF3FF;
+  --and:#1B7F4B; --andBg:#E9F4EE;
+  --gold:#C9A227; --ring:#E23B2E;
+}
+*{box-sizing:border-box;}
+html,body{margin:0;padding:0;}
+body{
+  background:var(--paper); color:var(--ink);
+  font-family:"Pretendard Variable",Pretendard,-apple-system,BlinkMacSystemFont,"Apple SD Gothic Neo","Malgun Gothic",sans-serif;
+  -webkit-font-smoothing:antialiased; line-height:1.5;
+}
+.wrap{max-width:460px; margin:0 auto; padding:0 16px 56px;}
+
+.top{
+  background:linear-gradient(165deg,var(--maroon) 0%,var(--maroon-deep) 130%);
+  color:#F6EEE4; margin:0 -16px; padding:24px 22px 26px; border-radius:0 0 22px 22px;
+}
+.top .logo{display:inline-flex; align-items:center; gap:7px; font-weight:800; font-size:14px; margin-bottom:3px;}
+.top .logo .dot{width:16px;height:16px;border-radius:50%;background:#D2453C;display:inline-block;box-shadow:inset -2px -2px 0 rgba(0,0,0,.18);}
+.top .kicker{font-size:11px; letter-spacing:.26em; font-weight:700; color:#E6C6A0; text-transform:uppercase;}
+.top h1{margin:8px 0 4px; font-size:24px; font-weight:800; letter-spacing:-0.4px;}
+.top p{margin:0; font-size:13px; color:#E7C9AE;}
+
+/* language toggle */
+.langbar{display:flex; justify-content:center; gap:7px; margin:16px 0 0;}
+.langbar button{
+  border:1.5px solid var(--line); background:var(--card); color:var(--sub);
+  border-radius:999px; padding:7px 18px; font-size:13.5px; font-weight:800; cursor:pointer; font-family:inherit;
+}
+.langbar button.on{border-color:var(--maroon); background:var(--maroon); color:#fff;}
+
+/* platform toggle */
+.pick{display:flex; gap:9px; margin:12px 0 2px;}
+.pick button{
+  flex:1; border:1.5px solid var(--line); background:var(--card); color:var(--sub);
+  border-radius:14px; padding:13px 0; font-size:15.5px; font-weight:800; cursor:pointer;
+  font-family:inherit; display:flex; align-items:center; justify-content:center; gap:8px; transition:all .15s;
+}
+.pick button .ico{font-size:19px; line-height:1;}
+.pick button.on.ios{border-color:var(--ios); background:var(--iosBg); color:var(--ios);}
+.pick button.on.and{border-color:var(--and); background:var(--andBg); color:var(--and);}
+
+.leadnote{
+  font-size:12.8px; color:var(--sub); background:#FBF7F0; border:1px solid var(--line);
+  border-radius:12px; padding:11px 13px; margin:12px 0 2px; line-height:1.6;
+}
+.leadnote b{color:var(--ink);}
+
+.step{
+  background:var(--card); border:1px solid var(--line); border-radius:18px;
+  padding:15px 15px 17px; margin-top:13px; box-shadow:0 2px 8px rgba(60,30,20,.05);
+}
+.shead{display:flex; align-items:center; gap:11px;}
+.num{flex:none; width:29px; height:29px; border-radius:50%; color:#fff; font-weight:800; font-size:15px;
+  display:flex; align-items:center; justify-content:center;}
+.ios .num{background:var(--ios);} .and .num{background:var(--and);}
+.stitle{font-size:16px; font-weight:800; letter-spacing:-0.3px; line-height:1.35;}
+.stitle .hl{color:var(--maroon);}
+.sdesc{font-size:13px; color:var(--sub); margin:5px 0 0 40px; line-height:1.55;}
+.sdesc b{color:var(--ink);}
+
+.illo{margin-top:12px; display:flex; justify-content:center;}
+.illo svg{width:100%; max-width:224px; height:auto; display:block;}
+
+@keyframes pulse{0%{opacity:.9;transform:scale(1);}70%{opacity:0;transform:scale(1.7);}100%{opacity:0;transform:scale(1.7);}}
+.pring{transform-box:fill-box; transform-origin:center; animation:pulse 1.8s ease-out infinite;}
+@media (prefers-reduced-motion:reduce){.pring{animation:none;opacity:.9;}}
+
+.done{background:linear-gradient(160deg,#1F6E44,#155235); color:#EAF6EE; text-align:center;
+  border-radius:18px; padding:20px 18px; margin-top:15px;}
+.done .big{font-size:18px; font-weight:800; margin-bottom:5px;}
+.done p{margin:0; font-size:13px; color:#C9E6D3; line-height:1.55;}
+.done b{color:#fff;}
+
+.foot{margin-top:20px; text-align:center; font-size:12px; color:var(--faint); line-height:1.7;}
+.foot b{color:var(--sub);}
+.hidden{display:none !important;}
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <div class="top">
+    <span class="logo"><span class="dot"></span>ALL THAT MEAT</span>
+    <div class="kicker">Install Guide</div>
+    <h1 data-i18n="title">주문 앱 설치 안내</h1>
+    <p data-i18n="sub">카톡 링크를 열어 홈 화면에 앱으로 설치하는 방법</p>
+  </div>
+
+  <div class="langbar">
+    <button id="lKo" class="on" onclick="setLang('ko')">한국어</button>
+    <button id="lEn" onclick="setLang('en')">English</button>
+  </div>
+
+  <div class="pick">
+    <button id="btnIos" class="ios on" onclick="show('ios')"><span class="ico">🍎</span><span data-i18n="tIphone">아이폰</span></button>
+    <button id="btnAnd" class="and"    onclick="show('and')"><span class="ico">🤖</span><span data-i18n="tAndroid">안드로이드</span></button>
+  </div>
+
+  <!-- ================= 아이폰 ================= -->
+  <div id="ios">
+    <div class="leadnote" data-i18n-html="iLead">준비 — 카톡 <b>‘나와의 채팅’</b>에 있는 <b>주문 시스템 링크</b>를 준비하세요. 아이폰은 반드시 <b>사파리(Safari)</b>로 여세요.</div>
+
+    <!-- 1: copy link -->
+    <div class="step ios">
+      <div class="shead"><div class="num">1</div><div class="stitle" data-i18n-html="i1t">카톡에서 <span class="hl">링크 복사</span></div></div>
+      <div class="sdesc" data-i18n-html="i1d">링크를 손가락으로 <b>꾹 눌러</b> ‘복사’를 누르세요.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#fff" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="6" y="6" width="208" height="46" rx="30" fill="#FEE500"/><rect x="6" y="30" width="208" height="22" fill="#FEE500"/>
+          <text x="24" y="35" font-size="12.5" font-weight="800" fill="#3B1E1E" data-i18n="kkTitle">나와의 채팅</text>
+          <rect x="22" y="74" width="150" height="58" rx="14" fill="#EAF3FF" stroke="#BFDCFF"/>
+          <text x="34" y="96" font-size="10.5" fill="#2A2A2A" data-i18n="linkName">ATM 주문 시스템</text>
+          <text x="34" y="114" font-size="10" font-weight="700" fill="#0A84FF">boomankim.github.io/…</text>
+          <line x1="34" y1="120" x2="132" y2="120" stroke="#0A84FF" stroke-width="1.2"/>
+          <!-- copy popover -->
+          <rect x="60" y="150" width="96" height="34" rx="10" fill="#2C2C2E"/>
+          <text x="108" y="172" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle" data-i18n="copy">복사</text>
+          <path d="M104 150 l4 -6 l4 6 z" fill="#2C2C2E"/>
+          <circle class="pring" cx="108" cy="167" r="18" fill="none" stroke="#E23B2E" stroke-width="3"/>
+          <g transform="translate(150,150)"><path d="M4 34 C0 22 2 14 8 14 L8 4 C8 0 14 0 14 4 L14 12 C14 10 26 12 26 20 L26 30 C26 40 20 46 12 46 C8 46 6 40 4 34 Z" fill="#F4C9A0" stroke="#C98E5E" stroke-width="1.4"/></g>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 2: paste into safari -->
+    <div class="step ios">
+      <div class="shead"><div class="num">2</div><div class="stitle" data-i18n-html="i2t">사파리 주소창에 <span class="hl">붙여넣기</span></div></div>
+      <div class="sdesc" data-i18n-html="i2d">사파리를 열고 <b>주소창을 꾹 눌러</b> ‘붙여넣기’ → 이동(Go).</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <defs>
+            <radialGradient id="safB" cx="50%" cy="32%" r="78%">
+              <stop offset="0%" stop-color="#63B8FF"/><stop offset="100%" stop-color="#1477E8"/>
+            </radialGradient>
+          </defs>
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#fff" stroke="#DCD2C4" stroke-width="2"/>
+          <!-- Safari app icon -->
+          <rect x="84" y="22" width="52" height="52" rx="13" fill="#EFEFF2" stroke="#E1D9CB"/>
+          <circle cx="110" cy="48" r="20" fill="url(#safB)"/>
+          <circle cx="110" cy="48" r="16" fill="none" stroke="#fff" stroke-width="1.3" opacity="0.85"/>
+          <g transform="rotate(45 110 48)">
+            <polygon points="110,35 113.5,48 106.5,48" fill="#F4433A"/>
+            <polygon points="110,61 113.5,48 106.5,48" fill="#FDFDFD"/>
+          </g>
+          <circle cx="110" cy="48" r="1.9" fill="#fff"/>
+          <text x="110" y="90" font-size="12" font-weight="800" fill="#3A2E29" text-anchor="middle">Safari</text>
+          <path d="M110 99 v13 M104 108 l6 6 l6 -6" stroke="#B7A597" stroke-width="2.4" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- paste popover -->
+          <rect x="52" y="150" width="116" height="34" rx="10" fill="#2C2C2E"/>
+          <text x="110" y="172" font-size="12" font-weight="700" fill="#fff" text-anchor="middle" data-i18n="paste">붙여넣기</text>
+          <path d="M104 184 l6 7 l6 -7 z" fill="#2C2C2E"/>
+          <!-- address bar -->
+          <rect x="26" y="196" width="168" height="24" rx="12" fill="#fff" stroke="#0A84FF" stroke-width="1.6"/>
+          <text x="38" y="212" font-size="10" font-weight="700" fill="#0A84FF">boomankim.github.io/…</text>
+          <circle class="pring" cx="110" cy="167" r="19" fill="none" stroke="#E23B2E" stroke-width="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 3: share -->
+    <div class="step ios">
+      <div class="shead"><div class="num">3</div><div class="stitle" data-i18n-html="i3t">아래 <span class="hl">공유 버튼</span> 누르기</div></div>
+      <div class="sdesc" data-i18n-html="i3d">사파리 맨 아래, 네모에 위 화살표(⬆️) 아이콘입니다.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#fff" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="6" y="6" width="208" height="44" rx="30" fill="#6B1414"/><rect x="6" y="28" width="208" height="22" fill="#6B1414"/>
+          <circle cx="30" cy="30" r="6" fill="#D2453C"/><text x="42" y="34" font-size="10.5" font-weight="800" fill="#F6EEE4">ALL THAT MEAT</text>
+          <rect x="26" y="70" width="168" height="15" rx="4" fill="#EFE7DA"/>
+          <rect x="34" y="104" width="152" height="34" rx="8" fill="#F6F1E9" stroke="#E4D8C6"/>
+          <text x="110" y="126" font-size="11.5" fill="#B7A597" text-anchor="middle" data-i18n="codeEx">예: AT0042</text>
+          <rect x="6" y="252" width="208" height="42" fill="#F2EDE6"/><path d="M6 252 h208" stroke="#E1D6C6"/>
+          <g transform="translate(103,262)"><path d="M11 3 L7 7 M11 3 L15 7 M11 3 V17" stroke="#0A84FF" stroke-width="2.2" fill="none" stroke-linecap="round"/><path d="M4 12 V22 H18 V12" stroke="#0A84FF" stroke-width="2.2" fill="none" stroke-linecap="round"/></g>
+          <text x="42" y="278" font-size="12" fill="#B7A597">‹  ›</text><text x="176" y="278" font-size="12" fill="#B7A597">▢</text>
+          <circle class="pring" cx="114" cy="273" r="20" fill="none" stroke="#E23B2E" stroke-width="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 4: add to home -->
+    <div class="step ios">
+      <div class="shead"><div class="num">4</div><div class="stitle" data-i18n-html="i4t">아래로 내려 <span class="hl">‘홈 화면에 추가’</span></div></div>
+      <div class="sdesc" data-i18n-html="i4d">공유 창을 <b>아래로 쭉 내려</b> 이 항목을 누르세요.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#EFEAE2" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="18" y="70" width="184" height="224" rx="18" fill="#fff" stroke="#E4DBCE"/>
+          <rect x="92" y="80" width="36" height="5" rx="2.5" fill="#D8CEBE"/>
+          <text x="64" y="120" font-size="12" fill="#2A2320" font-weight="600" data-i18n="copyRow">복사</text><rect x="30" y="108" width="20" height="16" rx="4" fill="#EFE7DA"/>
+          <text x="64" y="156" font-size="12" fill="#2A2320" font-weight="600" data-i18n="favRow">즐겨찾기에 추가</text><rect x="30" y="144" width="20" height="16" rx="4" fill="#EFE7DA"/>
+          <rect x="22" y="176" width="176" height="34" rx="9" fill="#FDECEA"/>
+          <rect x="30" y="182" width="20" height="20" rx="5" fill="#0A84FF"/><path d="M40 186 v12 M34 192 h12" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+          <text x="58" y="199" font-weight="800" font-size="11.5" fill="#111" data-i18n="addHome">홈 화면에 추가</text>
+          <text x="64" y="240" font-size="12" fill="#2A2320" font-weight="600" data-i18n="bmRow">책갈피 추가</text><rect x="30" y="228" width="20" height="16" rx="4" fill="#EFE7DA"/>
+          <circle class="pring" cx="120" cy="193" r="19" fill="none" stroke="#E23B2E" stroke-width="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 5: add -->
+    <div class="step ios">
+      <div class="shead"><div class="num">5</div><div class="stitle" data-i18n-html="i5t">오른쪽 위 <span class="hl">‘추가’</span></div></div>
+      <div class="sdesc" data-i18n-html="i5d">이름이 <b>‘ATM 주문’</b>으로 뜨면 그대로 ‘추가’.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#EFEAE2" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="18" y="40" width="184" height="150" rx="16" fill="#fff" stroke="#E4DBCE"/>
+          <text x="30" y="66" font-size="10.5" fill="#0A84FF" data-i18n="cancel">취소</text>
+          <text x="112" y="66" font-size="9.5" font-weight="800" fill="#111" text-anchor="middle" data-i18n="sheetTitle">홈 화면에 추가</text>
+          <text x="192" y="66" font-size="10.5" font-weight="800" fill="#0A84FF" text-anchor="end" data-i18n="add">추가</text>
+          <line x1="18" y1="78" x2="202" y2="78" stroke="#EEE6DA"/>
+          <rect x="34" y="98" width="40" height="40" rx="10" fill="#6B1414"/><circle cx="54" cy="118" r="10" fill="#D2453C"/>
+          <text x="88" y="116" font-size="11" font-weight="700" fill="#3A2E29" data-i18n="appName">ATM 주문</text>
+          <rect x="86" y="124" width="104" height="10" rx="3" fill="#F5EFE5"/>
+          <circle class="pring" cx="186" cy="61" r="17" fill="none" stroke="#E23B2E" stroke-width="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="done">
+      <div class="big" data-i18n="doneBig">🎉 설치 완료!</div>
+      <p data-i18n-html="doneP">홈 화면에 <b>‘ATM 주문’</b> 아이콘이 생겼어요.<br>이제 사파리 말고 <b>이 아이콘</b>으로 여세요.</p>
+    </div>
+  </div>
+
+  <!-- ================= 안드로이드 ================= -->
+  <div id="and" class="hidden">
+    <div class="leadnote" data-i18n-html="aLead">준비 — 카톡 <b>‘나와의 채팅’</b>에 있는 <b>주문 시스템 링크</b>를 준비하세요. 안드로이드는 <b>크롬(Chrome)</b>으로 여세요.</div>
+
+    <!-- 1: copy -->
+    <div class="step and">
+      <div class="shead"><div class="num">1</div><div class="stitle" data-i18n-html="a1t">카톡에서 <span class="hl">링크 복사</span></div></div>
+      <div class="sdesc" data-i18n-html="a1d">링크를 <b>꾹 눌러</b> ‘복사’를 누르세요.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#fff" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="6" y="6" width="208" height="46" rx="30" fill="#FEE500"/><rect x="6" y="30" width="208" height="22" fill="#FEE500"/>
+          <text x="24" y="35" font-size="12.5" font-weight="800" fill="#3B1E1E" data-i18n="kkTitle">나와의 채팅</text>
+          <rect x="22" y="74" width="150" height="58" rx="14" fill="#E9F4EE" stroke="#BFE3CE"/>
+          <text x="34" y="96" font-size="10.5" fill="#2A2A2A" data-i18n="linkName">ATM 주문 시스템</text>
+          <text x="34" y="114" font-size="10" font-weight="700" fill="#1B7F4B">boomankim.github.io/…</text>
+          <line x1="34" y1="120" x2="132" y2="120" stroke="#1B7F4B" stroke-width="1.2"/>
+          <rect x="60" y="150" width="96" height="34" rx="10" fill="#2C2C2E"/>
+          <text x="108" y="172" font-size="12.5" font-weight="700" fill="#fff" text-anchor="middle" data-i18n="copy">복사</text>
+          <path d="M104 150 l4 -6 l4 6 z" fill="#2C2C2E"/>
+          <circle class="pring" cx="108" cy="167" r="18" fill="none" stroke="#E23B2E" stroke-width="3"/>
+          <g transform="translate(150,150)"><path d="M4 34 C0 22 2 14 8 14 L8 4 C8 0 14 0 14 4 L14 12 C14 10 26 12 26 20 L26 30 C26 40 20 46 12 46 C8 46 6 40 4 34 Z" fill="#F4C9A0" stroke="#C98E5E" stroke-width="1.4"/></g>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 2: open chrome, tap search box -->
+    <div class="step and">
+      <div class="shead"><div class="num">2</div><div class="stitle" data-i18n-html="a2t">크롬 열기 → 가운데 <span class="hl">검색창 터치</span></div></div>
+      <div class="sdesc" data-i18n-html="a2d">크롬을 열면 메인 화면에 검색창이 있어요. 그 <b>검색창을 한 번 터치</b>하세요.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#fff" stroke="#DCD2C4" stroke-width="2"/>
+          <!-- Chrome icon -->
+          <rect x="88" y="14" width="44" height="44" rx="11" fill="#EFEFF2" stroke="#E1D9CB"/>
+          <path d="M110 36 L96.5 28.2 A16 16 0 0 1 123.5 28.2 Z" fill="#EA4335"/>
+          <path d="M110 36 L123.5 28.2 A16 16 0 0 1 110 52 Z" fill="#34A853"/>
+          <path d="M110 36 L110 52 A16 16 0 0 1 96.5 28.2 Z" fill="#FBBC05"/>
+          <circle cx="110" cy="36" r="7.2" fill="#fff"/><circle cx="110" cy="36" r="5.5" fill="#4285F4"/>
+          <text x="110" y="74" font-size="11" font-weight="800" fill="#3A2E29" text-anchor="middle">Chrome</text>
+          <path d="M110 80 v12 M104 88 l6 6 l6 -6" stroke="#B7A597" stroke-width="2.3" fill="none" stroke-linecap="round" stroke-linejoin="round"/>
+          <!-- top omnibox -->
+          <rect x="28" y="104" width="140" height="18" rx="9" fill="#F1ECE4"/>
+          <text x="38" y="116" font-size="8.5" fill="#B0A392">boomankim.github.io</text>
+          <g fill="#7A6E68"><circle cx="182" cy="107" r="1.8"/><circle cx="182" cy="113" r="1.8"/><circle cx="182" cy="119" r="1.8"/></g>
+          <!-- center search box -->
+          <rect x="34" y="150" width="152" height="34" rx="17" fill="#fff" stroke="#E1D7C8" stroke-width="1.4"/>
+          <g stroke="#9C8E7F" stroke-width="2" fill="none"><circle cx="56" cy="167" r="4.5"/><line x1="59" y1="170" x2="63" y2="174" stroke-linecap="round"/></g>
+          <text x="72" y="171" font-size="10.5" fill="#B0A392" data-i18n="searchPh">검색 또는 URL 입력</text>
+          <circle class="pring" cx="110" cy="167" r="20" fill="none" stroke="#E23B2E" stroke-width="3"/>
+          <g fill="#EFE7DA"><circle cx="66" cy="214" r="11"/><circle cx="110" cy="214" r="11"/><circle cx="154" cy="214" r="11"/></g>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 3: paste + go -->
+    <div class="step and">
+      <div class="shead"><div class="num">3</div><div class="stitle" data-i18n-html="a2p"><span class="hl">붙여넣기</span> → 이동</div></div>
+      <div class="sdesc" data-i18n-html="a2pd">검색창을 누르면 <b>‘붙여넣기’</b> 창이 떠요. 눌러서 주소를 넣고 이동(→).</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#fff" stroke="#DCD2C4" stroke-width="2"/>
+          <!-- paste bubble -->
+          <rect x="52" y="96" width="116" height="34" rx="10" fill="#2C2C2E"/>
+          <text x="110" y="118" font-size="12" font-weight="700" fill="#fff" text-anchor="middle" data-i18n="paste">붙여넣기</text>
+          <path d="M104 130 l6 7 l6 -7 z" fill="#2C2C2E"/>
+          <!-- focused search field -->
+          <rect x="30" y="150" width="160" height="34" rx="17" fill="#fff" stroke="#1B7F4B" stroke-width="1.8"/>
+          <g stroke="#9C8E7F" stroke-width="2" fill="none"><circle cx="52" cy="167" r="4.5"/><line x1="55" y1="170" x2="59" y2="174" stroke-linecap="round"/></g>
+          <text x="68" y="171" font-size="10" font-weight="700" fill="#1B7F4B">boomankim.github.io/…</text>
+          <!-- go key -->
+          <rect x="150" y="196" width="40" height="26" rx="8" fill="#1B7F4B"/>
+          <text x="170" y="213" font-size="11" font-weight="800" fill="#fff" text-anchor="middle" data-i18n="goKey">이동</text>
+          <circle class="pring" cx="110" cy="113" r="19" fill="none" stroke="#E23B2E" stroke-width="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 3: 3 dots -->
+    <div class="step and">
+      <div class="shead"><div class="num">4</div><div class="stitle" data-i18n-html="a3t">오른쪽 위 <span class="hl">점 3개 (⋮)</span></div></div>
+      <div class="sdesc" data-i18n-html="a3d">크롬 맨 오른쪽 위, 세로로 찍힌 점 세 개.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#fff" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="6" y="6" width="208" height="40" rx="30" fill="#F1ECE4"/><rect x="6" y="26" width="208" height="20" fill="#F1ECE4"/>
+          <rect x="22" y="17" width="150" height="18" rx="9" fill="#fff" stroke="#E1D7C8"/><text x="32" y="30" font-size="9.5" fill="#9C8E7F">boomankim.github.io</text>
+          <g fill="#3A2E29"><circle cx="190" cy="20" r="2.3"/><circle cx="190" cy="27" r="2.3"/><circle cx="190" cy="34" r="2.3"/></g>
+          <circle class="pring" cx="190" cy="27" r="16" fill="none" stroke="#E23B2E" stroke-width="3"/>
+          <rect x="6" y="52" width="208" height="40" fill="#6B1414"/><circle cx="30" cy="72" r="6" fill="#D2453C"/>
+          <text x="42" y="76" font-size="10.5" font-weight="800" fill="#F6EEE4">ALL THAT MEAT</text>
+          <rect x="26" y="108" width="168" height="15" rx="4" fill="#EFE7DA"/>
+          <rect x="34" y="140" width="152" height="34" rx="8" fill="#F6F1E9" stroke="#E4D8C6"/>
+          <text x="110" y="162" font-size="11.5" fill="#B7A597" text-anchor="middle" data-i18n="codeEx">예: AT0042</text>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 4: install menu -->
+    <div class="step and">
+      <div class="shead"><div class="num">5</div><div class="stitle" data-i18n-html="a4t"><span class="hl">‘설치 및 바로가기 만들기’</span></div></div>
+      <div class="sdesc" data-i18n-html="a4d">메뉴 목록에서 이 항목을 누르세요.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#EFEAE2" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="66" y="22" width="146" height="224" rx="14" fill="#fff" stroke="#E4DBCE"/>
+          <text x="84" y="52" font-size="11.5" fill="#2A2320" font-weight="600" data-i18n="mNewTab">새 탭</text>
+          <text x="84" y="84" font-size="11.5" fill="#2A2320" font-weight="600" data-i18n="mHistory">방문 기록</text>
+          <text x="84" y="116" font-size="11.5" fill="#2A2320" font-weight="600" data-i18n="mDownloads">다운로드</text>
+          <rect x="72" y="132" width="134" height="42" rx="9" fill="#E9F4EE"/>
+          <rect x="82" y="145" width="18" height="18" rx="4" fill="#1B7F4B"/><path d="M91 149 v10 M86 154 h10" stroke="#fff" stroke-width="2" stroke-linecap="round"/>
+          <text x="108" y="158" font-weight="800" font-size="10" fill="#111" data-i18n="mInstall">설치 및 바로가기 만들기</text>
+          <text x="84" y="206" font-size="11.5" fill="#2A2320" font-weight="600" data-i18n="mShare">공유</text>
+          <text x="84" y="234" font-size="11.5" fill="#2A2320" font-weight="600" data-i18n="mSettings">설정</text>
+          <circle class="pring" cx="139" cy="154" r="19" fill="none" stroke="#E23B2E" stroke-width="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <!-- 5: install button -->
+    <div class="step and">
+      <div class="shead"><div class="num">6</div><div class="stitle" data-i18n-html="a5t">뜨는 창에서 <span class="hl">‘설치’</span></div></div>
+      <div class="sdesc" data-i18n-html="a5d">앱 미리보기 창이 나오면 <b>‘설치’</b>를 누르세요.</div>
+      <div class="illo">
+        <svg viewBox="0 0 220 300" xmlns="http://www.w3.org/2000/svg">
+          <rect x="6" y="6" width="208" height="288" rx="30" fill="#EFEAE2" stroke="#DCD2C4" stroke-width="2"/>
+          <rect x="24" y="96" width="172" height="120" rx="16" fill="#fff" stroke="#E4DBCE"/>
+          <rect x="40" y="116" width="42" height="42" rx="11" fill="#6B1414"/><circle cx="61" cy="137" r="11" fill="#D2453C"/>
+          <text x="94" y="132" font-size="13" font-weight="800" fill="#2A211D" data-i18n="appName">ATM 주문</text>
+          <text x="94" y="150" font-size="9.5" fill="#9C8E7F">boomankim.github.io</text>
+          <text x="132" y="196" font-size="11" font-weight="700" fill="#8A7D70" text-anchor="end" data-i18n="cancel">취소</text>
+          <rect x="140" y="180" width="48" height="24" rx="12" fill="#1B7F4B"/>
+          <text x="164" y="196" font-size="12" font-weight="800" fill="#fff" text-anchor="middle" data-i18n="install">설치</text>
+          <circle class="pring" cx="164" cy="192" r="18" fill="none" stroke="#E23B2E" stroke-width="3"/>
+        </svg>
+      </div>
+    </div>
+
+    <div class="done">
+      <div class="big" data-i18n="doneBig">🎉 설치 완료!</div>
+      <p data-i18n-html="donePA">홈 화면과 앱 목록에 <b>‘ATM 주문’</b> 아이콘이 생겼어요.<br>이제 이 <b>아이콘</b>으로 여세요.</p>
+    </div>
+  </div>
+
+  <div class="foot">
+    ALL THAT MEAT WHOLESALE PTY LTD<br>
+    <span data-i18n-html="footHelp">잘 안 되면 <b>ATM 사무실 (02 9764 7720)</b>로 문의 주세요.</span>
+  </div>
+
+</div>
+
+<script>
+const I18N = {
+  ko:{
+    title:"주문 앱 설치 안내", sub:"카톡 링크를 열어 홈 화면에 앱으로 설치하는 방법",
+    tIphone:"아이폰", tAndroid:"안드로이드",
+    iLead:"준비 — 카톡 <b>‘나와의 채팅’</b>에 있는 <b>주문 시스템 링크</b>를 준비하세요. 아이폰은 반드시 <b>사파리(Safari)</b>로 여세요.",
+    i1t:"카톡에서 <span class='hl'>링크 복사</span>", i1d:"링크를 손가락으로 <b>꾹 눌러</b> ‘복사’를 누르세요.",
+    i2t:"사파리 주소창에 <span class='hl'>붙여넣기</span>", i2d:"사파리를 열고 <b>주소창을 꾹 눌러</b> ‘붙여넣기’ → 이동(Go).",
+    i3t:"아래 <span class='hl'>공유 버튼</span> 누르기", i3d:"사파리 맨 아래, 네모에 위 화살표(⬆️) 아이콘입니다.",
+    i4t:"아래로 내려 <span class='hl'>‘홈 화면에 추가’</span>", i4d:"공유 창을 <b>아래로 쭉 내려</b> 이 항목을 누르세요.",
+    i5t:"오른쪽 위 <span class='hl'>‘추가’</span>", i5d:"이름이 <b>‘ATM 주문’</b>으로 뜨면 그대로 ‘추가’.",
+    aLead:"준비 — 카톡 <b>‘나와의 채팅’</b>에 있는 <b>주문 시스템 링크</b>를 준비하세요. 안드로이드는 <b>크롬(Chrome)</b>으로 여세요.",
+    a1t:"카톡에서 <span class='hl'>링크 복사</span>", a1d:"링크를 <b>꾹 눌러</b> ‘복사’를 누르세요.",
+    a2t:"크롬 열기 → 가운데 <span class='hl'>검색창 터치</span>", a2d:"크롬을 열면 메인 화면에 검색창이 있어요. 그 <b>검색창을 한 번 터치</b>하세요.",
+    a2p:"<span class='hl'>붙여넣기</span> → 이동", a2pd:"검색창을 누르면 <b>‘붙여넣기’</b> 창이 떠요. 눌러서 주소를 넣고 이동(→).",
+    a3t:"오른쪽 위 <span class='hl'>점 3개 (⋮)</span>", a3d:"크롬 맨 오른쪽 위, 세로로 찍힌 점 세 개.",
+    a4t:"<span class='hl'>‘설치 및 바로가기 만들기’</span>", a4d:"메뉴 목록에서 이 항목을 누르세요.",
+    a5t:"뜨는 창에서 <span class='hl'>‘설치’</span>", a5d:"앱 미리보기 창이 나오면 <b>‘설치’</b>를 누르세요.",
+    doneBig:"🎉 설치 완료!",
+    doneP:"홈 화면에 <b>‘ATM 주문’</b> 아이콘이 생겼어요.<br>이제 사파리 말고 <b>이 아이콘</b>으로 여세요.",
+    donePA:"홈 화면과 앱 목록에 <b>‘ATM 주문’</b> 아이콘이 생겼어요.<br>이제 이 <b>아이콘</b>으로 여세요.",
+    footHelp:"잘 안 되면 <b>ATM 사무실 (02 9764 7720)</b>로 문의 주세요.",
+    // svg labels
+    kkTitle:"나와의 채팅", linkName:"ATM 주문 시스템", copy:"복사", paste:"붙여넣기",
+    codeEx:"예: AT0042", copyRow:"복사", favRow:"즐겨찾기에 추가", addHome:"홈 화면에 추가", bmRow:"책갈피 추가",
+    cancel:"취소", sheetTitle:"홈 화면에 추가", add:"추가", appName:"ATM 주문",
+    mNewTab:"새 탭", mHistory:"방문 기록", mDownloads:"다운로드", mInstall:"설치 및 바로가기 만들기", mShare:"공유", mSettings:"설정", install:"설치",
+    searchPh:"검색 또는 URL 입력", goKey:"이동"
+  },
+  en:{
+    title:"Install the Order App", sub:"How to add the order system to your home screen",
+    tIphone:"iPhone", tAndroid:"Android",
+    iLead:"Get ready — have the <b>order system link</b> (sent via KakaoTalk) ready. On iPhone, always use <b>Safari</b>.",
+    i1t:"<span class='hl'>Copy the link</span> in KakaoTalk", i1d:"Press and <b>hold the link</b>, then tap “Copy”.",
+    i2t:"<span class='hl'>Paste</span> into Safari", i2d:"Open Safari, <b>long-press the address bar</b>, tap “Paste” → Go.",
+    i3t:"Tap the <span class='hl'>Share button</span>", i3d:"The square-with-up-arrow (⬆️) icon at the bottom of Safari.",
+    i4t:"Scroll to <span class='hl'>“Add to Home Screen”</span>", i4d:"<b>Scroll down</b> in the share sheet and tap it.",
+    i5t:"Tap <span class='hl'>“Add”</span> (top right)", i5d:"When the name shows <b>“ATM Order”</b>, tap “Add”.",
+    aLead:"Get ready — have the <b>order system link</b> (sent via KakaoTalk) ready. On Android, use <b>Chrome</b>.",
+    a1t:"<span class='hl'>Copy the link</span> in KakaoTalk", a1d:"Press and <b>hold the link</b>, then tap “Copy”.",
+    a2t:"Open Chrome → tap the <span class='hl'>search box</span>", a2d:"When Chrome opens, there’s a search box on the home screen. <b>Tap that search box.</b>",
+    a2p:"<span class='hl'>Paste</span> → Go", a2pd:"Tapping it shows a <b>“Paste”</b> bubble. Tap it, then go (→).",
+    a3t:"Tap the <span class='hl'>3 dots (⋮)</span>", a3d:"Top-right of Chrome, three vertical dots.",
+    a4t:"Tap <span class='hl'>“Install app”</span>", a4d:"Find and tap this item in the menu.",
+    a5t:"Tap <span class='hl'>“Install”</span>", a5d:"When the preview appears, tap <b>“Install”</b>.",
+    doneBig:"🎉 Done!",
+    doneP:"The <b>“ATM Order”</b> icon is now on your home screen.<br>From now on, open it from <b>this icon</b> — not Safari.",
+    donePA:"The <b>“ATM Order”</b> icon is now on your home screen and app list.<br>From now on, open it from <b>this icon</b>.",
+    footHelp:"Need help? Call the <b>ATM office (02 9764 7720)</b>.",
+    kkTitle:"My Chat", linkName:"ATM Order System", copy:"Copy", paste:"Paste",
+    codeEx:"e.g. AT0042", copyRow:"Copy", favRow:"Add to Favourites", addHome:"Add to Home Screen", bmRow:"Add Bookmark",
+    cancel:"Cancel", sheetTitle:"Add to Home Screen", add:"Add", appName:"ATM Order",
+    mNewTab:"New tab", mHistory:"History", mDownloads:"Downloads", mInstall:"Install app", mShare:"Share", mSettings:"Settings", install:"Install",
+    searchPh:"Search or type URL", goKey:"Go"
+  }
+};
+
+let lang="ko";
+function applyLang(){
+  document.querySelectorAll("[data-i18n]").forEach(el=>{
+    const k=el.getAttribute("data-i18n");
+    const v=I18N[lang][k]; if(v!==undefined) el.textContent=v;
+  });
+  document.querySelectorAll("[data-i18n-html]").forEach(el=>{
+    const k=el.getAttribute("data-i18n-html");
+    const v=I18N[lang][k]; if(v!==undefined) el.innerHTML=v;
+  });
+  document.documentElement.lang = lang;
+}
+function setLang(l){
+  lang=l;
+  document.getElementById("lKo").classList.toggle("on", l==="ko");
+  document.getElementById("lEn").classList.toggle("on", l==="en");
+  applyLang();
+}
+function show(which){
+  const isIos = which==="ios";
+  document.getElementById("ios").classList.toggle("hidden", !isIos);
+  document.getElementById("and").classList.toggle("hidden", isIos);
+  document.getElementById("btnIos").classList.toggle("on", isIos);
+  document.getElementById("btnAnd").classList.toggle("on", !isIos);
+  window.scrollTo({top:0, behavior:"smooth"});
+}
+applyLang();
+</script>
+</body>
+</html>
