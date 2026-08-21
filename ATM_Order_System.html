@@ -1886,10 +1886,11 @@ function viewHome() {
     </div>
 
     <div class="card">
-      <h3>🥩 오늘의 작업육
-        <span style="font-weight:400; font-size:12px; color:var(--muted);">— 작업 필요 품목</span>
+      <h3>📦 오늘 배송 LIST
+        <span style="font-weight:400; font-size:12px; color:var(--muted);">— 거래처별 전품목 · 🥩 작업육 강조</span>
         <span style="float:right;">
-          <button id="workViewCustBtn" class="btn sm" onclick="setTodayWorkView('cust')">👥 거래처별</button>
+          <button id="workViewAllBtn" class="btn sm" onclick="setTodayWorkView('all')">📋 전체</button>
+          <button id="workViewCustBtn" class="btn sm secondary" onclick="setTodayWorkView('cust')">🥩 거래처별 작업육</button>
           <button id="workViewProdBtn" class="btn sm secondary" onclick="setTodayWorkView('prod')">📦 품목별</button>
         </span>
       </h3>
@@ -1930,16 +1931,18 @@ function viewHome() {
 }
 
 // ⭐ (2026-07-28) 홈 오늘의 작업/배송 뷰 모드 상태
-window._todayWorkView = window._todayWorkView || 'cust';       // 'cust' | 'prod'
+// ⭐ (2026-08-21) 'all' 뷰 추가 · 거래처별 전품목 (작업육 색상 강조) · 기본값
+window._todayWorkView = window._todayWorkView || 'all';       // 'all' | 'cust' | 'prod'
 window._todayDeliveryView = window._todayDeliveryView || 'cust';
 
 window.setTodayWorkView = function(mode) {
   window._todayWorkView = mode;
-  ['workViewCustBtn','workViewProdBtn'].forEach(function(id){
+  ['workViewAllBtn','workViewCustBtn','workViewProdBtn'].forEach(function(id){
     const el = document.getElementById(id);
     if (el) el.classList.add('secondary');
   });
-  const active = document.getElementById(mode === 'cust' ? 'workViewCustBtn' : 'workViewProdBtn');
+  const activeId = mode === 'all' ? 'workViewAllBtn' : (mode === 'cust' ? 'workViewCustBtn' : 'workViewProdBtn');
+  const active = document.getElementById(activeId);
   if (active) active.classList.remove('secondary');
   renderProcessingToday();
 };
@@ -2023,7 +2026,89 @@ function renderProcessingToday() {
     div.innerHTML = html;
     return;
   }
-  // 이하 거래처별 뷰 (기존)
+  // ⭐ (2026-08-21) 'all' 뷰 — 거래처별 전품목 · 작업육 색상 강조
+  if (window._todayWorkView === 'all') {
+    const bucketOrdersAll = { today: [], tomorrow: [] };
+    DB.orders.forEach(o => {
+      const dDate = (o.deliveryDate || '').slice(0,10);
+      let bucket;
+      if (dDate === today) bucket = 'today';
+      else if (dDate === tomorrow) bucket = 'tomorrow';
+      else return;
+      const allItems = (o.items || []);
+      if (allItems.length === 0) return;
+      bucketOrdersAll[bucket].push({ order: o, items: allItems });
+    });
+    ['today','tomorrow'].forEach(k => {
+      bucketOrdersAll[k].sort((a,b) => (a.order.createdAt || '').localeCompare(b.order.createdAt || ''));
+    });
+    const hasAny2 = bucketOrdersAll.today.length > 0 || bucketOrdersAll.tomorrow.length > 0;
+    if (!hasAny2) {
+      div.innerHTML = '<div class="empty" style="padding:24px;"><div class="icon">📦</div>오늘·내일 배송 예정 주문이 없습니다.</div>';
+      return;
+    }
+    function renderBucketAll(label, color, entries) {
+      if (entries.length === 0) return '';
+      const totalOrders = entries.length;
+      const totalItems = entries.reduce((s, e) => s + e.items.length, 0);
+      const totalWork = entries.reduce((s, e) => s + e.items.filter(it => {
+        const p = DB.products.find(x => x.id === it.productId);
+        return p && (p.cut === '작업육' || (p.name || '').includes('작업'));
+      }).length, 0);
+      let html = ''
+        + '<div style="margin:14px 0 8px; display:flex; justify-content:space-between; align-items:baseline; border-bottom:2px solid ' + color + '; padding-bottom:5px;">'
+        +   '<h4 style="margin:0; color:' + color + '; font-size:14px;">' + label + '</h4>'
+        +   '<span style="font-size:11px; color:var(--muted);">주문 ' + totalOrders + '건 · 품목 ' + totalItems + '건 · 🥩 작업 ' + totalWork + '건</span>'
+        + '</div>';
+      entries.forEach((e, idx) => {
+        const o = e.order;
+        const c = DB.customers.find(x => x.id === o.customerId);
+        const timeStr = (o.createdAt || '').slice(11,16);
+        html += ''
+          + '<div style="margin-bottom:8px; padding:8px 12px; background:#FBF8F4; border-radius:6px; border-left:3px solid ' + color + '; page-break-inside:avoid;">'
+          +   '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">'
+          +     '<b style="font-size:13px; color:var(--brand-dark);">' + (idx+1) + '. 🏪 ' + (c ? c.name : '(거래처 없음)') + '</b>'
+          +     '<span style="font-size:10px; color:var(--muted);">📥 ' + timeStr + ' · #' + (o.orderNo || '') + '</span>'
+          +   '</div>'
+          +   '<div style="padding-left:14px;">'
+          +     e.items.map(it => {
+                  const p = DB.products.find(x => x.id === it.productId);
+                  const pName = p ? p.name : '(품목없음)';
+                  const pBrand = p ? p.brand : '';
+                  const isWork = p && (p.cut === '작업육' || (p.name || '').includes('작업'));
+                  const orderDisp = it.unit === '작업중량' ? (it.quantity + ' kg') : (it.quantity + ' ' + it.unit);
+                  const noteHtml = it.notes ? ' <span style="color:var(--brand-dark); font-weight:600; font-size:11px;">📝 ' + it.notes + '</span>' : '';
+                  // 작업육이면 노란 배경 + 왼쪽 진한 라인
+                  const rowStyle = isWork
+                    ? 'background:#FFF9C4; border-left:3px solid #F57F17; padding:3px 8px; margin:2px 0; border-radius:3px;'
+                    : 'padding:2px 8px;';
+                  const workBadge = isWork ? '<span style="background:#F57F17; color:#fff; font-size:9px; padding:1px 5px; border-radius:2px; margin-right:4px; font-weight:700;">🥩 작업</span>' : '';
+                  return '<div style="font-size:12px; line-height:1.6; ' + rowStyle + '">'
+                    + workBadge
+                    + '· <b>' + pName + '</b> '
+                    + '<span style="color:var(--muted); font-size:11px;">' + pBrand + '</span>'
+                    + ' — <b style="color:var(--brand);">' + orderDisp + '</b>'
+                    + noteHtml
+                    + '</div>';
+                }).join('')
+          +   '</div>'
+          + '</div>';
+      });
+      return html;
+    }
+    let htmlAll = ''
+      + '<div style="display:flex; justify-content:flex-end; margin-bottom:8px;" class="no-print">'
+      +   '<button class="btn sm" onclick="printProcessingToday()" style="background:var(--info); color:#fff; padding:6px 14px; font-size:12px;">🖨️ 인쇄</button>'
+      + '</div>'
+      + '<div id="procTodayPrintArea">'
+      +   renderBucketAll('📅 오늘 (' + today + ') 배송 LIST', '#C62828', bucketOrdersAll.today)
+      +   renderBucketAll('🌅 내일 (' + tomorrow + ') 배송 LIST', '#1565C0', bucketOrdersAll.tomorrow)
+      + '</div>';
+    div.innerHTML = htmlAll;
+    return;
+  }
+
+  // 이하 거래처별 뷰 (기존 · 작업육만 필터)
 
   // ⭐ (2026-08-17) 재구성: 인쇄용 리스트
   //   - 입력칸/상태 pill 제거 → 거래처 + 품목 나열만
@@ -9115,10 +9200,21 @@ BANK_CSV.extractDescriptionFields = function(descr) {
 
   // 5b) 흔한 노이즈 토큰 제거 — 은행 앱이 붙이는 것들
   //     " ATM " (수신은행 ATM 접미), "MS ", "MR ", "MRS " (경칭), 날짜 조각 등
+  // ⭐ (2026-08-21) 매칭 정확도 강화 · 상호 식별에 무의미한 가변/일회성 토큰 대거 제거
   d = d.replace(/\bATM\b/g, ' ');
   d = d.replace(/\b(MS|MR|MRS|DR)\s+/g, ' ');
   d = d.replace(/\b\d{2}\/\d{2}\/\d{2,4}\b/g, ' '); // 날짜 조각
   d = d.replace(/\b\d{1,2}\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b/ig, ' ');
+  // ⭐ 은행 시스템 코드 · 결제 유형 잔재 (매칭에 무의미)
+  d = d.replace(/\b(TRF|EFT|DEP|PAYID|PAYID PAYMENT|OSKO|NPP|BPAY|CBA|NAB|WBC|ANZ|SUNCORP|CBAX)\b/ig, ' ');
+  d = d.replace(/\b(PAYMENT|TRANSFER|DEPOSIT|CREDIT|DEBIT|FROM|TO)\b/ig, ' ');
+  // ⭐ 카드 마스크 (예: ****1234, XXXX1234)
+  d = d.replace(/\b[X\*]{2,}\d{2,4}\b/g, ' ');
+  // ⭐ 시간 패턴 (10:38, 10:38:45)
+  d = d.replace(/\b\d{1,2}:\d{2}(:\d{2})?\b/g, ' ');
+  // ⭐ 순수 6자리 이상 숫자열 (거래 reference · session · timestamp · 계좌번호 조각 등)
+  //   — 상호 식별에 무의미. 4~5자리는 인보이스번호일 수 있어 남김 (위에서 이미 추출됨)
+  d = d.replace(/\b\d{6,}\b/g, ' ');
   d = d.replace(/\s+/g, ' ').trim();
   d = d.replace(/[,;]\s*$/, ''); // 트레일링 콤마
   out.cleaned = d;
@@ -9200,7 +9296,9 @@ BANK_CSV.matchCustomer = function(fields) {
   const biz = norm(fields.businessGuess);
   const full = norm((fields.senderName || '') + ' ' + (fields.businessGuess || ''));
 
-  let best = null;
+  // ⭐ (2026-08-21) 모든 후보 스코어 수집 후 · 격차 검증
+  //   best 와 second 가 격차 10 이하로 붙어 있으면 애매 → 신뢰도 강제 낮춤 (오매칭 방지)
+  const candidates = [];
   for (const c of customers) {
     const name = norm(c.name);
     const contact = norm(c.contact);
@@ -9229,9 +9327,24 @@ BANK_CSV.matchCustomer = function(fields) {
       if (hits >= 2) { score = Math.max(score, 70); reasons.push('단어 2+개'); }
       else if (hits === 1 && nameWords.length === 1) { score = Math.max(score, 60); reasons.push('단일단어'); }
     }
-    if (score > 0 && (!best || score > best.score)) {
-      best = { cid: c.id, custName: c.name, score, reason: reasons.join(', ') };
+    if (score > 0) {
+      candidates.push({ cid: c.id, custName: c.name, score, reason: reasons.join(', ') });
     }
+  }
+  if (candidates.length === 0) return null;
+  candidates.sort((a, b) => b.score - a.score);
+  const best = candidates[0];
+  const second = candidates[1];
+  // ⭐ 격차 검증 · 정확일치(100) · 학습맵 · 코드일치(95) 는 격차 무관
+  //   그 외엔 second 와 격차 15 이상이어야 자동확정 · 아니면 30% 감점 (오매칭 방지)
+  if (second && best.score < 95 && (best.score - second.score) < 15) {
+    const penalized = Math.max(50, Math.floor(best.score * 0.7));
+    return {
+      cid: best.cid,
+      custName: best.custName,
+      score: penalized,
+      reason: best.reason + ' · ⚠ 애매 (2등 ' + second.custName + ' ' + second.score + '점)'
+    };
   }
   return best;
 };
@@ -17375,13 +17488,14 @@ if (FIREBASE_READY && DB_REF) {
     if (banner) banner.remove();
     banner = document.createElement('div');
     banner.id = 'sync-banner';
+    // ⭐ (2026-08-21) 위치 · 우상단(top:60px) → 우측 세로 중앙 · Logout·어드민 버튼 가림 방지
     const baseStyle =
-      'position:fixed; top:60px; right:12px; ' +
-      'padding:8px 14px; border-radius:20px; ' +
+      'position:fixed; top:50%; right:12px; transform:translateY(-50%); ' +
+      'padding:10px 16px; border-radius:22px; ' +
       'font-size:12px; font-weight:600; ' +
       'z-index:9999; cursor:pointer; ' +
-      'box-shadow:0 3px 10px rgba(0,0,0,0.25); ' +
-      'max-width:360px; ' +
+      'box-shadow:0 4px 14px rgba(0,0,0,0.30); ' +
+      'max-width:280px; ' +
       'animation: syncPillIn 0.25s ease-out; ' +
       'user-select:none;';
     if (isEditing) {
