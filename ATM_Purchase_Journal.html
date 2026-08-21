@@ -893,9 +893,10 @@ function renderMainTable(){
   try {
     const purchCount = (store.purchases || []).filter(function(p){ return p.date === CURRENT_DATE; }).length;
     const payCount = (store.payments || []).filter(function(p){ return p.date === CURRENT_DATE; }).length;
-    const unpaidCount = vendors.filter(function(v){
-      const r = computeVendorRow(v.id, CURRENT_DATE);
-      return r.currentUnpaid > 0.005;
+    // ⭐ (2026-08-21 fix) 미지급 "업체 수" → "개별 미지급 매입 인보이스 수" 로 변경
+    //   업체 하나에 미지급 인보이스가 여러 건이면 각각 카운트 · 실제 처리 대상 개수 표시
+    const unpaidCount = (store.purchases || []).filter(function(p){
+      return computePurchaseUnpaid(p) > 0.005;
     }).length;
     const bP = document.getElementById('badgePurch');
     const bY = document.getElementById('badgePay');
