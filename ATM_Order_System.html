@@ -3902,11 +3902,47 @@ window.toggleProductActive = function(pid) {
 };
 
 function delProduct(id) {
-  if (!confirm('이 품목을 삭제하시겠습니까?')) return;
+  // ⭐ (2026-08-22 B-3) 품목 삭제 전 사용중 검사 · 진행 중 주문·최근 주문에 사용됐으면 경고
+  //   목적 · 삭제 후 계근 화면 렌더에서 "삭제됨" 라인으로 표시되어 혼란 유발 방지
+  const p = DB.products.find(x => x.id === id);
+  const productName = p ? p.name : '(품목)';
+  // 사용중 주문 검색 (진행 중 · 최근 30일)
+  const now = Date.now();
+  const cutoff = now - 30 * 24 * 3600 * 1000;
+  const activeOrders = [];
+  const recentDeliveredOrders = [];
+  (DB.orders || []).forEach(o => {
+    if (!o || !Array.isArray(o.items)) return;
+    if (!o.items.some(it => it.productId === id)) return;
+    // 진행 중 · 미완료 상태
+    if (['new', 'weighing', 'weighed', 'invoiced'].includes(o.status)) {
+      activeOrders.push(o);
+      return;
+    }
+    // 최근 30일 배송완료
+    const dt = new Date(o.deliveryDate || o.orderDate || 0).getTime();
+    if (dt >= cutoff && o.status === 'delivered') {
+      recentDeliveredOrders.push(o);
+    }
+  });
+  let warnMsg = '';
+  if (activeOrders.length > 0) {
+    warnMsg += '⚠ 진행 중인 주문 ' + activeOrders.length + '건에서 사용 중\n';
+    warnMsg += '   (' + activeOrders.slice(0, 3).map(o => o.orderNo).join(', ') + (activeOrders.length > 3 ? ' 외' : '') + ')\n';
+  }
+  if (recentDeliveredOrders.length > 0) {
+    warnMsg += '⚠ 최근 30일 배송완료 주문 ' + recentDeliveredOrders.length + '건에서 사용\n';
+  }
+  if (warnMsg) {
+    if (!confirm('❗ 「' + productName + '」 삭제 경고\n\n' + warnMsg + '\n삭제 시 · 위 주문들의 계근·인보이스 화면에 "삭제됨" 라인으로 표시됩니다.\n\n정말 삭제할까요?\n(대안 · 삭제 대신 비활성 상태로 두기 권장)')) return;
+  } else {
+    if (!confirm('이 품목을 삭제하시겠습니까?\n\n「' + productName + '」\n\n사용 중인 주문 없음.')) return;
+  }
   DB.products = DB.products.filter(p => p.id !== id);
   // Phase 2 동시성: 트랜잭션으로 안전하게 품목 제거
   removeEntityFromFirebase('products', id);
   saveLocalDB();
+  try { auditLogAdd('품목 삭제: ' + productName + (activeOrders.length + recentDeliveredOrders.length > 0 ? ' (사용중 ' + (activeOrders.length + recentDeliveredOrders.length) + '건)' : '')); } catch(_){}
   renderProductsAdmin();
 }
 
@@ -6461,8 +6497,10 @@ function renderCart() {
     div.innerHTML = CART.map((item, idx) => {
       const p = DB.products.find(x => x.id === item.productId);
       const pName = p ? p.name : '(품목없음)';
-      const qtyStr = (item.quantity == null || item.quantity === '' || isNaN(item.quantity))
-        ? '<span style="color:var(--warn); font-weight:600;">수량?</span>'
+      // ⭐ (2026-08-22 A-2) 수량 미입력 항목 · 빨간 배경 + ⚠ 배지 로 강조
+      const isEmpty = (item.quantity == null || item.quantity === '' || isNaN(item.quantity) || Number(item.quantity) <= 0);
+      const qtyStr = isEmpty
+        ? '<span style="color:#fff; font-weight:700; background:#C62828; padding:2px 7px; border-radius:4px; font-size:11px;">⚠ 수량 미입력</span>'
         : parseFloat(item.quantity) + ' ' + (unitDisp[item.unit] || '박스');
       const notesTag = item.notes ? ' <small style="color:var(--brand-dark); background:#FFF5D6; padding:1px 5px; border-radius:6px; font-size:10px;">📝 ' + escapeHtmlSimple(item.notes) + '</small>' : '';
       const isExpanded = window._expandedCartIdx === idx;
@@ -6470,13 +6508,15 @@ function renderCart() {
         ? `<button class="cart-edit-btn" onclick="event.stopPropagation(); openCartEditModal(${idx})" style="background:#5C0F0F; color:#fff; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:600; margin-right:4px;">✎ 수정</button>
            <button class="cart-del-btn" onclick="event.stopPropagation(); confirmCartDelete(${idx})" style="background:#C62828; color:#fff; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:600;">🗑 삭제</button>`
         : `<span style="color:var(--muted); font-size:11px;">탭</span>`;
-      const rowBg = isExpanded ? '#FFF3C4' : '#FFFCF3';
-      const rowBorder = isExpanded ? '#E8A317' : '#F0D89A';
+      // 미입력 항목은 빨간 배경 + 빨간 좌측 라인 (확장 상태보다 우선)
+      const rowBg = isEmpty ? '#FFEBEE' : (isExpanded ? '#FFF3C4' : '#FFFCF3');
+      const rowBorder = isEmpty ? '#C62828' : (isExpanded ? '#E8A317' : '#F0D89A');
+      const emptyLeftBar = isEmpty ? 'border-left:4px solid #C62828;' : '';
       return `
         <div class="cart-row-compact"
              onclick="event.stopPropagation(); toggleCartRowExpand(${idx})"
-             style="display:flex; align-items:center; gap:6px; padding:6px 8px; background:${rowBg}; border:0.5px solid ${rowBorder}; border-radius:5px; margin-bottom:3px; cursor:pointer; min-height:28px; transition:background 0.12s;">
-          <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:500; font-size:13px; color:var(--ink);">${escapeHtmlSimple(pName)}${notesTag}</span>
+             style="display:flex; align-items:center; gap:6px; padding:6px 8px; background:${rowBg}; border:0.5px solid ${rowBorder}; ${emptyLeftBar} border-radius:5px; margin-bottom:3px; cursor:pointer; min-height:28px; transition:background 0.12s;">
+          <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:${isEmpty?'700':'500'}; font-size:13px; color:${isEmpty?'#C62828':'var(--ink)'};">${escapeHtmlSimple(pName)}${notesTag}</span>
           <span style="color:#5C0F0F; font-weight:700; font-size:13px; white-space:nowrap;">${qtyStr}</span>
           <span style="display:flex; align-items:center; margin-left:4px;">${revealHtml}</span>
         </div>
@@ -6588,6 +6628,27 @@ window.openCartEditModal = function(idx) {
 };
 
 window.closeCartEditModal = function() {
+  // ⭐ (2026-08-22 A-1) 취소·Esc·바깥클릭으로 닫을 때 · 아직 수량 미입력 신규 아이템이라면 CART 에서 자동 제거
+  //   목적 · 즐겨찾기 클릭으로 담자마자 모달 뜨는데 · 취소로 닫으면 quantity=null 상태로 남아 loss 유발
+  //   → 취소 = 담기 안 함 으로 해석 · 자동 청소
+  try {
+    const idx = window._editCartIdx;
+    if (idx != null && idx >= 0 && idx < CART.length) {
+      const it = CART[idx];
+      if (it && (it.quantity == null || it.quantity === '' || isNaN(it.quantity) || Number(it.quantity) <= 0)) {
+        CART.splice(idx, 1);
+        window._expandedCartIdx = null;
+        try { _autoSaveCurrentCartDraft(); } catch(_){}
+        try { renderCart(); } catch(_){}
+        // 즐겨찾기 카드 "🛒 N" 배지 갱신
+        try {
+          const _cid = _getCurrentOrderCustId();
+          const _cust = _cid ? DB.customers.find(c => c.id === _cid) : null;
+          if (_cust && typeof renderFavQuick === 'function') renderFavQuick(_cust);
+        } catch(_){}
+      }
+    }
+  } catch(_){}
   const m = document.getElementById('cartEditModal');
   if (m) m.remove();
   window._editCartIdx = null;
@@ -7109,8 +7170,11 @@ async function submitOrder(custId, deliveryDateISO) {
         if (custForFav) saveEntityField('customers', custId, 'favoritePairs');
         finish(true);
       } else {
-        // 트랜잭션 실패 시 전체 저장으로 폴백
-        DB_REF.set(DB).then(() => finish(true)).catch(() => finish(false));
+        // ⭐ (2026-08-22 C-1) 트랜잭션 실패 시 전체 덮어쓰기 fallback 제거
+        //   위험 · DB_REF.set(DB) 는 다른 기기가 방금 저장한 주문·크레딧·입금을 모두 날려버림
+        //   개선 · 실패를 그대로 finish(false) 로 전달 → 사용자에게 재시도 안내
+        console.warn('[submitOrder] transaction failed, error:', error);
+        finish(false);
       }
     });
   });
@@ -7119,9 +7183,37 @@ async function submitOrder(custId, deliveryDateISO) {
   const okBtn = document.getElementById('submitOkBtn');
 
   if (delivered) {
+    // ⭐ (2026-08-22 A-3) 성공 화면에 품목 개수 명시 · 직원이 눈으로 즉시 확인 가능
+    const _itemCount = Array.isArray(order.items) ? order.items.length : 0;
+    // ⭐ (2026-08-22 C-2) 저장 확인 라운드트립 · Firebase 에 실제로 저장된 items 개수 검증
+    //   비동기로 조회 · 로컬 CART 개수와 다르면 감사로그 + 경고 알림
+    if (DB_REF && submissionId) {
+      (async () => {
+        try {
+          const snap = await DB_REF.child('orders').once('value');
+          const list = snap.val() || [];
+          const arr = Array.isArray(list) ? list : Object.values(list);
+          const saved = arr.find(o => o && (o.submissionId === submissionId || o.id === order.id));
+          if (saved) {
+            const savedCount = Array.isArray(saved.items) ? saved.items.length : 0;
+            if (savedCount !== _itemCount) {
+              console.warn('[C-2] items count mismatch · local=' + _itemCount + ' saved=' + savedCount);
+              try { auditLogAdd('⚠ 주문 items 개수 불일치: ' + order.orderNo + ' · 로컬 ' + _itemCount + '개 vs 저장 ' + savedCount + '개'); } catch(_){}
+              // 사용자에게 배너 알림
+              try {
+                if (typeof showToast === 'function') {
+                  showToast('⚠ 주문 저장은 성공했지만 · 품목 개수가 로컬(' + _itemCount + ')과 서버(' + savedCount + ') 가 다릅니다. 사무실에서 확인해주세요.', 8000);
+                }
+              } catch(_){}
+            }
+          }
+        } catch(e) { console.warn('[C-2] verify failed:', e); }
+      })();
+    }
     if (stateEl) stateEl.innerHTML =
       '<div style="font-size:44px; line-height:1; margin-bottom:10px;">✅</div>' +
       '<div style="font-size:17px; font-weight:700; color:#2E7D32;">주문이 정상 접수되었습니다</div>' +
+      '<div style="font-size:14px; font-weight:700; color:#5C0F0F; margin-top:8px; background:#FFF3C4; padding:6px 14px; border-radius:6px; display:inline-block;">📦 총 ' + _itemCount + '개 품목</div>' +
       '<div style="font-size:12px; color:var(--muted); margin-top:7px;">주문번호: ' + order.orderNo + '</div>';
     if (okBtn) {
       okBtn.disabled = false;
@@ -7454,9 +7546,16 @@ function viewWeigh(params) {
     saveEntityField('orders', order.id, 'status');
   }
   const app = document.getElementById('app');
+  // ⭐ (2026-08-22 B-1) 원본 주문 개수 · 삭제된 품목 감지
+  const _totalItems = Array.isArray(order.items) ? order.items.length : 0;
+  const _missingItems = (order.items || []).filter(it => !DB.products.find(x => x.id === it.productId)).length;
+  const _itemsBadge = _missingItems > 0
+    ? `<span style="display:inline-block; margin-left:10px; font-size:13px; padding:3px 10px; background:#FFEBEE; color:#C62828; border-radius:12px; border:1px solid #C62828; font-weight:700;">📦 원본 ${_totalItems}개 · ⚠ 삭제된 품목 ${_missingItems}개</span>`
+    : `<span style="display:inline-block; margin-left:10px; font-size:13px; padding:3px 10px; background:#E8F5E9; color:#2E7D32; border-radius:12px; border:1px solid #2E7D32; font-weight:700;">📦 원본 ${_totalItems}개</span>`;
   app.innerHTML = `
     <h2 class="page-title">⚖️ ${order.orderNo}
-      <span style="display:inline-block; font-size:22px; font-weight:800; color:var(--brand-dark); margin-left:14px; padding:2px 12px; background:#FFF5D6; border-radius:6px; border:2px solid #E8A317;">🏪 ${cust?cust.name:'-'}</span></h2>
+      <span style="display:inline-block; font-size:22px; font-weight:800; color:var(--brand-dark); margin-left:14px; padding:2px 12px; background:#FFF5D6; border-radius:6px; border:2px solid #E8A317;">🏪 ${cust?cust.name:'-'}</span>
+      ${_itemsBadge}</h2>
     <div class="card">
       <div style="display:flex; gap:14px; flex-wrap:wrap; margin-bottom:12px; padding:10px 14px; background:var(--cream); border-radius:8px; font-size:13px;">
         <div>🗓️ <b>주문일</b> ${new Date(order.orderDate).toLocaleString('ko-KR')}</div>
@@ -7480,7 +7579,9 @@ function viewWeigh(params) {
             const orderDisplay = it.unit === '작업중량'
               ? `<b>${it.quantity} kg</b> <small style="color:var(--muted);">작업</small>`
               : `${it.quantity} ${it.unit}`;
-            const pName  = p ? p.name  : `(ID: ${it.productId.slice(0,12)}…)`;
+            // ⭐ (2026-08-22 B-2) 삭제된 품목 · 빨간 배경 + "삭제됨" 뱃지 로 명시 (숨기지 않음)
+            const isDeleted = !p;
+            const pName  = p ? p.name  : `⚠ 삭제된 품목 (원본 ID: ${(it.productId||'').slice(0,12)}…)`;
             const pBrand = p ? p.brand : '';
             const pCut   = p ? p.cut   : '';
             const itemNote = it.notes
@@ -7488,8 +7589,11 @@ function viewWeigh(params) {
               : '';
             // ⭐ (2026-08-01) 창고↔사무실 메모 — 별도 행 대신 주문 옆 컬럼으로 이동 (한 줄 압축)
             const wmValueAttr = (it.warehouseMemo || '').replace(/&/g,'&amp;').replace(/"/g,'&quot;').replace(/</g,'&lt;');
-            return `<tr>
-              <td><b>${pName}</b><br><small style="color:var(--muted);">${pBrand}${pBrand&&pCut?' · ':''}${pCut}</small>${itemNote}</td>
+            const rowStyle = isDeleted ? ' style="background:#FFEBEE;"' : '';
+            const nameColor = isDeleted ? '#C62828' : 'inherit';
+            const delBadge = isDeleted ? '<span style="display:inline-block; margin-right:6px; padding:1px 6px; background:#C62828; color:#fff; font-size:10px; border-radius:3px; font-weight:700;">삭제됨</span>' : '';
+            return `<tr${rowStyle}>
+              <td>${delBadge}<b style="color:${nameColor};">${pName}</b><br><small style="color:var(--muted);">${pBrand}${pBrand&&pCut?' · ':''}${pCut}</small>${itemNote}</td>
               <td style="white-space:nowrap;">${orderDisplay}</td>
               <td>
                 <input type="text" value="${wmValueAttr}"
@@ -7522,7 +7626,7 @@ function viewWeigh(params) {
   `;
   renderWeighingTotal(order);
 }
-function completeWeighing(orderId) {
+async function completeWeighing(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   const missing = o.items.filter(i => i.actualWeightKg == null || i.actualWeightKg <= 0);
   if (missing.length > 0) {
@@ -7530,8 +7634,40 @@ function completeWeighing(orderId) {
   }
   o.status = 'weighed';
   o.weighedAt = new Date().toISOString();
-  // Phase 2 동시성: 다른 주문 작업과 충돌 없이 status+weighedAt 동시 업데이트
-  saveEntityFields('orders', orderId, { status: o.status, weighedAt: o.weighedAt });
+  saveLocalDB();
+  // ⭐ (2026-08-22 밤4 fix) Firebase 저장 완료 대기 후 라우팅
+  //   이전 · saveEntityFields (fire-and-forget) 호출 즉시 alert + 라우팅 → 사무실 진입 시
+  //   Firebase sync 아직 안 됐으면 · 다른 세션에서 열린 사무실이 오래된 캐시로 렌더 · 안 뜸.
+  //   해결 · 직접 원자적 update 로 저장 완료 확인 후 라우팅
+  if (DB_REF) {
+    try {
+      _lastSaveTime = Date.now();
+      const snap = await DB_REF.child('orders').once('value');
+      const serverList = snap.val();
+      let idx = -1;
+      if (Array.isArray(serverList)) {
+        idx = serverList.findIndex(x => x && x.id === orderId);
+      } else if (serverList && typeof serverList === 'object') {
+        Object.keys(serverList).forEach(k => {
+          if (serverList[k] && serverList[k].id === orderId) idx = Number(k);
+        });
+      }
+      if (idx >= 0) {
+        _lastSaveTime = Date.now();
+        await DB_REF.update({
+          ['orders/' + idx + '/status']: o.status,
+          ['orders/' + idx + '/weighedAt']: o.weighedAt
+        });
+      } else {
+        // 서버에 주문 없음 (신규) · 전체 push
+        saveEntityFields('orders', orderId, { status: o.status, weighedAt: o.weighedAt });
+      }
+    } catch(e) {
+      console.error('[completeWeighing] Firebase save failed:', e);
+      alert('❌ 계근 완료 저장에 실패했습니다. 인터넷 연결을 확인하고 다시 시도해주세요.\n\n' + (e && e.message ? e.message : ''));
+      return;
+    }
+  }
   alert('계근 완료! 사무실로 전송되었습니다.');
   location.hash = '#warehouse';
 }
@@ -8410,16 +8546,30 @@ function dailyReportTotals(rows) {
 }
 
 // ⭐ (2026-08-06) Overdue 컬럼 셀 렌더 — 심각 우선 색상, 단일 값
+// ⭐ (2026-08-22 밤2) 합계 행(isTotal=true)은 · 인쇄 PDF 와 동일하게 · 경고+심각 합산 표시
+//   이전 버그 · 화면 합계에 심각만 표시 → PDF 와 큰 차이 ($142K) 발생. 개별 행은 그대로 (worst tier).
 function _overdueCellHTML(r, isTotal) {
   const sev = r.overdueSevere || 0;
   const mild = r.overdueMild || 0;
+  if (isTotal) {
+    const total = sev + mild;
+    if (total <= 0.001) return '<td class="num" style="color:var(--muted); font-weight:700; font-size:14px;">–</td>';
+    // 합계는 · 심각+경고 함께 표시 · 색상은 심각이 있으면 빨강 · 없으면 노랑
+    const color = sev > 0.001 ? '#D32F2F' : '#E8A317';
+    const icon = sev > 0.001 ? '🔴' : '🟡';
+    // breakdown · 심각과 경고가 둘 다 있으면 세부 표시
+    const detail = (sev > 0.001 && mild > 0.001)
+      ? ' <small style="color:var(--muted); font-weight:600;">(🔴$' + fmtMoney(sev) + ' + 🟡$' + fmtMoney(mild) + ')</small>'
+      : '';
+    return '<td class="num" style="font-weight:700; color:' + color + '; font-size:14px;">' + icon + ' $' + fmtMoney(total) + detail + '</td>';
+  }
   if (sev > 0.001) {
-    return '<td class="num" style="font-weight:700; color:#D32F2F;' + (isTotal?'font-size:14px;':'') + '">🔴 $' + fmtMoney(sev) + '</td>';
+    return '<td class="num" style="font-weight:700; color:#D32F2F;">🔴 $' + fmtMoney(sev) + '</td>';
   }
   if (mild > 0.001) {
-    return '<td class="num" style="font-weight:700; color:#E8A317;' + (isTotal?'font-size:14px;':'') + '">🟡 $' + fmtMoney(mild) + '</td>';
+    return '<td class="num" style="font-weight:700; color:#E8A317;">🟡 $' + fmtMoney(mild) + '</td>';
   }
-  return '<td class="num" style="color:var(--muted);' + (isTotal?'font-weight:700;font-size:14px;':'') + '">–</td>';
+  return '<td class="num" style="color:var(--muted);">–</td>';
 }
 
 // ⭐ (2026-08-06) 심각순 상세 뷰 — 심각 거래처 리스트 + 인보이스 세부
@@ -11864,34 +12014,75 @@ window.batchMarkDelivered = function() {
                '· 재고 자동 차감 함께 실행 (매칭 성공한 원료)\n' +
                '· 매칭 실패 작업육은 재고현황 리스트로 이동\n\n' +
                '되돌리기 어렵습니다. 계속?')) return;
+  // ⭐ (2026-08-22 밤3 fix) 병렬 saveEntityFields 18번 호출 → value 리스너 race → 부분 반영 문제
+  //   해결 · 하나의 multi-path update 로 원자적 저장 → 모든 상태 변경이 한번에 서버에 반영됨
   let statusOk = 0, dedOk = 0, dedFail = 0, deducted = 0;
   const now = new Date().toISOString();
+  // 1) 로컬 DB 먼저 업데이트
   targets.forEach(function(o) {
     o.status = 'delivered';
     o.deliveredAt = now;
-    try {
-      saveEntityFields('orders', o.id, { status: 'delivered', deliveredAt: now });
-      statusOk++;
-    } catch(e) { console.warn('batch status save failed:', o.id, e); }
-    try {
-      if (typeof window.inventoryAutoApplyOneOrder === 'function') {
-        const r = window.inventoryAutoApplyOneOrder(o.id);
-        if (r && r.ok && !r.skipped) {
-          dedOk++;
-          deducted += (r.deductedProducts || 0);
-        }
-      }
-    } catch(e) {
-      dedFail++;
-      console.warn('batch deduct failed:', o.id, e);
-    }
+    statusOk++;
   });
-  alert('✅ 일괄 배송완료 완료\n\n' +
-        '· 상태 변경: ' + statusOk + '/' + targets.length + '건\n' +
-        '· 재고 차감 성공: ' + dedOk + '건 (총 ' + deducted + '개 원료)\n' +
-        (dedFail > 0 ? '· 재고 차감 실패: ' + dedFail + '건 (재고현황 확인)\n' : '') +
-        '\n매출일보 자동 반영됨. 매칭 실패 작업육은 재고현황에서 확인·수동 처리하세요.');
-  route();
+  saveLocalDB();
+  // 2) Firebase 원자적 저장 (단일 update · 서버 인덱스 재조회 후 다중 경로)
+  const doAtomicSave = async () => {
+    if (!DB_REF) return true;
+    _lastSaveTime = Date.now();
+    try {
+      const snap = await DB_REF.child('orders').once('value');
+      const serverList = snap.val();
+      // 서버에서 각 orderId 의 인덱스 매핑
+      const idxMap = {};
+      if (Array.isArray(serverList)) {
+        serverList.forEach((x, i) => { if (x && x.id) idxMap[x.id] = i; });
+      } else if (serverList && typeof serverList === 'object') {
+        Object.keys(serverList).forEach(k => {
+          if (serverList[k] && serverList[k].id) idxMap[serverList[k].id] = Number(k);
+        });
+      }
+      const update = {};
+      targets.forEach(function(o) {
+        const idx = idxMap[o.id];
+        if (idx == null || !Number.isFinite(idx)) return;
+        update['orders/' + idx + '/status'] = 'delivered';
+        update['orders/' + idx + '/deliveredAt'] = now;
+      });
+      if (Object.keys(update).length > 0) {
+        _lastSaveTime = Date.now();
+        await DB_REF.update(update);
+      }
+      return true;
+    } catch(e) {
+      console.error('[batchMarkDelivered] atomic save failed:', e);
+      return false;
+    }
+  };
+  // 3) 재고 자동 차감 (원자적 저장 완료 후 순차 처리)
+  doAtomicSave().then(saved => {
+    targets.forEach(function(o) {
+      try {
+        if (typeof window.inventoryAutoApplyOneOrder === 'function') {
+          const r = window.inventoryAutoApplyOneOrder(o.id);
+          if (r && r.ok && !r.skipped) {
+            dedOk++;
+            deducted += (r.deductedProducts || 0);
+          }
+        }
+      } catch(e) {
+        dedFail++;
+        console.warn('batch deduct failed:', o.id, e);
+      }
+    });
+    // 감사로그 · 결과 알림
+    try { auditLogAdd('일괄 배송완료: ' + statusOk + '건 · 재고차감 성공 ' + dedOk + '건'); } catch(_){}
+    alert('✅ 일괄 배송완료 완료\n\n' +
+          '· 상태 변경: ' + statusOk + '/' + targets.length + '건 (원자적 저장' + (saved ? ' 성공' : ' 실패') + ')\n' +
+          '· 재고 차감 성공: ' + dedOk + '건 (총 ' + deducted + '개 원료)\n' +
+          (dedFail > 0 ? '· 재고 차감 실패: ' + dedFail + '건 (재고현황 확인)\n' : '') +
+          '\n매출일보 자동 반영됨. 매칭 실패 작업육은 재고현황에서 확인·수동 처리하세요.');
+    route();
+  });
 };
 
 function markDelivered(id) {
@@ -15211,7 +15402,10 @@ function inventoryComputeTodaysOutgoing() {
   const out = {};
   DB.orders.forEach(o => {
     if (o.status !== 'delivered') return;
-    const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
+    // ⭐ (2026-08-22 fix) UTC → 로컬 날짜 변환 필수. slice(0,10) 은 UTC 를 그대로 자름 →
+    //   시드니 아침 시간대 (UTC+10/+11) 에 어제 배송완료 처리한 것이 오늘 재고에 안 잡히는 문제.
+    //   사무실에서 이미 fix 된 동일 버그 (Task #93 관련).
+    const ref = toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '');
     if (ref !== today) return;
     const cust = DB.customers.find(c => c.id === o.customerId);
     const custName = cust ? cust.name : '-';
@@ -15264,7 +15458,8 @@ function inventoryComputeUnmatchedWorkedMeat() {
   const list = [];
   DB.orders.forEach(o => {
     if (o.status !== 'delivered') return;
-    const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
+    // ⭐ (2026-08-22 fix) UTC → 로컬 날짜 변환 (동일 이슈 · inventoryComputeTodaysOutgoing 참조)
+    const ref = toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '');
     if (ref !== today) return;
     const cust = DB.customers.find(c => c.id === o.customerId);
     const custName = cust ? cust.name : '-';
@@ -16689,7 +16884,8 @@ window.inventoryApplyAllToday = function() {
   DB.orders.forEach(o => {
     if (o.status !== 'delivered') return;
     if (!pendingOrderIds.has(o.id)) return;
-    const ref = (o.deliveredAt || o.invoicedAt || o.orderDate || '').slice(0,10);
+    // ⭐ (2026-08-22 fix) UTC → 로컬 날짜 변환 (동일 이슈)
+    const ref = toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '');
     if (ref !== today) return;
     // ⭐ (2026-07-07) 인보이스 실제 라인 기준 + 작업육 자동 매칭.
     const invItems = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');
