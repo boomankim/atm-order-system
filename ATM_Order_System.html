@@ -332,10 +332,21 @@
     margin-bottom: 14px;
   }
 
+  /* ⭐ (2026-08-22) 오프라인 · 시크릿모드 · draft 복원 배너 · 상단 고정 */
+  .atm-info-banner {
+    position: fixed; top: 0; left: 0; right: 0; z-index: 10000;
+    padding: 6px 14px; font-size: 12px; font-weight: 600; text-align: center;
+    box-shadow: 0 2px 8px rgba(0,0,0,0.15);
+    animation: bannerSlide 0.25s ease-out;
+  }
+  @keyframes bannerSlide { from { transform: translateY(-100%); } to { transform: translateY(0); } }
+  .atm-info-banner.offline { background: #C62828; color: #fff; }
+  .atm-info-banner.private { background: #FFC107; color: #5C0F0F; }
+
   @media print {
     .nav, .summary-bar, .btn, .btn-row, .search-bar, .no-print { display: none !important; }
     /* ⭐ (2026-08-06) 동기화·업데이트 배너·pill — 인쇄에 절대 나오면 안 됨 */
-    #sync-banner, #atmUpdateBanner, #atmUpdateAnim, #sync-pill-anim { display: none !important; }
+    #sync-banner, #atmUpdateBanner, #atmUpdateAnim, #sync-pill-anim, .atm-info-banner { display: none !important; }
     body { background: #fff; }
     main { max-width: 100%; padding: 0; }
     .card { box-shadow: none; }
@@ -1300,6 +1311,41 @@ document.addEventListener('click', _touchStaffActivity, { passive:true });
 document.addEventListener('keydown', _touchStaffActivity, { passive:true });
 // 1분마다 체크
 setInterval(_checkStaffSessionTimeout, 60 * 1000);
+
+// ⭐ (2026-08-22 UX-4) 오프라인 감지 배너 · navigator.onLine 실시간
+function _atmShowOfflineBanner() {
+  if (document.getElementById('atmOfflineBanner')) return;
+  const b = document.createElement('div');
+  b.id = 'atmOfflineBanner';
+  b.className = 'atm-info-banner offline';
+  b.innerHTML = '⚠ 인터넷 연결 끊김 · 오프라인 · 저장/제출이 지연될 수 있습니다';
+  document.body.appendChild(b);
+  // body 최상단 여백 push 방지 · fixed 상단 배너
+}
+function _atmHideOfflineBanner() {
+  const b = document.getElementById('atmOfflineBanner');
+  if (b) b.remove();
+}
+window.addEventListener('online', _atmHideOfflineBanner);
+window.addEventListener('offline', _atmShowOfflineBanner);
+// 최초 상태 체크
+setTimeout(function(){ if (!navigator.onLine) _atmShowOfflineBanner(); }, 500);
+
+// ⭐ (2026-08-22 UX-1) 시크릿모드 감지 (sessionStorage 예외) · 1회성 배너
+try {
+  const _tk = '__atm_test_' + Date.now();
+  sessionStorage.setItem(_tk, '1');
+  sessionStorage.removeItem(_tk);
+} catch(_) {
+  setTimeout(function(){
+    if (document.getElementById('atmPrivateBanner')) return;
+    const b = document.createElement('div');
+    b.id = 'atmPrivateBanner';
+    b.className = 'atm-info-banner private';
+    b.innerHTML = '⚠ 시크릿·프라이빗 모드 감지 · 로그인/카트 자동 저장이 제한됩니다 · <span style="cursor:pointer; text-decoration:underline;" onclick="this.parentNode.remove()">[닫기]</span>';
+    document.body.appendChild(b);
+  }, 800);
+}
 
 // ⭐ (2026-08-14) 숫자 입력창 마우스 휠 값 변경 방지
 //   number input 이 포커스된 상태에서 마우스 휠·트랙패드 스크롤 시 값이 뜻하지 않게 증감되는 문제 방지.
@@ -6147,8 +6193,13 @@ function viewOrder(params) {
   // ⭐ (2026-07-27) 진입 시 CART 초기화 → 저장된 draft 있으면 복원
   CART = [];
   const _restored = loadCartDraft(custId);
-  if (_restored && Array.isArray(_restored.cart)) {
+  let _restoredMinutesAgo = null;
+  if (_restored && Array.isArray(_restored.cart) && _restored.cart.length > 0) {
     CART = _restored.cart;
+    // ⭐ (2026-08-22 UX-2) 복원 시 상단 배너로 안내 · 사용자 혼란 방지
+    if (_restored.savedAt) {
+      _restoredMinutesAgo = Math.max(1, Math.floor((Date.now() - _restored.savedAt) / 60000));
+    }
   }
   // ⭐ (2026-08-10) viewOrder 재진입 시 확장 상태 리셋 + 남아있을 수 있는 편집 모달 정리
   window._expandedCartIdx = null;
@@ -6173,6 +6224,14 @@ function viewOrder(params) {
           oninput="saveCartDraft('${custId}')">${(_restored && _restored.deliveryNotes) ? String(_restored.deliveryNotes).replace(/</g,'&lt;').replace(/"/g,'&quot;') : ''}</textarea>
       </div>
     </div>
+
+    ${_restoredMinutesAgo != null ? `
+      <div id="cartRestoreBanner" style="padding:8px 12px; margin-bottom:8px; background:#E3F2FD; border-left:4px solid #1976D2; border-radius:4px; font-size:12px; display:flex; align-items:center; gap:8px;">
+        <span style="flex:1;">🔄 <b>이전 세션 복원됨</b> · ${_restoredMinutesAgo < 60 ? _restoredMinutesAgo + '분 전' : (Math.floor(_restoredMinutesAgo/60) + '시간 전')} 담은 내용 · ${CART.length}개 품목</span>
+        <button onclick="if(confirm('복원된 카트를 모두 지우시겠습니까?')){ CART=[]; clearCartDraft(); renderCart(); document.getElementById('cartRestoreBanner').remove(); }" style="background:#C62828; color:#fff; border:none; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;">🗑 지우기</button>
+        <button onclick="document.getElementById('cartRestoreBanner').remove()" style="background:#fff; color:#1976D2; border:1px solid #1976D2; border-radius:4px; padding:4px 10px; font-size:11px; cursor:pointer;">확인</button>
+      </div>
+    ` : ''}
 
     <div class="card" id="cartCard" style="position:sticky; top:52px; z-index:50; background:#E4EEF7; border:0.5px solid #BBD3E7;">
       <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--brand-dark); font-size:18px; font-weight:800;">0개</span></h3>
@@ -6857,8 +6916,14 @@ window.confirmAndSubmitOrder = function(custId) {
       </button>
     </div>
     ${_renderHolidayNoticeBox()}
-    <div style="margin-top:16px; text-align:center; padding-top:12px; border-top:1px solid var(--line);">
-      <button class="btn secondary sm" onclick="closeModal()">취소 / Cancel</button>
+    <!-- ⭐ (2026-08-22 UX-3) 취소 버튼 명확화 · 크기 · 여백 · 색상 강화 -->
+    <div style="margin-top:18px; padding-top:14px; border-top:2px solid var(--line);">
+      <button class="btn" style="width:100%; padding:12px; background:#616161; color:#fff; font-size:14px;" onclick="closeModal()">
+        ❌ 취소 · 이전 화면으로 / Cancel &amp; Back
+      </button>
+      <div style="text-align:center; font-size:11px; color:var(--muted); margin-top:6px;">
+        배송일을 나중에 다시 정하고 싶으면 취소 · 카트는 그대로 유지됩니다
+      </div>
     </div>
   `);
 };
