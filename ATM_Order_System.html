@@ -7235,22 +7235,10 @@ async function submitOrder(custId, deliveryDateISO) {
         if (custForFav) saveEntityField('customers', custId, 'favoritePairs');
         finish(true);
       } else {
-        // ⭐ (2026-08-22 C-1) 트랜잭션 실패 → 이 주문만 안전하게 push (pushEntityToFirebase)
-        //   이전 · DB_REF.set(DB) · 전체 덮어쓰기 위험
-        //   현재 · 단일 주문 트랜잭션 push · 다른 데이터 보존
-        console.warn('[submitOrder] main transaction failed, retrying with single-push:', error);
-        try {
-          if (typeof pushEntityToFirebase === 'function') {
-            pushEntityToFirebase('orders', order);
-            // pushEntityToFirebase 는 fire-and-forget · 성공 처리
-            finish(true);
-          } else {
-            finish(false);
-          }
-        } catch(e) {
-          console.error('[submitOrder] fallback push failed:', e);
-          finish(false);
-        }
+        // ⭐ (2026-08-23 EMERGENCY 롤백) C-1 변경 되돌림 · 원본 fallback 복원
+        //   원인 · 밤작업 C-1 (전체 덮어쓰기 제거) 이후 주문이 계근에 안 넘어가는 문제 발생
+        //   조치 · 원래 로직 (DB_REF.set(DB) 폴백) 복원 · 안정성 최우선
+        DB_REF.set(DB).then(() => finish(true)).catch(() => finish(false));
       }
     });
   });
