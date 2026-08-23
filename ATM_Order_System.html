@@ -2374,17 +2374,21 @@ function renderRecentOrders() {
       </tr></thead>
       <tbody>
         ${recent.map(o => {
-          const cust = DB.customers.find(c => c.id === o.customerId);
-          return `<tr>
-            <td><b>${o.orderNo}</b></td>
-            <td>${cust ? cust.name : '-'}</td>
-            <td>${o.items.length}개</td>
-            <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
-            <td>${(o.orderDate||'').slice(0,10)}</td>
-            <td class="act">
-              <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
-            </td>
-          </tr>`;
+          try {
+            if (!o || !o.id) return '';
+            const cust = DB.customers.find(c => c.id === o.customerId);
+            const _cnt = Array.isArray(o.items) ? o.items.length : 0;
+            return `<tr>
+              <td><b>${o.orderNo||o.id.slice(0,8)}</b></td>
+              <td>${cust ? cust.name : '-'}</td>
+              <td>${_cnt}개</td>
+              <td><span class="pill ${o.status||''}">${statusLabel(o.status||'')}</span></td>
+              <td>${(o.orderDate||'').slice(0,10)}</td>
+              <td class="act">
+                <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
+              </td>
+            </tr>`;
+          } catch(_){ return ''; }
         }).join('')}
       </tbody>
     </table>
@@ -2990,20 +2994,24 @@ function renderOrdersAdminList(cid) {
       </tr></thead>
       <tbody>
         ${orders.map(o => {
-          const tot = computeTotals(o);
-          return `<tr>
-            <td><input type="checkbox" class="ordAdmChk" value="${o.id}"></td>
-            <td><b>${o.orderNo}</b></td>
-            <td>${o.invoiceNo || '-'}</td>
-            <td>${(o.orderDate||'').slice(0,10)}</td>
-            <td>${o.items.length}개</td>
-            <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
-            <td class="num">$${fmtMoney(tot.grand)}</td>
-            <td class="act">
-              <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
-              <button class="btn sm danger" onclick="ordAdmDeleteOne('${o.id}')">🗑️ 삭제</button>
-            </td>
-          </tr>`;
+          try {
+            if (!o || !o.id) return '';
+            const tot = computeTotals(o);
+            const _cnt = Array.isArray(o.items) ? o.items.length : 0;
+            return `<tr>
+              <td><input type="checkbox" class="ordAdmChk" value="${o.id}"></td>
+              <td><b>${o.orderNo||o.id.slice(0,8)}</b></td>
+              <td>${o.invoiceNo || '-'}</td>
+              <td>${(o.orderDate||'').slice(0,10)}</td>
+              <td>${_cnt}개</td>
+              <td><span class="pill ${o.status||''}">${statusLabel(o.status||'')}</span></td>
+              <td class="num">$${fmtMoney(tot.grand)}</td>
+              <td class="act">
+                <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
+                <button class="btn sm danger" onclick="ordAdmDeleteOne('${o.id}')">🗑️ 삭제</button>
+              </td>
+            </tr>`;
+          } catch(_){ return ''; }
         }).join('')}
       </tbody>
     </table>
@@ -3281,6 +3289,7 @@ function renderOrphanAdmin() {
   const cntNoCust = orphans.filter(x => x._noCust).length;
   const cntNoOrderNo = orphans.filter(x => x._noOrderNo).length;
   const cntOpening = orphans.filter(x => x._openingSuspect).length;
+  const cntNoItems = orphans.filter(x => x._noItems).length;
 
   body.innerHTML = '<div class="card">'
     + '<h3>🔧 Orphan 인보이스 진단 · 정리</h3>'
@@ -3289,6 +3298,7 @@ function renderOrphanAdmin() {
     + '• 거래처 없음 (customerId 무효): <b>' + cntNoCust + '건</b><br>'
     + '• orderNo 없음 (undefined): <b>' + cntNoOrderNo + '건</b><br>'
     + '• 오프닝 발란스 의심 (품목명): <b>' + cntOpening + '건</b><br>'
+    + '• <span style="color:#C62828;">품목 없음 (items 배열 누락 · 계근 크래시 원인): <b>' + cntNoItems + '건</b></span><br>'
     + '<br>💡 화면 진입 시 <b>자동 JSON 백업</b>이 다운로드 폴더에 저장되었습니다.<br>'
     + '💡 삭제 전 <b>[거래처 지정]</b> 으로 올바른 거래처를 매핑하면 유지 가능합니다.'
     + '</div>'
@@ -3309,6 +3319,7 @@ function renderOrphanAdmin() {
           if (o._noCust) flags.push('<span style="color:#C62828;">❌ 거래처</span>');
           if (o._noOrderNo) flags.push('<span style="color:#C62828;">❌ orderNo</span>');
           if (o._openingSuspect) flags.push('<span style="color:#B8860B;">⚠️ 오프닝?</span>');
+          if (o._noItems) flags.push('<span style="color:#C62828;">❌ 품목없음</span>');
           const items = (o.invoiceItems || o.items || []).slice(0,2).map(function(it){ return (it.name||'').slice(0,15); }).join(', ');
           return '<tr>'
             + '<td><b>' + (o.invoiceNo || '-') + '</b></td>'
@@ -3351,7 +3362,10 @@ function _detectOrphanOrders() {
     o._noCust = noCust;
     o._noOrderNo = noOrderNo;
     o._openingSuspect = openingSuspect;
-    return noCust || noOrderNo || openingSuspect;
+    // ⭐ (2026-08-23) items 누락 감지 · 렌더 크래시 원인 · 계근에 안 넘어감
+    const noItems = !Array.isArray(o.items) || o.items.length === 0;
+    o._noItems = noItems;
+    return noCust || noOrderNo || openingSuspect || noItems;
   });
 }
 
@@ -7880,6 +7894,8 @@ function viewOffice() {
         <thead><tr><th>주문번호</th><th>거래처</th><th>품목</th><th class="num">총중량</th><th class="num">예상금액(GST 포함)</th><th>희망 배송일</th><th class="act"></th></tr></thead>
         <tbody>
           ${ready.map(o => {
+            try {
+              if (!o || !o.id) return '';
             const c = DB.customers.find(x=>x.id===o.customerId);
             const totals = computeTotals(o);
             const _groupKey = o.customerId + '::' + o.deliveryDate;
@@ -7902,7 +7918,7 @@ function viewOffice() {
             return `<tr style="cursor:pointer; ${_rowBg}" onclick="location.hash='#invoicePrep?id=${o.id}'">
               <td><b style="color:var(--brand);">${o.orderNo}</b></td>
               <td><b>${c?c.name:'-'}</b>${_colorBadge}${_isMergeable ? '<span style="margin-left:6px; padding:1px 6px; background:#E68A00; color:#fff; border-radius:8px; font-size:10px; font-weight:700;">중복</span>' : ''}${c&&c.contact?`<br><small style="color:var(--muted);">${c.contact} · ${c.phone||''}</small>`:''}</td>
-              <td>${o.items.length}개</td>
+              <td>${Array.isArray(o.items) ? o.items.length : 0}개</td>
               <td class="num">${totals.totalKg.toFixed(1)} kg</td>
               <td class="num">$${fmtMoney(totals.grand)}</td>
               <td style="cursor:pointer;" title="클릭하면 배송일 변경" onmouseover="this.style.background='#FFF7E0';" onmouseout="this.style.background='';" onclick="event.stopPropagation(); officeEditDeliveryDate('${o.id}');">${renderDeliveryBadge(o.deliveryDate)}<span style="font-size:10px; color:var(--muted); margin-left:4px;">✏️</span></td>
@@ -7911,6 +7927,7 @@ function viewOffice() {
                 <button class="btn sm" onclick="event.stopPropagation(); location.hash='#invoicePrep?id=${o.id}'">📂 펼쳐보기 →</button>
               </td>
             </tr>`;
+            } catch(_){ return ''; }
           }).join('')}
         </tbody>
       </table>`}
@@ -10827,16 +10844,18 @@ function renderHistoryResults() {
             </tr></thead>
             <tbody>
               ${orders.map(o => {
+                try {
+                  if (!o || !o.id) return '';
                 const c = DB.customers.find(x => x.id === o.customerId);
                 const t = computeTotals(o);
                 return `<tr>
                   <td>${(o.orderDate||'').slice(0,10)}</td>
-                  <td><b>${o.orderNo}</b></td>
+                  <td><b>${o.orderNo||o.id.slice(0,8)}</b></td>
                   <td>${c ? c.name : '-'}</td>
-                  <td>${o.items.length}개</td>
+                  <td>${Array.isArray(o.items) ? o.items.length : 0}개</td>
                   <td class="num">${t.totalKg.toFixed(1)}</td>
                   <td class="num">$${fmtMoney(t.grand)}</td>
-                  <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+                  <td><span class="pill ${o.status||''}">${statusLabel(o.status||'')}</span></td>
                   <td>${o.invoiceNo || '-'}</td>
                   <td class="act">
                     ${(o.status==='invoiced' || o.status==='delivered')
@@ -10847,6 +10866,7 @@ function renderHistoryResults() {
                       : ''}
                   </td>
                 </tr>`;
+                } catch(_){ return ''; }
               }).join('')}
             </tbody>
           </table>
