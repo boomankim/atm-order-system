@@ -7576,25 +7576,33 @@ function renderWarehouseList() {
   listHtml += '<table class="t"><thead><tr>'
     + '<th>주문번호</th><th>거래처</th><th>품목수</th><th>상태</th><th>주문일시</th><th>희망 배송일</th><th class="act"></th>'
     + '</tr></thead><tbody>';
+  // ⭐ (2026-08-23 EMERGENCY) 방어 강화 · 한 주문이 잘못돼도 나머지 렌더
   filtered.forEach(o => {
-    const c = DB.customers.find(x => x.id === o.customerId);
-    const clr = o.assignedColor && WH_COLORS[o.assignedColor] ? WH_COLORS[o.assignedColor] : null;
-    const rowBg = clr ? 'background:' + clr.bg + ';' : '';
-    const rowBorder = clr ? 'border-left:4px solid ' + clr.dot + ';' : '';
-    // 행 전체 클릭 = 색상 지정 (계근 버튼·배송일 지정 버튼만 각자 액션)
-    // ⭐ (2026-08-02) 배송일 미지정 주문에만 [📅 지정] 버튼 표시. 지정되면 자동으로 renderDeliveryBadge 로 전환.
-    const deliveryCell = o.deliveryDate
-      ? renderDeliveryBadge(o.deliveryDate)
-      : '<button class="btn sm" style="background:#E68A00; color:#fff; padding:4px 10px; font-size:12px;" onclick="event.stopPropagation(); whSetDeliveryDate(\'' + o.id + '\')">📅 지정</button>';
-    listHtml += '<tr style="cursor:pointer;' + rowBg + rowBorder + '" onclick="whAssignColor(\'' + o.id + '\')">'
-      + '<td><b>' + o.orderNo + '</b></td>'
-      + '<td>' + (c ? c.name : '-') + '</td>'
-      + '<td>' + o.items.length + '</td>'
-      + '<td><span class="pill ' + o.status + '">' + statusLabel(o.status) + '</span></td>'
-      + '<td>' + new Date(o.orderDate).toLocaleString('ko-KR') + '</td>'
-      + '<td>' + deliveryCell + '</td>'
-      + '<td class="act"><button class="btn sm" onclick="event.stopPropagation(); location.hash=\'#weigh?id=' + o.id + '\'">계근하기 →</button></td>'
-      + '</tr>';
+    try {
+      if (!o || !o.id) return;
+      const c = DB.customers.find(x => x.id === o.customerId);
+      const clr = o.assignedColor && WH_COLORS[o.assignedColor] ? WH_COLORS[o.assignedColor] : null;
+      const rowBg = clr ? 'background:' + clr.bg + ';' : '';
+      const rowBorder = clr ? 'border-left:4px solid ' + clr.dot + ';' : '';
+      const deliveryCell = o.deliveryDate
+        ? renderDeliveryBadge(o.deliveryDate)
+        : '<button class="btn sm" style="background:#E68A00; color:#fff; padding:4px 10px; font-size:12px;" onclick="event.stopPropagation(); whSetDeliveryDate(\'' + o.id + '\')">📅 지정</button>';
+      // 방어: items 배열 없거나 orderDate 없어도 렌더 계속
+      const itemCount = Array.isArray(o.items) ? o.items.length : 0;
+      let dateStr = '';
+      try { dateStr = o.orderDate ? new Date(o.orderDate).toLocaleString('ko-KR') : '-'; } catch(_){ dateStr = String(o.orderDate || '-'); }
+      listHtml += '<tr style="cursor:pointer;' + rowBg + rowBorder + '" onclick="whAssignColor(\'' + o.id + '\')">'
+        + '<td><b>' + (o.orderNo || o.id.slice(0,8)) + '</b></td>'
+        + '<td>' + (c ? c.name : '-') + '</td>'
+        + '<td>' + itemCount + '</td>'
+        + '<td><span class="pill ' + (o.status||'') + '">' + statusLabel(o.status||'') + '</span></td>'
+        + '<td>' + dateStr + '</td>'
+        + '<td>' + deliveryCell + '</td>'
+        + '<td class="act"><button class="btn sm" onclick="event.stopPropagation(); location.hash=\'#weigh?id=' + o.id + '\'">계근하기 →</button></td>'
+        + '</tr>';
+    } catch(err) {
+      console.error('[renderWarehouseList] 렌더 스킵 (한 주문 오류):', o && o.orderNo, err);
+    }
   });
   listHtml += '</tbody></table>';
   listEl.innerHTML = listHtml;
