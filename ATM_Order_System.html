@@ -355,8 +355,13 @@
     .invoice .tot-box { background: #ffffff !important; }
     .invoice { padding: 0 !important; }
     body { -webkit-print-color-adjust: economy; print-color-adjust: economy; }
-    /* ⭐ (2026-08-24) 스테이트먼트 · A4 세로 1페이지 강제 · 여백·간격 대폭 축소 */
-    #statementPrintArea { font-size: 10.5px; color: #222; }
+    /* ⭐ (2026-08-24 v3) 스테이트먼트 · A4 세로 1페이지 강제 · 여백·간격 대폭 축소
+       · 페이지 상단 h2 · 필터 카드 · body/card padding 모두 인쇄에서 완전 제거 */
+    .stmt-print-mode main { padding: 0 !important; margin: 0 !important; }
+    .stmt-print-mode .page-title { display: none !important; }
+    .stmt-print-mode #stmtBody { padding: 0 !important; margin: 0 !important; box-shadow: none !important; border: 0 !important; background: transparent !important; }
+    /* 빈 페이지 방지 · 컨테이너 자체가 페이지 넘김 유발 안 함 */
+    #statementPrintArea { font-size: 10.5px; color: #222; page-break-after: avoid !important; }
     #statementPrintArea table.stmtTable { width: 100%; border-collapse: collapse; margin: 0; page-break-inside: auto; }
     #statementPrintArea table.stmtTable tr { page-break-inside: avoid; }
     #statementPrintArea table.stmtTable th,
@@ -14679,6 +14684,22 @@ function viewStatement(params) {
       '<div style="margin-top:10px;"><button class="btn sm" onclick="refreshStatement()">조회</button></div>' +
     '</div>' +
     '<div class="card" id="stmtBody">' + (preCid ? buildStatement(preCid, firstDate, today) : '<p style="color:var(--muted); padding:8px;">거래처와 기간을 선택하고 [조회]를 누르세요.</p>') + '</div>';
+
+  // ⭐ (2026-08-24 v3) 스테이트먼트 진입 · body 에 마커 클래스 · 인쇄 CSS 적용
+  try { document.body.classList.add('stmt-print-mode'); } catch(_){}
+  // 다른 화면 이동 시 자동 제거 (route 재실행 시)
+  try {
+    if (!window._stmtPrintModeHooked) {
+      window._stmtPrintModeHooked = true;
+      window.addEventListener('hashchange', function(){
+        if (!location.hash.startsWith('#statement')) {
+          try { document.body.classList.remove('stmt-print-mode'); } catch(_){}
+        } else {
+          try { document.body.classList.add('stmt-print-mode'); } catch(_){}
+        }
+      });
+    }
+  } catch(_){}
 
   window.refreshStatement = function() {
     const cid = document.getElementById('stmtCust').value;
