@@ -355,20 +355,21 @@
     .invoice .tot-box { background: #ffffff !important; }
     .invoice { padding: 0 !important; }
     body { -webkit-print-color-adjust: economy; print-color-adjust: economy; }
-    /* ⭐ (2026-08-17 v2) 스테이트먼트 XERO 스타일 인쇄 — A4 한 페이지 30행 목표 */
-    #statementPrintArea { font-size: 11px; color: #222; }
-    #statementPrintArea table.stmtTable { width: 100%; border-collapse: collapse; margin: 0; }
+    /* ⭐ (2026-08-24) 스테이트먼트 · A4 세로 1페이지 강제 · 여백·간격 대폭 축소 */
+    #statementPrintArea { font-size: 10.5px; color: #222; }
+    #statementPrintArea table.stmtTable { width: 100%; border-collapse: collapse; margin: 0; page-break-inside: auto; }
+    #statementPrintArea table.stmtTable tr { page-break-inside: avoid; }
     #statementPrintArea table.stmtTable th,
     #statementPrintArea table.stmtTable td {
-      padding: 3px 5px !important;
-      font-size: 10.5px !important;
-      line-height: 1.3 !important;
+      padding: 2px 5px !important;
+      font-size: 10px !important;
+      line-height: 1.25 !important;
       vertical-align: middle !important;
       background: #fff !important;
     }
     #statementPrintArea table.stmtTable th {
-      padding: 4px 5px !important;
-      font-size: 10px !important;
+      padding: 3px 5px !important;
+      font-size: 9.5px !important;
       font-weight: 700 !important;
       text-transform: uppercase;
       letter-spacing: 0.3px;
@@ -378,12 +379,16 @@
     }
     #statementPrintArea table.stmtTable td { border-bottom: 1px solid #E5E5E5 !important; }
     #statementPrintArea table.stmtTable tr:last-child td { border-bottom: 1px solid #999 !important; }
-    /* 헤더 · 하단 여백 축소 */
-    #statementPrintArea > div:first-child { margin-bottom: 14px !important; }
-    #statementPrintArea > div:nth-child(3) { margin-top: 16px !important; }
-    /* 은행/BALANCE 하단은 폰트 유지, 살짝 축소 */
-    #statementPrintArea > div:nth-child(3) > div:last-child > div:last-child { font-size: 22px !important; }
-    @page { margin: 12mm 10mm; }
+    /* 헤더 · 하단 여백 최소화 */
+    #statementPrintArea > div:first-child { margin-bottom: 10px !important; }
+    #statementPrintArea > div:nth-child(3) { margin-top: 10px !important; page-break-inside: avoid; }
+    /* BALANCE DUE 폰트 살짝 축소 · 1페이지 확보 */
+    #statementPrintArea > div:nth-child(3) > div:last-child > div:last-child { font-size: 18px !important; }
+    /* 헤더 폰트 축소 · 여백 최소 */
+    #statementPrintArea > div:first-child > div > div:first-child { font-size: 18px !important; }
+    /* 인쇄 시 액션 버튼 · 하단 여백 완전 제거 */
+    #statementPrintArea .no-print { display: none !important; }
+    @page { size: A4 portrait; margin: 10mm 10mm; }
   }
   @media (max-width: 640px) {
     .grid-2, .grid-3 { grid-template-columns: 1fr; }
@@ -7877,6 +7882,33 @@ function viewOffice() {
   // ⭐ (2026-07-07) 백업 경고 배너 — 어제 백업 안 했으면 오늘 표시.
   //   조건: toLocalISODate(lastFullBackupAt) < 어제(로컬)  &&  오늘 dismiss 안 함
   const _backupBanner = renderOfficeBackupBanner();
+  // ⭐ (2026-08-24) 1-C · 인보이스 번호 유실 자동 감지 배너
+  //   invoiceNoNext (다음 발급 번호) vs 실제 저장된 최대 invoiceNo · 갭 감지 시 경고
+  let _invoiceGapBanner = '';
+  try {
+    const nextNo = (DB.settings && DB.settings.invoiceNoNext) || 0;
+    if (nextNo > 200001) {
+      const maxSaved = DB.orders.reduce(function(m, o){
+        const n = parseInt(o.invoiceNo, 10);
+        return isFinite(n) && n > m ? n : m;
+      }, 0);
+      const expected = nextNo - 1;
+      const gap = expected - maxSaved;
+      if (gap >= 1 && maxSaved > 0) {
+        // 갭 목록 (최대 10개까지)
+        const savedSet = new Set(DB.orders.map(o => parseInt(o.invoiceNo, 10)).filter(Boolean));
+        const missing = [];
+        for (let n = maxSaved + 1; n <= expected && missing.length < 10; n++) {
+          if (!savedSet.has(n)) missing.push(n);
+        }
+        _invoiceGapBanner = '<div style="padding:12px 14px; margin-bottom:12px; background:#FFEBEE; border-left:4px solid #C62828; border-radius:4px; font-size:13px;">'
+          + '<b style="color:#C62828;">⚠ 인보이스 번호 유실 감지</b> · 다음 발급 번호 <b>' + nextNo + '</b> · 실제 저장된 최대 <b>' + maxSaved + '</b> · 갭 <b>' + gap + '건</b><br>'
+          + '<span style="color:#5C1010; font-size:12px;">유실된 번호: ' + missing.join(', ') + (gap > 10 ? ' 외' : '') + ' · '
+          + '관리자 → 🔧 진단 · 또는 F12 콘솔로 수동 복구 필요</span>'
+          + '</div>';
+      }
+    }
+  } catch(_){}
   app.innerHTML = `
     <h2 class="page-title">📋 사무실 — 인보이스 발행
       <button class="btn sm" style="float:right; background:var(--info);" onclick="location.hash='#history'">📊 주문 이력 / CSV →</button>
@@ -7886,6 +7918,7 @@ function viewOffice() {
       <button class="btn sm" style="float:right; margin-right:6px; background:#0EA5E9; color:#fff;" onclick="setMasterFolder()" title="매출일보·매입일보·재고현황·인보이스 PDF·전체 백업을 저장할 통합 폴더를 1회만 지정">📁 통합 저장 폴더</button>
     </h2>
     <div id="masterFolderInfo" style="margin: -6px 0 8px; font-size: 11px; color: var(--muted);"></div>
+    ${_invoiceGapBanner}
     ${_backupBanner}
     <div class="card">
       <h3>인보이스 발행 대기 (${ready.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); float:right;">거래처/주문번호 클릭 → 품목·단가 확인 → 발행</span></h3>
@@ -11865,8 +11898,36 @@ async function issueInvoice(orderId) {
       invoiceNo: o.invoiceNo
     });
   } catch(e){ console.warn('saveEntityFields failed:', e); }
+  // ⭐ (2026-08-24) 1-B · 인보이스 발행 자체를 감사로그에 기록 · 유실 추적 필수
+  try { auditLogAdd(`📄 인보이스 발행: ${invoiceNo} · ${cust ? cust.name : (o.customerId||'?')} · $${fmtMoney(t.grand)} · ${(getInvoiceItems(o)||[]).length}품목 · 주문 ${o.orderNo}`); } catch(_){}
   if (_appliedCount > 0) {
     try { auditLogAdd(`인보이스 발행 시 크레딧 ${_appliedCount}건 적용: ${invoiceNo} (${_appliedNos.join(', ')})`); } catch(_){}
+  }
+  // ⭐ (2026-08-24) 1-B · 저장 확인 라운드트립 · Firebase 에 실제로 저장됐는지 검증 · 실패 시 즉시 알림
+  //   오늘 MAY STORY 201387 유실 재발 방지 · submitOrder C-2 와 동일 패턴
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    setTimeout(async function(){
+      try {
+        const snap = await DB_REF.child('orders').once('value');
+        const list = snap.val() || [];
+        const arr = Array.isArray(list) ? list : Object.values(list);
+        const saved = arr.find(x => x && x.id === orderId);
+        if (!saved) {
+          console.error('❌ [issueInvoice 검증] 저장 실패 · 서버에 주문 없음:', orderId);
+          try { auditLogAdd(`⚠️ 인보이스 저장 검증 실패: ${invoiceNo} · 서버에 주문 없음 · 재발행 필요`); } catch(_){}
+          if (typeof showToast === 'function') showToast('❌ 인보이스 ' + invoiceNo + ' Firebase 저장 실패 · 관리자에게 즉시 알림!', 12000);
+          alert('❌ 인보이스 ' + invoiceNo + ' 저장이 서버에 반영되지 않았습니다.\n\n관리자에게 즉시 알려주세요.\n인쇄된 인보이스는 유지하되 · 시스템 복구가 필요합니다.');
+          return;
+        }
+        if (saved.status !== 'invoiced' || saved.invoiceNo !== invoiceNo) {
+          console.error('❌ [issueInvoice 검증] 저장 상태 불일치 · saved:', saved.status, saved.invoiceNo, ' vs expected:', 'invoiced', invoiceNo);
+          try { auditLogAdd(`⚠️ 인보이스 상태 불일치: ${invoiceNo} · 저장된 status=${saved.status} / invoiceNo=${saved.invoiceNo}`); } catch(_){}
+          if (typeof showToast === 'function') showToast('⚠️ 인보이스 ' + invoiceNo + ' 상태 확인 필요', 8000);
+          return;
+        }
+        console.log('✅ [issueInvoice 검증] 저장 확인 완료 · invoice=' + invoiceNo);
+      } catch(e){ console.warn('[issueInvoice 검증] 예외:', e); }
+    }, 3000);
   }
 
   // 4) ⭐ 즉시 화면 전환 (인보이스 페이지로). 발행 즉시 확인/인쇄 가능. PDF 자동 저장은 백그라운드.
@@ -14535,8 +14596,15 @@ function viewStatement(params) {
     if (_co.address) _esc(_co.address).split(/\n/).forEach(function(ln){ if (ln.trim()) _coLines.push(_esc(ln.trim())); });
     if (_co.abn) _coLines.push('ABN: ' + _esc(_co.abn));
     // ⭐ (2026-08-17) 은행 정보 — 관리자 → 회사 정보 → 인보이스 Bank/EFT 안내문 그대로 표시
-    //   admin 에 저장 안 되어 있으면 하단 은행 블록 자체를 숨김
-    const _bankInfoRaw = (_co.invoiceBankInfo || '').trim();
+    // ⭐ (2026-08-24 밤작업2) invoiceBankInfo 없으면 · 회사 정보의 개별 은행 필드 조합 · 최소한 표시 보장
+    let _bankInfoRaw = (_co.invoiceBankInfo || '').trim();
+    if (!_bankInfoRaw) {
+      const _bankLines = [];
+      if (_co.bankName || _co.name) _bankLines.push('Bank: ' + (_co.bankName || 'SUNCORP') + ' · Name: ' + (_co.name || 'ALL THAT MEAT WHOLESALES PTY LTD'));
+      if (_co.bsb || _co.bankAccount) _bankLines.push('BSB: ' + (_co.bsb || '484 799') + ' · Account: ' + (_co.bankAccount || '079 429 751'));
+      _bankLines.push('*EFT PAYMENT: DESCRIBE COMPANY NAME ON THE BANK REFERENCE');
+      _bankInfoRaw = _bankLines.join('\n');
+    }
     const _bankHtml = _bankInfoRaw ? _esc(_bankInfoRaw).replace(/\n/g, '<br>') : '';
 
     return '<div id="statementPrintArea">'
