@@ -14596,15 +14596,9 @@ function viewStatement(params) {
     if (_co.address) _esc(_co.address).split(/\n/).forEach(function(ln){ if (ln.trim()) _coLines.push(_esc(ln.trim())); });
     if (_co.abn) _coLines.push('ABN: ' + _esc(_co.abn));
     // ⭐ (2026-08-17) 은행 정보 — 관리자 → 회사 정보 → 인보이스 Bank/EFT 안내문 그대로 표시
-    // ⭐ (2026-08-24 밤작업2) invoiceBankInfo 없으면 · 회사 정보의 개별 은행 필드 조합 · 최소한 표시 보장
-    let _bankInfoRaw = (_co.invoiceBankInfo || '').trim();
-    if (!_bankInfoRaw) {
-      const _bankLines = [];
-      if (_co.bankName || _co.name) _bankLines.push('Bank: ' + (_co.bankName || 'SUNCORP') + ' · Name: ' + (_co.name || 'ALL THAT MEAT WHOLESALES PTY LTD'));
-      if (_co.bsb || _co.bankAccount) _bankLines.push('BSB: ' + (_co.bsb || '484 799') + ' · Account: ' + (_co.bankAccount || '079 429 751'));
-      _bankLines.push('*EFT PAYMENT: DESCRIBE COMPANY NAME ON THE BANK REFERENCE');
-      _bankInfoRaw = _bankLines.join('\n');
-    }
+    // ⭐ (2026-08-24 밤작업2 v2) 인보이스와 완전히 동일한 fallback · DEFAULT_INVOICE_BANK_INFO 사용
+    //   invoiceBankInfo 저장 안 되어 있어도 · 무조건 은행 정보 표시 (인보이스와 통일)
+    let _bankInfoRaw = (_co.invoiceBankInfo && _co.invoiceBankInfo.trim()) || (typeof DEFAULT_INVOICE_BANK_INFO !== 'undefined' ? DEFAULT_INVOICE_BANK_INFO : '');
     const _bankHtml = _bankInfoRaw ? _esc(_bankInfoRaw).replace(/\n/g, '<br>') : '';
 
     return '<div id="statementPrintArea">'
