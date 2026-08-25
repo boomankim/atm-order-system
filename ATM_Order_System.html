@@ -8200,6 +8200,15 @@ function viewOffice() {
               <div style="color:var(--muted); font-size:11px; padding:6px 2px;">거래처를 선택하면 최근 입금 목록이 표시됩니다.</div>
             </div>
           </div>
+          <!-- ⭐ (2026-08-25 밤작업1) 인보이스# 빠른 조회 · 은행 참조에 번호만 있을 때 PDF 즉시 확인 -->
+          <div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; padding:8px 12px; background:#EAF3FB; border-left:4px solid #2E5C8A; border-radius:5px; flex-wrap:wrap;">
+            <span style="font-size:12px; font-weight:700; color:#2E5C8A; white-space:nowrap;">🔍 인보이스# 빠른 조회:</span>
+            <input type="text" id="ipInvNoLookup" placeholder="예: 201387"
+              onkeydown="if(event.key==='Enter'){event.preventDefault(); lookupInvoicePDF();}"
+              style="width:120px; padding:5px 8px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:center; letter-spacing:1px;">
+            <button class="btn sm" style="background:#B8860B; color:#fff; padding:5px 12px; font-size:12px;" onclick="lookupInvoicePDF()">📄 PDF 열기</button>
+            <span style="font-size:11px; color:var(--muted); flex:1; min-width:180px;">은행 참조에 인보이스# 만 있을 때 · 확인 후 거래처 매핑</span>
+          </div>
           <!-- 섹션 2: 신규 등록 -->
           <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
             <div style="font-size:13px; font-weight:700; color:var(--brand-dark);">➕ 새 입금 등록</div>
@@ -9926,6 +9935,67 @@ window.openBankCsvImportModal = function() {
     }
     bankCsvUpdateOverrideInfo();
   } catch(_){}
+  // ⭐ (2026-08-25 밤작업2) 이전 세션 상태 복원 · 다른 화면 다녀와도 파싱 결과 유지
+  try {
+    // window 메모리 우선 (같은 탭에서 화면 전환)
+    if (BANK_CSV._preview && Array.isArray(BANK_CSV._preview.items) && BANK_CSV._preview.items.length > 0) {
+      _bankCsvShowRestoreBanner((BANK_CSV._previewSavedAt||Date.now()));
+      bankCsvRenderPreview();
+      return;
+    }
+    // sessionStorage fallback (탭 새로 열림 · 브라우저 복원)
+    const state = _bankCsvLoadState();
+    if (state && state.preview && Array.isArray(state.preview.items) && state.preview.items.length > 0) {
+      BANK_CSV._preview = state.preview;
+      BANK_CSV._previewSavedAt = state.savedAt;
+      const hintEl = document.getElementById('bankCsvBankHint');
+      if (hintEl && state.bankHint) hintEl.value = state.bankHint;
+      const chkEl = document.getElementById('bankCsvOverrideDate');
+      if (chkEl) chkEl.checked = !!state.overrideChecked;
+      const dateEl = document.getElementById('bankCsvOverrideDateVal');
+      if (dateEl && state.overrideDate) dateEl.value = state.overrideDate;
+      bankCsvUpdateOverrideInfo();
+      _bankCsvShowRestoreBanner(state.savedAt);
+      bankCsvRenderPreview();
+    }
+  } catch(e) { console.warn('bank CSV restore failed:', e); }
+};
+
+// ⭐ (2026-08-25 밤작업2) 복원 배너 표시
+window._bankCsvShowRestoreBanner = function(savedAt) {
+  const preview = document.getElementById('bankCsvPreview');
+  if (!preview) return;
+  const minutes = Math.max(1, Math.floor((Date.now() - (savedAt||Date.now())) / 60000));
+  const timeStr = minutes < 60 ? (minutes + '분 전') : (Math.floor(minutes/60) + '시간 전');
+  // 기존 배너 제거
+  const oldBanner = document.getElementById('bankCsvRestoreBanner');
+  if (oldBanner) oldBanner.remove();
+  const cnt = (BANK_CSV._preview && BANK_CSV._preview.items) ? BANK_CSV._preview.items.length : 0;
+  const banner = document.createElement('div');
+  banner.id = 'bankCsvRestoreBanner';
+  banner.style.cssText = 'padding:10px 14px; margin:0 18px 8px; background:#E3F2FD; border-left:4px solid #1976D2; border-radius:5px; font-size:12px; display:flex; align-items:center; gap:10px;';
+  banner.innerHTML = '<span style="flex:1;">🔄 <b>이전 세션 복원됨</b> · ' + timeStr + ' 파싱한 ' + cnt + '건 · 파일 재업로드 불필요</span>'
+    + '<button class="btn sm" style="background:#C62828; color:#fff; padding:4px 10px; font-size:11px;" onclick="_bankCsvResetAll()">🔄 새로 시작</button>';
+  preview.parentNode.insertBefore(banner, preview);
+};
+
+// ⭐ (2026-08-25 밤작업2) [새로 시작] · 상태 완전 청소
+window._bankCsvResetAll = function() {
+  if (!confirm('현재 파싱 결과를 지우고 처음부터 다시 시작할까요?')) return;
+  BANK_CSV._preview = null;
+  BANK_CSV._previewSavedAt = null;
+  _bankCsvClearState();
+  const banner = document.getElementById('bankCsvRestoreBanner');
+  if (banner) banner.remove();
+  const preview = document.getElementById('bankCsvPreview');
+  if (preview) {
+    preview.innerHTML = '<div style="text-align:center; padding:60px 20px; color:var(--muted); font-size:13px;">'
+      + '📁 CSV 파일 선택 후 [🔍 파싱 & 미리보기] 를 눌러주세요.</div>';
+  }
+  const saveBtn = document.getElementById('bankCsvSaveBtn');
+  if (saveBtn) saveBtn.disabled = true;
+  const saveInfo = document.getElementById('bankCsvSaveInfo');
+  if (saveInfo) saveInfo.innerHTML = '';
 };
 
 // ⭐ (2026-08-12) 오버라이드 체크박스 상태 표시 갱신
@@ -9941,11 +10011,46 @@ window.bankCsvUpdateOverrideInfo = function() {
   } else {
     infoEl.innerHTML = '→ 저장 시 CSV 원본 날짜 그대로 사용';
   }
+  // ⭐ (2026-08-25 밤작업2) 상태 변경 자동 저장
+  try { _bankCsvSaveState(); } catch(_){}
 };
 window.closeBankCsvImportModal = function() {
   const bg = document.getElementById('bankCsvModalBg');
   if (bg) bg.remove();
-  BANK_CSV._preview = null;
+  // ⭐ (2026-08-25 밤작업2) BANK_CSV._preview 는 그대로 유지 · 재오픈 시 즉시 복원
+  //   sessionStorage 백업도 유지 · 다음 openBankCsvImportModal 에서 사용
+};
+
+// ⭐ (2026-08-25 밤작업2) CSV 파싱 상태 sessionStorage 저장/복원 · 30분 만료
+const BANK_CSV_STATE_KEY = 'atm_bankCsv_state_v1';
+const BANK_CSV_STATE_TTL_MS = 30 * 60 * 1000;
+window._bankCsvSaveState = function() {
+  try {
+    if (!BANK_CSV._preview) return;
+    const state = {
+      preview: BANK_CSV._preview,
+      overrideChecked: (function(){ const e = document.getElementById('bankCsvOverrideDate'); return e ? e.checked : true; })(),
+      overrideDate: (function(){ const e = document.getElementById('bankCsvOverrideDateVal'); return e ? e.value : ''; })(),
+      bankHint: (function(){ const e = document.getElementById('bankCsvBankHint'); return e ? e.value : ''; })(),
+      savedAt: Date.now()
+    };
+    sessionStorage.setItem(BANK_CSV_STATE_KEY, JSON.stringify(state));
+  } catch(e) { console.warn('bankCsv state save failed:', e); }
+};
+window._bankCsvLoadState = function() {
+  try {
+    const raw = sessionStorage.getItem(BANK_CSV_STATE_KEY);
+    if (!raw) return null;
+    const state = JSON.parse(raw);
+    if (!state || !state.savedAt || (Date.now() - state.savedAt) > BANK_CSV_STATE_TTL_MS) {
+      sessionStorage.removeItem(BANK_CSV_STATE_KEY);
+      return null;
+    }
+    return state;
+  } catch(e) { return null; }
+};
+window._bankCsvClearState = function() {
+  try { sessionStorage.removeItem(BANK_CSV_STATE_KEY); } catch(_){}
 };
 
 window.bankCsvLoadFile = function() {
@@ -9958,13 +10063,17 @@ window.bankCsvLoadFile = function() {
       const hint = document.getElementById('bankCsvBankHint').value || '';
       const preview = BANK_CSV.buildPreview(text, { bankHint: hint });
       BANK_CSV._preview = preview;
+      BANK_CSV._previewSavedAt = Date.now();
       if (preview.items.length > 500) {
         if (!confirm('⚠️ ' + preview.items.length + '건이 감지되었습니다. 화면이 무거울 수 있습니다.\n최근 7일치 CSV만 다운로드하는 걸 권장합니다.\n\n그래도 계속 표시할까요?')) {
           BANK_CSV._preview = null;
+          BANK_CSV._previewSavedAt = null;
           return;
         }
       }
       bankCsvRenderPreview();
+      // ⭐ (2026-08-25 밤작업2) 파싱 성공 · 세션에 자동 저장
+      try { _bankCsvSaveState(); } catch(_){}
     } catch(err) {
       console.error('CSV 파싱 실패:', err);
       alert('CSV 파싱 실패: ' + err.message + '\n\n파일 형식(ANZ 3컬럼 · Suncorp 4컬럼)을 확인하세요.');
@@ -10053,12 +10162,14 @@ window.bankCsvToggleRow = function(idx, checked) {
   if (saveInfo) saveInfo.innerHTML = '선택 <b>' + selCnt + '건</b> · $' + fmtMoney(selAmt);
   const saveBtn = document.getElementById('bankCsvSaveBtn');
   if (saveBtn) saveBtn.disabled = selCnt === 0;
+  try { _bankCsvSaveState(); } catch(_){}
 };
 window.bankCsvToggleAll = function(checked) {
   const p = BANK_CSV._preview;
   if (!p) return;
   p.items.forEach(it => { if (!it.isDup) it.selected = !!checked; });
   bankCsvRenderPreview();
+  try { _bankCsvSaveState(); } catch(_){}
 };
 window.bankCsvSetCustomer = function(idx, cid) {
   const p = BANK_CSV._preview;
@@ -10077,6 +10188,7 @@ window.bankCsvSetCustomer = function(idx, cid) {
     const saveInfo = document.getElementById('bankCsvSaveInfo');
     if (saveInfo) saveInfo.innerHTML = '선택 <b>' + selCnt + '건</b> · $' + fmtMoney(selAmt);
   }
+  try { _bankCsvSaveState(); } catch(_){}
 };
 
 window.bankCsvSaveBatch = async function() {
@@ -10173,6 +10285,8 @@ window.bankCsvSaveBatch = async function() {
   }
   try { auditLogAdd('은행 CSV 일괄 등록: ' + bank.toUpperCase() + ' · ' + saved + '건' + (learned ? ' · 학습 ' + learned + '건' : '') + ' · 배치ID ' + batchId); } catch(_){}
   saveLocalDB();
+  // ⭐ (2026-08-25 밤작업2) 저장 성공 · 세션 상태 완전 청소
+  try { _bankCsvClearState(); BANK_CSV._preview = null; BANK_CSV._previewSavedAt = null; } catch(_){}
   alert('✅ ' + saved + '건 등록 완료' + (failed ? ' · ' + failed + '건 실패' : '') + (learned ? '\n📚 ' + learned + '건 학습됨 (다음 CSV부터 자동 매칭)' : '') + '\n\n배치ID: ' + batchId + '\n(감사 로그에서 이 ID로 롤백 가능)');
   closeBankCsvImportModal();
   // 매출일보 새로고침
@@ -11072,6 +11186,40 @@ function renderHistoryResults() {
     </div>
   `;
 }
+
+// ⭐ (2026-08-25 밤작업1) 매출일보 입금/수정 패널 · 인보이스# 입력으로 PDF 열기
+//   은행 참조에 인보이스 번호만 있고 거래처 매핑이 안 될 때 · 사무원이 번호로 즉시 확인
+window.lookupInvoicePDF = function() {
+  const el = document.getElementById('ipInvNoLookup');
+  if (!el) return;
+  const raw = (el.value || '').trim();
+  if (!raw) { alert('인보이스 번호를 입력하세요.'); el.focus(); return; }
+  // 숫자만 추출 · 앞 0 포함
+  const cleaned = raw.replace(/[^\d]/g, '');
+  if (!cleaned) { alert('숫자만 입력하세요.'); el.focus(); return; }
+  // DB 에서 검색 · 정확 일치 우선 · 부분 일치 fallback
+  let o = (DB.orders || []).find(x => (x.invoiceNo || '') === cleaned);
+  if (!o) o = (DB.orders || []).find(x => String(x.invoiceNo || '').endsWith(cleaned));
+  if (!o) {
+    alert('❌ 인보이스 ' + cleaned + ' 를 찾을 수 없습니다.\n\n· 번호 다시 확인\n· 발행 완료된 것만 검색됨');
+    el.focus();
+    return;
+  }
+  if (o.status !== 'invoiced' && o.status !== 'delivered') {
+    alert('⚠ 인보이스 ' + o.invoiceNo + ' · 아직 발행 안 됨 (상태: ' + o.status + ')');
+    return;
+  }
+  const c = DB.customers.find(x => x.id === o.customerId);
+  if (typeof showToast === 'function') showToast('📄 인보이스 ' + o.invoiceNo + ' · ' + (c ? c.name : '?') + ' PDF 여는 중…');
+  // 기존 openInvoicePDF 재사용 · 새 창에서 열림
+  if (typeof window.openInvoicePDF === 'function') {
+    window.openInvoicePDF(o.id);
+    el.value = '';   // 다음 조회 위해 비움
+  } else {
+    // fallback · 인보이스 화면으로 이동
+    location.hash = '#invoice?id=' + o.id;
+  }
+};
 
 // ⭐ (2026-07-07) 주문 이력에서 인보이스 PDF 즉석 생성 — 새 창에서 열기 (팝업 차단 시 다운로드)
 window.openInvoicePDF = async function(orderId) {
