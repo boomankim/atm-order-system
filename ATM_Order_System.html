@@ -8145,9 +8145,13 @@ function viewOffice() {
       const expected = nextNo - 1;
       const savedSet = new Set(DB.orders.map(o => parseInt(o.invoiceNo, 10)).filter(Boolean));
       const acknowledgedSet = new Set((DB.settings && Array.isArray(DB.settings.acknowledgedInvoiceGaps)) ? DB.settings.acknowledgedInvoiceGaps : []);
+      // ⭐ (2026-08-28 밤작업E-fix) 실제 발행된 최소 번호부터 순회 · 미사용 초기 범위 제외
+      //   200001부터 시작하면 · 처음부터 안 쓴 범위까지 "유실"로 잡혀서 갭 수 폭증 → 실제 인보이스 범위 안의 진짜 갭만
+      let minSaved = Infinity;
+      savedSet.forEach(n => { if (n < minSaved) minSaved = n; });
+      const startFrom = isFinite(minSaved) ? minSaved : expected + 1;  // 발행 인보이스 없으면 loop skip
       const missingAll = [];
-      // 200001 부터 expected 까지 · 미저장 & 미확정 번호 모두 수집
-      for (let n = 200001; n <= expected; n++) {
+      for (let n = startFrom; n <= expected; n++) {
         if (!savedSet.has(n) && !acknowledgedSet.has(n)) missingAll.push(n);
       }
       const gap = missingAll.length;
