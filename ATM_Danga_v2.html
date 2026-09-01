@@ -169,13 +169,16 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
       </div>
       <div>
         <div><b>인보이스 올리기</b></div>
-        <div class="small" style="margin-top:3px;">사진 촬영 또는 PDF 선택 · 여러 장 가능</div>
+        <div class="small" style="margin-top:3px;">사진·갤러리·PDF·스캔 파일 선택 · 여러 장 가능</div>
       </div>
     </div>
     <input type="file" id="fileInput" accept="image/*,application/pdf" multiple class="hidden">
+    <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
     <div class="btnrow" style="margin-top:10px;">
+      <button class="btn btn-ghost btn-sm" id="btnCamera">카메라 바로 촬영</button>
       <button class="btn btn-ghost btn-sm" id="btnManual">사진 없이 직접 입력</button>
     </div>
+    <div class="muted small" style="margin-top:8px;">폰 스캔 기능으로 찍었다면: 스캔 앱에서 <b>공유 → 단가</b>를 누르면 바로 여기로 들어옵니다.</div>
     <div id="ocrProgress" class="hidden">
       <div class="prog"><div id="ocrBar"></div></div>
       <div class="muted" id="ocrMsg">준비 중…</div>
@@ -674,6 +677,9 @@ dz.addEventListener('dragleave', ()=>dz.classList.remove('drag'));
 dz.addEventListener('drop', e=>{e.preventDefault(); dz.classList.remove('drag');
   if(e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);});
 fi.addEventListener('change', ()=>{ if(fi.files.length) handleFiles(fi.files); fi.value=''; });
+const ci=$('#cameraInput');
+$('#btnCamera').addEventListener('click', ()=>ci.click());
+ci.addEventListener('change', ()=>{ if(ci.files.length) handleFiles(ci.files); ci.value=''; });
 $('#btnManual').addEventListener('click', ()=>{
   startReview({supplierKey:null, invoiceNo:'', date:todayISO(), lines:[]});
   addEmptyLine();
@@ -1092,6 +1098,33 @@ $$('.bottomnav button').forEach(b=>b.addEventListener('click', ()=>{
   if(b.dataset.tab==='tab-learn'){ renderLearn(); renderAliases(); }
 }));
 loadAll();
+
+/* ============================ 폰 공유(스캔) 받기 ============================ */
+// 공유 전용 서비스워커 — 범위가 ./danga-share/ 뿐이라 오더 시스템 sw.js와 충돌 없음
+if('serviceWorker' in navigator && location.protocol==='https:'){
+  navigator.serviceWorker.register('danga_sw.js', {scope:'./danga-share/'}).catch(()=>{});
+}
+// 스캔/갤러리 앱에서 "공유 → 단가"로 들어온 파일 꺼내서 바로 등록 흐름 시작
+(async function intakeShared(){
+  if(new URLSearchParams(location.search).get('shared')!=='1') return;
+  history.replaceState(null,'',location.pathname); // 새로고침 시 중복 방지
+  try{
+    const cache=await caches.open('danga-share');
+    const cRes=await cache.match('./danga-share/count');
+    const n=cRes? parseInt(await cRes.text(),10)||0 : 0;
+    const files=[];
+    for(let i=0;i<n;i++){
+      const r=await cache.match('./danga-share/file-'+i);
+      if(!r) continue;
+      const blob=await r.blob();
+      const name=decodeURIComponent(r.headers.get('X-File-Name')||('shared_'+i));
+      files.push(new File([blob], name, {type:r.headers.get('Content-Type')||blob.type}));
+      await cache.delete('./danga-share/file-'+i);
+    }
+    await cache.delete('./danga-share/count');
+    if(files.length){ toast('공유받은 파일 '+files.length+'개 — 인식 시작'); handleFiles(files); }
+  }catch(e){ console.warn('공유 파일 읽기 실패', e); }
+})();
 </script>
 </body>
 </html>

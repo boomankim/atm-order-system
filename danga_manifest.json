@@ -8,6 +8,16 @@
   "orientation": "portrait",
   "background_color": "#F2F4F6",
   "theme_color": "#F2F4F6",
+  "share_target": {
+    "action": "./danga-share/receive",
+    "method": "POST",
+    "enctype": "multipart/form-data",
+    "params": {
+      "files": [
+        { "name": "media", "accept": ["image/*", "application/pdf"] }
+      ]
+    }
+  },
   "icons": [
     { "src": "danga-icon-192.png", "sizes": "192x192", "type": "image/png" },
     { "src": "danga-icon-512.png", "sizes": "512x512", "type": "image/png" },
