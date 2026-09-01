@@ -173,9 +173,7 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
       </div>
     </div>
     <input type="file" id="fileInput" accept="image/*,application/pdf" multiple class="hidden">
-    <input type="file" id="cameraInput" accept="image/*" capture="environment" class="hidden">
     <div class="btnrow" style="margin-top:10px;">
-      <button class="btn btn-ghost btn-sm" id="btnCamera">카메라 바로 촬영</button>
       <button class="btn btn-ghost btn-sm" id="btnManual">사진 없이 직접 입력</button>
     </div>
     <div class="muted small" style="margin-top:8px;">폰 스캔 기능으로 찍었다면: 스캔 앱에서 <b>공유 → 단가</b>를 누르면 바로 여기로 들어옵니다.</div>
@@ -205,6 +203,7 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
     <div class="btnrow" style="margin-top:6px;">
       <button class="btn btn-ghost btn-sm" id="btnAddLine">＋ 품목 줄 추가</button>
     </div>
+    <div id="queueInfo" class="hidden" style="margin-top:10px;background:var(--yellow-bg);border-radius:14px;padding:12px 14px;font-size:12.5px;"></div>
     <div class="muted" id="matchSummary" style="margin:10px 0;"></div>
     <div class="btnrow">
       <button class="btn btn-primary" id="btnSaveInv" style="flex:1;">저장하고 학습</button>
@@ -677,37 +676,71 @@ dz.addEventListener('dragleave', ()=>dz.classList.remove('drag'));
 dz.addEventListener('drop', e=>{e.preventDefault(); dz.classList.remove('drag');
   if(e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);});
 fi.addEventListener('change', ()=>{ if(fi.files.length) handleFiles(fi.files); fi.value=''; });
-const ci=$('#cameraInput');
-$('#btnCamera').addEventListener('click', ()=>ci.click());
-ci.addEventListener('change', ()=>{ if(ci.files.length) handleFiles(ci.files); ci.value=''; });
 $('#btnManual').addEventListener('click', ()=>{
   startReview({supplierKey:null, invoiceNo:'', date:todayISO(), lines:[]});
   addEmptyLine();
 });
 
-async function handleFiles(fileList){
+/* 여러 장 = 여러 인보이스. 사진마다 따로 검토·저장하는 대기열 방식.
+   (여러 페이지짜리 한 인보이스는 검토 화면의 '이어붙이기' 버튼으로 합침) */
+let FILE_QUEUE=[], OCR_BUSY=false;
+function handleFiles(fileList){
   const files=[...fileList];
+  FILE_QUEUE.push(...files);
+  if(!CURRENT && !OCR_BUSY){ processNextInQueue(); }
+  else { updateQueueUI(); toast(files.length+'장이 대기열에 추가됐습니다'); }
+}
+async function ocrOneFile(file){
+  OCR_BUSY=true;
   $('#ocrProgress').classList.remove('hidden');
   const bar=$('#ocrBar'), msg=$('#ocrMsg');
-  let allText='';
+  bar.style.width='0%';
   try{
-    for(let i=0;i<files.length;i++){
-      const setProg=p=>{ bar.style.width=Math.round(((i+p)/files.length)*100)+'%'; };
-      const setMsg=t=>{ msg.textContent='['+(i+1)+'/'+files.length+'] '+t; };
-      allText += await extractTextFromFile(files[i], setProg, setMsg) + '\n';
-      bar.style.width=Math.round(((i+1)/files.length)*100)+'%';
-    }
-  }catch(e){
-    console.error(e); toast('⚠️ 인식 실패: '+e.message);
-    $('#ocrProgress').classList.add('hidden'); return;
+    const text=await extractTextFromFile(file,
+      p=>{ bar.style.width=Math.round(p*100)+'%'; },
+      t=>{ msg.textContent=t + (FILE_QUEUE.length? ' (대기 '+FILE_QUEUE.length+'장)':''); });
+    return text;
+  } finally {
+    OCR_BUSY=false;
+    $('#ocrProgress').classList.add('hidden');
   }
-  $('#ocrProgress').classList.add('hidden');
-  const parsed = parseInvoiceText(allText);
-  if(!parsed.lines.length){
-    toast('품목 줄을 찾지 못했어요 — 직접 입력 줄을 추가해 주세요');
+}
+async function processNextInQueue(){
+  const file=FILE_QUEUE.shift();
+  if(!file){ updateQueueUI(); return; }
+  let text='';
+  try{ text=await ocrOneFile(file); }
+  catch(e){
+    console.error(e); toast('인식 실패: '+e.message+(FILE_QUEUE.length?' — 다음 사진으로 넘어갑니다':''));
+    if(FILE_QUEUE.length) return processNextInQueue();
+    return;
   }
+  const parsed=parseInvoiceText(text);
+  if(!parsed.lines.length) toast('품목 줄을 찾지 못했어요 — 직접 추가하거나 취소로 건너뛰세요');
   startReview(parsed);
 }
+function updateQueueUI(){
+  const el=$('#queueInfo'); if(!el) return;
+  if(CURRENT && FILE_QUEUE.length){
+    el.classList.remove('hidden');
+    el.innerHTML='대기 중인 사진 <b>'+FILE_QUEUE.length+'장</b> — 저장하면 다음 인보이스가 자동으로 열립니다.'
+      +'<div style="margin-top:8px;"><button class="btn btn-sm btn-ghost" id="btnMergeNext">다음 사진을 이 인보이스에 이어붙이기 (여러 페이지 인보이스용)</button></div>';
+  } else el.classList.add('hidden');
+}
+document.addEventListener('click', async e=>{
+  if(e.target && e.target.id==='btnMergeNext'){
+    const file=FILE_QUEUE.shift(); if(!file || !CURRENT) return;
+    try{
+      const text=await ocrOneFile(file);
+      const parsed=parseInvoiceText(text);
+      parsed.lines.forEach(l=>{ CURRENT.lines.push(l); applyMatch(l); });
+      if(!CURRENT.invoiceNo && parsed.invoiceNo) $('#invNo').value=parsed.invoiceNo;
+      renderLines();
+      toast(parsed.lines.length+'개 품목을 이어붙였습니다');
+    }catch(err){ toast('인식 실패: '+err.message); }
+    updateQueueUI();
+  }
+});
 
 function rebuildSupplierSelect(selectedKey){
   const sel=$('#invSupplier');
@@ -725,6 +758,7 @@ function startReview(parsed){
   $('#invNo').value = parsed.invoiceNo || '';
   $('#reviewCard').classList.remove('hidden');
   renderLines();
+  updateQueueUI();
   $('#reviewCard').scrollIntoView({behavior:'smooth'});
 }
 function applyMatch(line){
@@ -859,6 +893,7 @@ function addEmptyLine(){
 $('#btnAddLine').addEventListener('click', addEmptyLine);
 $('#btnCancelInv').addEventListener('click', ()=>{
   CURRENT=null; $('#reviewCard').classList.add('hidden');
+  if(FILE_QUEUE.length){ toast('이 사진은 건너뛰고 다음 사진을 엽니다'); processNextInQueue(); }
 });
 
 /* ---------------- 저장 + 학습 ---------------- */
@@ -912,8 +947,10 @@ $('#btnSaveInv').addEventListener('click', async ()=>{
     });
     await REF_DANGA.update(learn);
     const learned=Object.keys(learn).filter(k=>k.indexOf('aliasDict/')===0).length;
-    toast('✅ 저장 완료'+(learned?' — 별칭 '+learned+'개 학습됨':''));
+    toast('✅ 저장 완료'+(learned?' — 별칭 '+learned+'개 학습됨':'')
+      +(FILE_QUEUE.length?' · 다음 사진 '+FILE_QUEUE.length+'장':''));
     CURRENT=null; $('#reviewCard').classList.add('hidden');
+    if(FILE_QUEUE.length) processNextInQueue();
   }catch(e){ console.error(e); toast('⚠️ 저장 실패: '+e.message); }
   btn.disabled=false;
 });
