@@ -703,14 +703,18 @@ async function handleFiles(fileList){
   startReview(parsed);
 }
 
+function rebuildSupplierSelect(selectedKey){
+  const sel=$('#invSupplier');
+  sel.innerHTML = '<option value="">매입처 선택…</option>' +
+    Object.keys(SUPPLIERS).map(k=>'<option value="'+k+'"'+(k===selectedKey?' selected':'')+'>'+esc(SUPPLIERS[k].name)+'</option>').join('') +
+    '<option value="__new__">＋ 새 매입처 직접 입력</option>';
+}
 function startReview(parsed){
   CURRENT = parsed;
   // 매칭 시도
   CURRENT.lines.forEach(l=>applyMatch(l));
   // 헤더
-  const sel=$('#invSupplier');
-  sel.innerHTML = '<option value="">매입처 선택…</option>' +
-    Object.keys(SUPPLIERS).map(k=>'<option value="'+k+'"'+(k===parsed.supplierKey?' selected':'')+'>'+esc(SUPPLIERS[k].name)+'</option>').join('');
+  rebuildSupplierSelect(parsed.supplierKey);
   $('#invDate').value = parsed.date || todayISO();
   $('#invNo').value = parsed.invoiceNo || '';
   $('#reviewCard').classList.remove('hidden');
@@ -813,7 +817,21 @@ $('#lineList').addEventListener('blur', e=>{
     if(l && l.matchType!=='auto'){ applyMatch(l); renderLines(); } }
 }, true);
 $('#invSupplier').addEventListener('change', ()=>{
-  if(!CURRENT) return; CURRENT.supplierKey=$('#invSupplier').value;
+  if(!CURRENT) return;
+  const sel=$('#invSupplier');
+  if(sel.value==='__new__'){
+    const name=(prompt('새 매입처 이름을 입력하세요')||'').trim();
+    if(!name){ sel.value=CURRENT.supplierKey||''; return; }
+    const key=safeKey(name.toLowerCase().replace(/\s+/g,'_'));
+    SUPPLIERS[key]={name:name, keywords:name.toUpperCase()};
+    if(REF_DANGA){ try{ REF_DANGA.child('suppliers/'+key).set(SUPPLIERS[key]); }catch(e){} }
+    saveCache(); renderSuppliers();
+    rebuildSupplierSelect(key);
+    CURRENT.supplierKey=key;
+    toast('매입처 "'+name+'" 추가됨');
+  } else {
+    CURRENT.supplierKey=sel.value;
+  }
   CURRENT.lines.forEach(l=>{ if(l.matchType!=='hold') applyMatch(l); });
   renderLines();
 });
