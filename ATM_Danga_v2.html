@@ -2,7 +2,7 @@
 <html lang="ko">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta name="theme-color" content="#F2F4F6">
 <title>ATM 매입단가 v2</title>
 <link rel="manifest" href="danga_manifest.json">
@@ -185,6 +185,7 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
 
   <div class="card hidden" id="reviewCard">
     <h2>인보이스 내용 확인</h2>
+    <div id="invPhotos" class="hidden" style="display:flex;gap:8px;overflow-x:auto;margin-bottom:12px;"></div>
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px;margin-bottom:10px;">
       <div>
         <label class="small muted">매입처</label>
@@ -304,6 +305,14 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
 </div>
 
 <div class="toast" id="toast"></div>
+
+<!-- 인보이스 사진 크게 보기 -->
+<div id="photoView" style="position:fixed;inset:0;background:rgba(15,18,22,.96);z-index:100;display:none;overflow:auto;" >
+  <div style="position:sticky;top:0;display:flex;justify-content:flex-end;padding:10px;">
+    <button id="photoViewClose" style="background:#fff;border:none;border-radius:99px;padding:9px 16px;font-weight:700;font-size:14px;">닫기 ✕</button>
+  </div>
+  <img id="photoViewImg" style="width:100%;display:block;" alt="인보이스 사진">
+</div>
 
 <script>
 /* ============================ 설정/상수 ============================ */
@@ -716,8 +725,26 @@ async function processNextInQueue(){
     return;
   }
   const parsed=parseInvoiceText(text);
-  if(!parsed.lines.length) toast('품목 줄을 찾지 못했어요 — 직접 추가하거나 취소로 건너뛰세요');
+  parsed.photoUrls = /^image\//.test(file.type) ? [URL.createObjectURL(file)] : [];
+  if(!parsed.lines.length) toast('품목 줄을 찾지 못했어요 — 사진을 보며 직접 추가하거나 취소로 건너뛰세요');
   startReview(parsed);
+}
+function renderPhotos(){
+  const box=$('#invPhotos');
+  const urls=(CURRENT && CURRENT.photoUrls)||[];
+  if(!urls.length){ box.classList.add('hidden'); box.innerHTML=''; return; }
+  box.classList.remove('hidden');
+  box.innerHTML=urls.map(u=>'<img src="'+u+'" data-full="'+u+'" style="height:130px;border-radius:12px;flex-shrink:0;" alt="인보이스">').join('')
+    +'<div style="align-self:center;color:var(--muted);font-size:11px;white-space:nowrap;padding:0 4px;">사진을 누르면<br>크게 보여요</div>';
+}
+$('#invPhotos').addEventListener('click', e=>{
+  const img=e.target.closest('img[data-full]'); if(!img) return;
+  $('#photoViewImg').src=img.dataset.full;
+  $('#photoView').style.display='block';
+});
+$('#photoViewClose').addEventListener('click', ()=>{ $('#photoView').style.display='none'; });
+function clearPhotos(){
+  ((CURRENT && CURRENT.photoUrls)||[]).forEach(u=>{ try{ URL.revokeObjectURL(u); }catch(e){} });
 }
 function updateQueueUI(){
   const el=$('#queueInfo'); if(!el) return;
@@ -734,6 +761,7 @@ document.addEventListener('click', async e=>{
       const text=await ocrOneFile(file);
       const parsed=parseInvoiceText(text);
       parsed.lines.forEach(l=>{ CURRENT.lines.push(l); applyMatch(l); });
+      if(/^image\//.test(file.type)){ (CURRENT.photoUrls=CURRENT.photoUrls||[]).push(URL.createObjectURL(file)); renderPhotos(); }
       if(!CURRENT.invoiceNo && parsed.invoiceNo) $('#invNo').value=parsed.invoiceNo;
       renderLines();
       toast(parsed.lines.length+'개 품목을 이어붙였습니다');
@@ -757,6 +785,7 @@ function startReview(parsed){
   $('#invDate').value = parsed.date || todayISO();
   $('#invNo').value = parsed.invoiceNo || '';
   $('#reviewCard').classList.remove('hidden');
+  renderPhotos();
   renderLines();
   updateQueueUI();
   $('#reviewCard').scrollIntoView({behavior:'smooth'});
@@ -892,6 +921,7 @@ function addEmptyLine(){
 }
 $('#btnAddLine').addEventListener('click', addEmptyLine);
 $('#btnCancelInv').addEventListener('click', ()=>{
+  clearPhotos();
   CURRENT=null; $('#reviewCard').classList.add('hidden');
   if(FILE_QUEUE.length){ toast('이 사진은 건너뛰고 다음 사진을 엽니다'); processNextInQueue(); }
 });
@@ -949,6 +979,7 @@ $('#btnSaveInv').addEventListener('click', async ()=>{
     const learned=Object.keys(learn).filter(k=>k.indexOf('aliasDict/')===0).length;
     toast('✅ 저장 완료'+(learned?' — 별칭 '+learned+'개 학습됨':'')
       +(FILE_QUEUE.length?' · 다음 사진 '+FILE_QUEUE.length+'장':''));
+    clearPhotos();
     CURRENT=null; $('#reviewCard').classList.add('hidden');
     if(FILE_QUEUE.length) processNextInQueue();
   }catch(e){ console.error(e); toast('⚠️ 저장 실패: '+e.message); }
