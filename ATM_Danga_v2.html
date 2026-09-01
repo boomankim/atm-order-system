@@ -577,10 +577,31 @@ async function extractTextFromFile(file, setProg, setMsg){
   }
   setMsg('사진 준비 중…');
   const canvas = await preprocessImage(file);
-  setMsg('글자 인식 중… (첫 실행은 20~30초 걸릴 수 있어요)');
+  // 인식 사다리: 표 모드(psm6) → 자동 모드(psm3) → 회전 보정(90/270/180)
+  // 품목줄이 1개 이상 잡히는 첫 결과를 쓴다 (스캔·기울어진 사진 대응)
+  const attempts=[{psm:'6',rot:0},{psm:'3',rot:0},{psm:'6',rot:90},{psm:'6',rot:270},{psm:'6',rot:180}];
   const w = await getTess(setProg);
-  const r = await w.recognize(canvas);
-  return r.data.text;
+  let fallbackText='';
+  for(const at of attempts){
+    setMsg('글자 인식 중…'+(at.rot?' (회전 '+at.rot+'° 시도)':'')+' — 첫 실행은 20~30초 걸릴 수 있어요');
+    const c = at.rot ? rotateCanvas(canvas, at.rot) : canvas;
+    try{ await w.setParameters({tessedit_pageseg_mode: at.psm}); }catch(e){}
+    const r = await w.recognize(c);
+    const txt = r.data.text || '';
+    if(!fallbackText) fallbackText=txt;
+    if(parseInvoiceText(txt).lines.length >= 1) return txt;
+  }
+  return fallbackText;
+}
+function rotateCanvas(src, deg){
+  const c=document.createElement('canvas');
+  if(deg===180){ c.width=src.width; c.height=src.height; }
+  else { c.width=src.height; c.height=src.width; }
+  const x=c.getContext('2d');
+  x.translate(c.width/2, c.height/2);
+  x.rotate(deg*Math.PI/180);
+  x.drawImage(src, -src.width/2, -src.height/2);
+  return c;
 }
 
 /* ============================ 인보이스 텍스트 파서 ============================ */
@@ -596,16 +617,31 @@ function detectSupplier(text){
 function detectInvoiceNo(text){
   let m=/TAX\s*INVOICE\s*NUMBER[:\s]*([A-Z]{0,3}\d{5,})/i.exec(text);
   if(!m) m=/INVOICE\s*(?:NO|NUMBER|#)[^\dA-Z]{0,12}([A-Z]{0,3}\d{5,})/i.exec(text);
+  if(!m) m=/\bINV\.?\s*NO\.?[^\d]{0,10}(\d{5,})/i.exec(text);
   if(!m) m=/\b(S[I1l]\d{7,})\b/.exec(text);
   if(!m) m=/\b(\d{6})\s+\d{1,2}\/\d{1,2}\/20\d{2}\b/.exec(text); // "357994 24/08/2026" 형태
+  if(!m){ // "… 169110 28-Aug-26" 형태 — 마지막 매치가 인보이스 번호일 확률이 높음
+    let last=null, re=/\b(\d{6})\s+\d{1,2}-[A-Za-z]{3}-\d{2}\b/g, t;
+    while((t=re.exec(text))) last=t;
+    m=last;
+  }
   if(!m) return '';
   // OCR 이 SI → S1 로 읽는 경우 보정
   return m[1].replace(/^S[1l](?=\d{7,})/,'SI');
 }
 function detectDate(text){
-  const m=/\b(\d{1,2})\/(\d{1,2})\/(20\d{2})\b/.exec(text);
-  if(!m) return todayISO();
-  return m[3]+'-'+m[2].padStart(2,'0')+'-'+m[1].padStart(2,'0');
+  const p2=s=>String(s).padStart(2,'0');
+  let m=/\b(\d{1,2})\/(\d{1,2})\/(20\d{2})\b/.exec(text);              // 26/08/2026
+  if(m) return m[3]+'-'+p2(m[2])+'-'+p2(m[1]);
+  const MON={JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12'};
+  m=/\b(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b/.exec(text);               // 28-Aug-26
+  if(m && MON[m[2].toUpperCase()]){
+    const y=m[3].length===2?'20'+m[3]:m[3];
+    return y+'-'+MON[m[2].toUpperCase()]+'-'+p2(m[1]);
+  }
+  m=/\b(\d{1,2})\/(\d{1,2})\/(\d{2})\b/.exec(text);                    // 27/08/26
+  if(m) return '20'+m[3]+'-'+p2(m[2])+'-'+p2(m[1]);
+  return todayISO();
 }
 function looksLikeItemDesc(line){
   const L=line.trim();
@@ -625,42 +661,127 @@ function parseInvoiceText(text){
         qtyKg:parseNum(m[3]), unitPrice:parseNum(m[4]), amount:parseNum(m[5]) });
     }
   });
-  // ---- 패스 2: 코드+품명 줄 따로, 숫자 줄 따로 (AMG 등) ----
+  // ---- 패스 2: 범용 엔진 — "중량 × 단가 ≈ 금액" 숫자 검증으로 품목줄 인식 ----
+  //   매입처마다 표 양식이 달라도(Oakdale·Götzinger·Barcoo·Melrina·JBS·Pacific·AMG…)
+  //   품목줄에는 반드시 서로 곱이 맞는 숫자 조합이 있다는 점을 이용한다.
   if(!items.length){
-    // 숫자 트리플: 수량 · 단가 · 금액 이 흩어진 줄
-    const numsRe=/([\d,]+\.\d{2})\s*[|Il!]*\s*([\d]{1,3}\.\d{3,4})\s*\/?\s*(?:KGS?)?\s*[|Il!]*\s*(?:[\d,]+\.\d{2}\s+)?([\d,]+\.\d{2})?/;
-    let pending=null; // {qtyKg, unitPrice, amount}
-    let descBuf=[]; let codeBuf='';
-    const flush=()=>{
-      if(descBuf.length){
-        const desc=descBuf.join(' ').replace(/\s+/g,' ').trim();
-        items.push({ rawCode:codeBuf, rawDesc:desc,
-          qtyKg:pending?pending.qtyKg:NaN, unitPrice:pending?pending.unitPrice:NaN,
-          amount:pending?pending.amount:NaN });
-      }
-      descBuf=[]; codeBuf=''; pending=null;
+    const junkRe=/TOTAL|SUB\s*TOTAL|SUBTOTAL|GST|BALANCE|FREIGHT|LEVY|CARTON COUNT|PAYMENT|TERMS|ACCOUNT|B\.?S\.?B|DELIVER|INVOICE|PHONE|FAX|EMAIL|ABN|ACN|DISPATCH|DUE|SLAUGHTER|PACKING|LICEN[CS]E|SIGNATURE|RECEIVED|CLAIMS|BANK|ADDRESS|COMMENTS|PROCESSED|www\.|@|ALL THAT MEAT|HOMEBUSH|PARRAMATTA|WHOLESALE|PTY|\bNSW\b|AUSTRALIA|RETAIL|LABELL|SUITABLE|COUNTRY OF ORIGIN|CONDITIONS|PROPERTY|EVIDENCE|PURCHASER/i;
+    // 줄 맨 앞의 품목코드 분리 (예: 06047, 55818-3-BM, BAR-BCKR, 20928)
+    const stripLead=(l)=>{
+      const s=l.replace(/^[\s|;:_\[\]"'.,*-]+/,'').trim();
+      const m=/^([A-Za-z]{0,4}\d[\dA-Za-z\-\/]{2,13}|[A-Z]{2,6}-[A-Z0-9]{2,8})(?=\s)/.exec(s);
+      if(m && (/\d/.test(m[1]) || m[1].indexOf('-')>=0)) return {code:m[1], rest:s.slice(m[1].length).trim()};
+      return {code:'', rest:s};
     };
-    lines.forEach(l=>{
-      if(/TOTAL THIS|TOTAL PACKAGES|SUBTOTAL|GST INCLUSIVE|SLAUGHTER|PACKING DATE/i.test(l)){ flush(); return; }
-      const nm=numsRe.exec(l);
-      const codeStart=/^(\d{4,6})\s+([A-Z].{3,})/.exec(l);
-      if(codeStart && looksLikeItemDesc(codeStart[2])){
-        if(descBuf.length) flush();
-        codeBuf=codeStart[1]; descBuf.push(codeStart[2]);
-        if(nm){ pending={qtyKg:parseNum(nm[1]), unitPrice:parseNum(nm[2]), amount:parseNum(nm[3])}; }
-        return;
+    const analyze=(l)=>{
+      const nums=[]; const textToks=[];
+      l.split(/\s+/).forEach(t=>{
+        const c=t.replace(/[|;!()\[\]{}«»_*']/g,'').trim();
+        if(!c) return;
+        if(/^\$?-?[\d,]+(?:\.\d+)?$/.test(c) && /\d/.test(c)){
+          const v=parseNum(c);
+          if(!isNaN(v)) nums.push({v:v, raw:c.replace('$','')});
+        } else textToks.push(c);
+      });
+      const text=textToks.join(' ').replace(/\s+/g,' ').trim();
+      const hasDesc=/[A-Za-z가-힣]{3,}/.test(text);
+      return {nums, text, hasDesc};
+    };
+    const findCombo=(nums)=>{
+      const vs=nums.map(n=>n.v);
+      const n=vs.length;
+      // ① 정확 조합: w×p≈amt (amt는 뒤쪽 우선)
+      for(let k=n-1;k>=0;k--){
+        const amt=vs[k]; if(amt<=0.5) continue;
+        let best=null;
+        for(let i=0;i<n;i++){ if(i===k) continue;
+          for(let j=0;j<n;j++){ if(j===k||j===i) continue;
+            const w=vs[i], p=vs[j];
+            if(w<=0||p<=0.05||p>500) continue;
+            if(Math.abs(w*p-amt)<=Math.max(amt*0.015,0.06)){
+              const score=(j>i?2:0)+(nums[j].raw.indexOf('.')>=0?1:0);
+              if(!best||score>best.score) best={qty:w,price:p,amt:amt,score:score};
+            }
+          }
+        }
+        if(best) return best;
       }
-      if(nm && parseNum(nm[1])>0 && parseNum(nm[2])>0){
-        pending={qtyKg:parseNum(nm[1]), unitPrice:parseNum(nm[2]), amount:parseNum(nm[3])};
-        return;
+      // ② 유도: 금액 + (단가 or 중량) 하나만 믿을 수 있을 때
+      if(n>=2){
+        const amt=Math.max(...vs);
+        if(amt>1){
+          const rest=nums.filter(x=>x.v!==amt && x.v>0);
+          const priceDec=rest.filter(x=>x.raw.indexOf('.')>=0 && x.v>=0.3 && x.v<=300);
+          for(const p of priceDec){ const w=amt/p.v;
+            if(w>=0.5 && w<=100000){
+              // 유도된 중량이 단가보다 훨씬 작으면 토큰이 사실 중량이었을 가능성 (역할 교대)
+              if(w<p.v && p.v>=25) return {qty:p.v, price:Math.round(w*100)/100, amt:amt};
+              return {qty:Math.round(w*100)/100, price:p.v, amt:amt};
+            } }
+          const wDec=rest.filter(x=>x.raw.indexOf('.')>=0 && x.v>1 && x.v<=100000);
+          for(const w of wDec){ const p=amt/w.v;
+            if(p>=0.3 && p<=300) return {qty:w.v, price:Math.round(p*100)/100, amt:amt}; }
+        }
       }
-      if(descBuf.length && looksLikeItemDesc(l) && !/^\d+\s*CTN/i.test(l)){
-        // 이어지는 품명 줄 (AUS-MEAT CUT CODE 같은 꼬리표는 잘라냄)
-        if(/AUS\s*[- ]?MEAT|CUT CODE/i.test(l)){ return; }
-        descBuf.push(l); return;
+      return null;
+    };
+    const leadCode=(l)=>stripLead(l).code;
+    let pendCombo=null;      // 숫자줄이 먼저 나온 경우 (설명 대기)
+    let pendDesc=[]; let pendCode='';
+    let lastItem=null; let lastItemLine=-9; let descAppended=0;
+    const flushPend=()=>{
+      if(pendCombo && pendDesc.length){
+        items.push({rawCode:pendCode, rawDesc:pendDesc.join(' ').replace(/\s+/g,' ').trim(),
+          qtyKg:pendCombo.qty, unitPrice:pendCombo.price, amount:pendCombo.amt});
+        lastItem=items[items.length-1];
+      }
+      pendCombo=null; pendDesc=[]; pendCode='';
+    };
+    lines.forEach((l, li)=>{
+      if(junkRe.test(l)){ flushPend(); return; }
+      if(/AUS\s*[- ]?MEAT|CUT CODE|CW (quantity|unit)/i.test(l)) return;
+      const sl=stripLead(l);
+      const a=analyze(sl.rest);
+      // 코드만 있는 줄 (Melrina 배치번호) → 직전 품목에 붙임
+      if(!a.hasDesc && a.nums.length<=1 && /^[A-Za-z]?[\d][\dA-Za-z\/\-]{3,}$/.test(l.trim())
+         && lastItem && !lastItem.rawCode && li-lastItemLine<=2){
+        lastItem.rawCode=l.trim().split('/')[0]; return;
+      }
+      if(a.nums.length>=2){
+        const combo=findCombo(a.nums);
+        if(combo){
+          if(a.hasDesc){
+            const code=sl.code;
+            let desc=a.text;
+            items.push({rawCode:code, rawDesc:desc, qtyKg:combo.qty, unitPrice:combo.price, amount:combo.amt});
+            lastItem=items[items.length-1]; lastItemLine=li; descAppended=0;
+            pendCombo=null; pendDesc=[];
+          } else if(pendDesc.length){
+            items.push({rawCode:pendCode, rawDesc:pendDesc.join(' ').replace(/\s+/g,' ').trim(),
+              qtyKg:combo.qty, unitPrice:combo.price, amount:combo.amt});
+            lastItem=items[items.length-1]; lastItemLine=li; descAppended=0;
+            pendDesc=[]; pendCode=''; pendCombo=null;
+          } else { pendCombo=combo; }
+          return;
+        }
+      }
+      if(a.hasDesc && looksLikeItemDesc(l)){
+        if(pendCombo){ // AMG 스타일: 숫자 먼저, 설명 나중
+          if(!pendCode){ const c=leadCode(l); if(c) pendCode=c; }
+          pendDesc.push(a.text);
+          if(pendDesc.length>=4) flushPend();
+          return;
+        }
+        // 방금 만든 품목의 설명이 다음 줄로 이어지는 경우 (2줄까지)
+        if(lastItem && li-lastItemLine<=2 && descAppended<2 && l.indexOf(':')<0 && a.nums.length<=1){
+          lastItem.rawDesc=(lastItem.rawDesc+' '+a.text).trim(); descAppended++;
+          return;
+        }
+        // 설명이 먼저 나오는 양식 대비
+        pendDesc=[a.text]; pendCode=leadCode(l)||'';
       }
     });
-    flush();
+    flushPend();
   }
   // 금액 보정: 금액 없고 수량·단가 있으면 계산
   items.forEach(it=>{
