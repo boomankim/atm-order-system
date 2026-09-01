@@ -181,6 +181,7 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
       <div class="prog"><div id="ocrBar"></div></div>
       <div class="muted" id="ocrMsg">준비 중…</div>
     </div>
+    <div id="resumeInfo" class="hidden" style="margin-top:12px;background:var(--green-bg);border-radius:14px;padding:13px 14px;font-size:13px;"></div>
   </div>
 
   <div class="card hidden" id="reviewCard">
@@ -686,16 +687,47 @@ dz.addEventListener('drop', e=>{e.preventDefault(); dz.classList.remove('drag');
   if(e.dataTransfer.files.length) handleFiles(e.dataTransfer.files);});
 fi.addEventListener('change', ()=>{ if(fi.files.length) handleFiles(fi.files); fi.value=''; });
 $('#btnManual').addEventListener('click', ()=>{
+  CURRENT_QID=null;
   startReview({supplierKey:null, invoiceNo:'', date:todayISO(), lines:[]});
   addEmptyLine();
 });
 
 /* 여러 장 = 여러 인보이스. 사진마다 따로 검토·저장하는 대기열 방식.
-   (여러 페이지짜리 한 인보이스는 검토 화면의 '이어붙이기' 버튼으로 합침) */
-let FILE_QUEUE=[], OCR_BUSY=false;
+   (여러 페이지짜리 한 인보이스는 검토 화면의 '이어붙이기' 버튼으로 합침)
+   대기열은 폰 저장소(IndexedDB)에 보관 — 앱을 나갔다 들어와도 이어서 작업 가능 */
+let FILE_QUEUE=[], OCR_BUSY=false, CURRENT_QID=null;
+
+// ---- 대기열 영구 저장 (IndexedDB, 이 기기 전용) ----
+let _idbP=null;
+function qDB(){
+  return _idbP || (_idbP=new Promise((res,rej)=>{
+    const rq=indexedDB.open('danga_v2_queue',1);
+    rq.onupgradeneeded=()=>{ rq.result.createObjectStore('queue',{keyPath:'id'}); };
+    rq.onsuccess=()=>res(rq.result);
+    rq.onerror=()=>rej(rq.error);
+  }));
+}
+async function qAdd(rec){ try{ const db=await qDB();
+  await new Promise((res,rej)=>{ const tx=db.transaction('queue','readwrite');
+    tx.objectStore('queue').put(rec); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); });
+}catch(e){ console.warn('대기열 저장 실패', e); } }
+async function qDel(id){ if(id==null) return; try{ const db=await qDB();
+  await new Promise((res,rej)=>{ const tx=db.transaction('queue','readwrite');
+    tx.objectStore('queue').delete(id); tx.oncomplete=res; tx.onerror=()=>rej(tx.error); });
+}catch(e){} }
+async function qAll(){ try{ const db=await qDB();
+  return await new Promise((res,rej)=>{ const rq=db.transaction('queue','readonly').objectStore('queue').getAll();
+    rq.onsuccess=()=>res(rq.result||[]); rq.onerror=()=>rej(rq.error); });
+}catch(e){ return []; } }
+
 function handleFiles(fileList){
   const files=[...fileList];
-  FILE_QUEUE.push(...files);
+  files.forEach(f=>{
+    const id=Date.now()+'_'+Math.random().toString(36).slice(2,8);
+    FILE_QUEUE.push({id:id, file:f});
+    qAdd({id:id, name:f.name, type:f.type, blob:f, addedAt:Date.now()});
+  });
+  $('#resumeInfo').classList.add('hidden');
   if(!CURRENT && !OCR_BUSY){ processNextInQueue(); }
   else { updateQueueUI(); toast(files.length+'장이 대기열에 추가됐습니다'); }
 }
@@ -715,12 +747,16 @@ async function ocrOneFile(file){
   }
 }
 async function processNextInQueue(){
-  const file=FILE_QUEUE.shift();
-  if(!file){ updateQueueUI(); return; }
+  const entry=FILE_QUEUE.shift();
+  if(!entry){ updateQueueUI(); return; }
+  const file=entry.file;
+  CURRENT_QID=entry.id;
+  $('#resumeInfo').classList.add('hidden');
   let text='';
   try{ text=await ocrOneFile(file); }
   catch(e){
-    console.error(e); toast('인식 실패: '+e.message+(FILE_QUEUE.length?' — 다음 사진으로 넘어갑니다':''));
+    console.error(e); CURRENT_QID=null;
+    toast('인식 실패: '+e.message+(FILE_QUEUE.length?' — 다음 사진으로 넘어갑니다':''));
     if(FILE_QUEUE.length) return processNextInQueue();
     return;
   }
@@ -756,7 +792,9 @@ function updateQueueUI(){
 }
 document.addEventListener('click', async e=>{
   if(e.target && e.target.id==='btnMergeNext'){
-    const file=FILE_QUEUE.shift(); if(!file || !CURRENT) return;
+    const entry=FILE_QUEUE.shift(); if(!entry || !CURRENT) return;
+    const file=entry.file;
+    qDel(entry.id);
     try{
       const text=await ocrOneFile(file);
       const parsed=parseInvoiceText(text);
@@ -922,6 +960,7 @@ function addEmptyLine(){
 $('#btnAddLine').addEventListener('click', addEmptyLine);
 $('#btnCancelInv').addEventListener('click', ()=>{
   clearPhotos();
+  qDel(CURRENT_QID); CURRENT_QID=null;
   CURRENT=null; $('#reviewCard').classList.add('hidden');
   if(FILE_QUEUE.length){ toast('이 사진은 건너뛰고 다음 사진을 엽니다'); processNextInQueue(); }
 });
@@ -980,6 +1019,7 @@ $('#btnSaveInv').addEventListener('click', async ()=>{
     toast('✅ 저장 완료'+(learned?' — 별칭 '+learned+'개 학습됨':'')
       +(FILE_QUEUE.length?' · 다음 사진 '+FILE_QUEUE.length+'장':''));
     clearPhotos();
+    qDel(CURRENT_QID); CURRENT_QID=null;
     CURRENT=null; $('#reviewCard').classList.add('hidden');
     if(FILE_QUEUE.length) processNextInQueue();
   }catch(e){ console.error(e); toast('⚠️ 저장 실패: '+e.message); }
@@ -1166,6 +1206,35 @@ $$('.bottomnav button').forEach(b=>b.addEventListener('click', ()=>{
   if(b.dataset.tab==='tab-learn'){ renderLearn(); renderAliases(); }
 }));
 loadAll();
+
+/* ============================ 대기열 복원 (앱 재시작 시) ============================ */
+(async function restoreQueue(){
+  try{
+    const recs=await qAll();
+    if(!recs.length) return;
+    recs.sort((a,b)=>(a.addedAt||0)-(b.addedAt||0));
+    recs.forEach(r=>FILE_QUEUE.push({id:r.id, file:new File([r.blob], r.name||'invoice', {type:r.type||'image/jpeg'})}));
+    const el=$('#resumeInfo');
+    el.classList.remove('hidden');
+    el.innerHTML='지난번에 올려둔 인보이스 사진 <b>'+recs.length+'장</b>이 남아 있습니다.'
+      +'<div style="margin-top:8px;display:flex;gap:8px;flex-wrap:wrap;">'
+      +'<button class="btn btn-sm btn-green" id="btnResumeQueue">이어서 매칭하기</button>'
+      +'<button class="btn btn-sm btn-red" id="btnClearQueue">전부 비우기</button></div>';
+  }catch(e){ console.warn('대기열 복원 실패', e); }
+})();
+document.addEventListener('click', async e=>{
+  if(e.target && e.target.id==='btnResumeQueue'){
+    $('#resumeInfo').classList.add('hidden');
+    if(!CURRENT && !OCR_BUSY) processNextInQueue();
+  }
+  if(e.target && e.target.id==='btnClearQueue'){
+    if(!confirm('보관 중인 인보이스 사진을 전부 지울까요?')) return;
+    for(const en of FILE_QUEUE) await qDel(en.id);
+    FILE_QUEUE.length=0;
+    $('#resumeInfo').classList.add('hidden');
+    toast('대기열을 비웠습니다');
+  }
+});
 
 /* ============================ 폰 공유(스캔) 받기 ============================ */
 // 공유 전용 서비스워커 — 범위가 ./danga-share/ 뿐이라 오더 시스템 sw.js와 충돌 없음
