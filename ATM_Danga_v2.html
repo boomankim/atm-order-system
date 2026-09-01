@@ -748,8 +748,13 @@ function renderLines(){
       matchUI = '<div style="margin-top:6px;font-size:13.5px;font-weight:700;color:var(--green);">→ '+esc(productName(l.productId))+'</div>'
         +'<button class="btn btn-sm btn-ghost pickbtn" data-act="repick" data-i="'+idx+'">다른 품목으로 변경</button>';
     } else if(l.matchType==='suggest'){
+      // ⭐ 버그 수정: 검색으로 고른 품목이 추천 목록에 없으면 이름이 안 보이던 문제 —
+      //   선택된 품목을 항상 목록 맨 앞에 넣는다
+      const opts = (l.suggestions||[]).slice();
+      if(l.productId && !opts.some(s=>s.id===l.productId))
+        opts.unshift({id:l.productId, name:productName(l.productId), score:null});
       matchUI = '<select class="matchsel" data-act="sugsel" data-i="'+idx+'">'
-        + l.suggestions.map(s=>'<option value="'+esc(s.id)+'"'+(s.id===l.productId?' selected':'')+'>'+esc(s.name)+' ('+Math.round(s.score*100)+'%)</option>').join('')
+        + opts.map(s=>'<option value="'+esc(s.id)+'"'+(s.id===l.productId?' selected':'')+'>'+esc(s.name)+(s.score!=null?' ('+Math.round(s.score*100)+'%)':'')+'</option>').join('')
         + '<option value="__pick__">직접 검색…</option></select>';
     } else if(l.matchType==='hold'){
       matchUI = '<div class="muted small" style="margin-top:4px;">품목마스터에 없는 품목으로 보류됨 — 단가 기록만 저장됩니다.</div>'
@@ -810,7 +815,12 @@ $('#lineList').addEventListener('click', e=>{
   if(el.dataset.act==='hold'){ l.productId=null; l.matchType='hold'; renderLines(); }
 });
 $('#lineList').addEventListener('input', e=>{
-  const el=e.target; if(el.dataset.act==='desc'){ const l=CURRENT.lines[+el.dataset.i]; if(l) l.rawDesc=el.textContent.trim(); }
+  const el=e.target, l=CURRENT && CURRENT.lines[+el.dataset.i]; if(!l) return;
+  if(el.dataset.act==='desc'){ l.rawDesc=el.textContent.trim(); }
+  // ⭐ 중량·단가는 입력하는 즉시 금액 자동 계산
+  if(el.dataset.act==='qty'){ l.qtyKg=parseNum(el.value); autoAmt(l, el); }
+  if(el.dataset.act==='price'){ l.unitPrice=parseNum(el.value); autoAmt(l, el); }
+  if(el.dataset.act==='amt'){ l.amount=parseNum(el.value); updateSummary(); }
 });
 $('#lineList').addEventListener('blur', e=>{
   const el=e.target; if(el.dataset && el.dataset.act==='desc'){ const l=CURRENT.lines[+el.dataset.i];
@@ -860,7 +870,8 @@ $('#btnSaveInv').addEventListener('click', async ()=>{
     // ① 별칭 학습 (추천/직접선택 확정분)
     const learn={};
     CURRENT.lines.forEach(l=>{
-      if(l.productId && l.matchType!=='auto'){
+      // 품명·코드가 없는 수기 입력 줄은 별칭 학습에서 제외 (빈 별칭 방지)
+      if(l.productId && l.matchType!=='auto' && (l.rawCode || normText(l.rawDesc))){
         const ak=aliasKeyOf(l);
         learn['aliasDict/'+sup+'/'+ak] = {
           productId:l.productId, sample:(l.rawDesc||'').slice(0,120),
