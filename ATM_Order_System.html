@@ -16425,6 +16425,31 @@ function viewInventoryHistory(dateISO) {
           <th class="num">현재고</th>
         </tr></thead>
         <tbody>
+          ${(function(){
+            let tM = { prev:0, rcv:0, ded:0, stock:0 }, tP = { prev:0, rcv:0, ded:0, stock:0 };
+            INVENTORY_CATEGORIES.forEach(cat => {
+              const s = catSum[cat] || { prev:0, received:0, deducted:0, stock:0 };
+              if (cat === '가공육') { tP.prev+=s.prev; tP.rcv+=s.received; tP.ded+=s.deducted; tP.stock+=s.stock; }
+              else { tM.prev+=s.prev; tM.rcv+=s.received; tM.ded+=s.deducted; tM.stock+=s.stock; }
+            });
+            return `
+              <tr style="background:#5C0F0F; color:#fff;">
+                <td></td>
+                <td><b>📊 Total · 정육</b> <span style="font-weight:400; font-size:11px; opacity:0.85;">(박스 · 가공육 제외)</span></td>
+                <td class="num" style="color:#fff;">${inventoryFmt(tM.prev)}</td>
+                <td class="num" style="color:#B9F6CA;">${inventoryFmt(tM.rcv)}</td>
+                <td class="num" style="color:#FFCDD2;">${inventoryFmt(tM.ded)}</td>
+                <td class="num"><b style="font-size:16px;">${inventoryFmt(tM.stock)} 박스</b></td>
+              </tr>
+              <tr style="background:#7B1FA2; color:#fff;">
+                <td></td>
+                <td><b>📊 Total · 가공육</b> <span style="font-weight:400; font-size:11px; opacity:0.85;">(팩)</span></td>
+                <td class="num" style="color:#fff;">${inventoryFmt(tP.prev)}</td>
+                <td class="num" style="color:#B9F6CA;">${inventoryFmt(tP.rcv)}</td>
+                <td class="num" style="color:#FFCDD2;">${inventoryFmt(tP.ded)}</td>
+                <td class="num"><b style="font-size:16px;">${inventoryFmt(tP.stock)} 팩</b></td>
+              </tr>`;
+          })()}
           ${INVENTORY_CATEGORIES.map(cat => {
             const s = catSum[cat];
             const rid = 'invHistCatRow_' + cat;
@@ -17451,6 +17476,17 @@ function inventoryRenderSummary() {
   const wrap = document.getElementById('invSummaryWrap');
   if (!wrap) return;
   const sum = inventoryComputeCategorySummary();
+  // ⭐ (2026-09-02) 정육/가공육 Total 계산 · 정육 = 가공육 외 전체
+  let totalMeatStock = 0, totalMeatPrev = 0, totalMeatRcv = 0, totalMeatDed = 0;
+  let totalProcStock = 0, totalProcPrev = 0, totalProcRcv = 0, totalProcDed = 0;
+  INVENTORY_CATEGORIES.forEach(cat => {
+    const s = sum[cat] || { prev:0, received:0, deducted:0, stock:0 };
+    if (cat === '가공육') {
+      totalProcStock += s.stock; totalProcPrev += s.prev; totalProcRcv += s.received; totalProcDed += s.deducted;
+    } else {
+      totalMeatStock += s.stock; totalMeatPrev += s.prev; totalMeatRcv += s.received; totalMeatDed += s.deducted;
+    }
+  });
   wrap.innerHTML = `
     <table class="t">
       <thead>
@@ -17464,6 +17500,23 @@ function inventoryRenderSummary() {
         </tr>
       </thead>
       <tbody>
+        <!-- ⭐ (2026-09-02) Total 요약 라인 · 최상단 · 정육/가공육 별도 표시 -->
+        <tr style="background:#5C0F0F; color:#fff;">
+          <td></td>
+          <td><b>📊 Total · 정육</b> <span style="font-weight:400; font-size:11px; opacity:0.85;">(박스 · 가공육 제외)</span></td>
+          <td class="num" style="color:#fff;">${inventoryFmt(totalMeatPrev)}</td>
+          <td class="num" style="color:#B9F6CA;">${inventoryFmt(totalMeatRcv)}</td>
+          <td class="num" style="color:#FFCDD2;">${inventoryFmt(totalMeatDed)}</td>
+          <td class="num"><b style="font-size:16px;">${inventoryFmt(totalMeatStock)} 박스</b></td>
+        </tr>
+        <tr style="background:#7B1FA2; color:#fff;">
+          <td></td>
+          <td><b>📊 Total · 가공육</b> <span style="font-weight:400; font-size:11px; opacity:0.85;">(팩)</span></td>
+          <td class="num" style="color:#fff;">${inventoryFmt(totalProcPrev)}</td>
+          <td class="num" style="color:#B9F6CA;">${inventoryFmt(totalProcRcv)}</td>
+          <td class="num" style="color:#FFCDD2;">${inventoryFmt(totalProcDed)}</td>
+          <td class="num"><b style="font-size:16px;">${inventoryFmt(totalProcStock)} 팩</b></td>
+        </tr>
         ${INVENTORY_CATEGORIES.map(cat => {
           const s = sum[cat];
           const rid = 'invCatRow_' + cat;
