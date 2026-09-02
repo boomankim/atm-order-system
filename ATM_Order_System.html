@@ -8420,7 +8420,13 @@ window.openQuickCreditModal = function() {
   );
   setTimeout(function(){
     const _m = document.querySelector('#modalBg .modal');
-    if (_m) _m.style.maxWidth = '860px';
+    if (_m) {
+      _m.style.maxWidth = '860px';
+      // ⭐ (2026-09-02) 자동완성 드롭다운 잘림 방지 · 모달 overflow visible · 스크롤은 배경으로
+      _m.style.overflow = 'visible';
+      const _bg = document.getElementById('modalBg');
+      if (_bg) { _bg.style.overflowY = 'auto'; _bg.style.alignItems = 'flex-start'; _bg.style.paddingTop = '40px'; }
+    }
     renderQcLines();
     if (typeof renderQuickCreditUnusedList === 'function') renderQuickCreditUnusedList();
   }, 0);
