@@ -709,6 +709,42 @@ function cleanupAllFavoriteDuplicates() {
 }
 window.cleanupAllFavoriteDuplicates = cleanupAllFavoriteDuplicates;
 
+// ⭐ (2026-09-02 밤작업#331) 학습맵 키 마이그레이션 · normKey 강화 대응
+//   기존 키 중 · "week 35", 6+자리 숫자 등 · 매주 바뀌는 부분 제거하여 재정규화
+//   충돌 시 (같은 새 키 · 다른 거래처) · 첫 발견 값 유지 · 나머지 스킵 (warn)
+function migrateBankSenderMapKeys() {
+  if (!DB.bankSenderMap || typeof DB.bankSenderMap !== 'object') return 0;
+  if (typeof BANK_CSV === 'undefined' || typeof BANK_CSV.normKey !== 'function') return 0;
+  const oldMap = DB.bankSenderMap;
+  const newMap = {};
+  const conflicts = [];
+  Object.keys(oldMap).forEach(function(oldKey){
+    const cid = oldMap[oldKey];
+    if (!cid) return;
+    const newKey = BANK_CSV.normKey(oldKey);
+    if (!newKey || newKey.length < 2) return;
+    if (newMap[newKey] === undefined) {
+      newMap[newKey] = cid;
+    } else if (newMap[newKey] !== cid) {
+      conflicts.push({ key: newKey, kept: newMap[newKey], skipped: cid });
+    }
+  });
+  const beforeCount = Object.keys(oldMap).length;
+  const afterCount = Object.keys(newMap).length;
+  DB.bankSenderMap = newMap;
+  saveLocalDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try { _lastSaveTime = Date.now(); DB_REF.child('bankSenderMap').set(newMap); } catch(_){}
+  }
+  if (conflicts.length > 0) {
+    console.warn('[bankSenderMap 마이그레이션] 키 충돌:', conflicts);
+  }
+  try { auditLogAdd('학습맵 마이그레이션 v1: ' + beforeCount + ' → ' + afterCount + ' 키' + (conflicts.length ? ' · 충돌 ' + conflicts.length + '건 스킵' : '')); } catch(_){}
+  console.log('[bankSenderMap] 마이그레이션 완료 · 기존', beforeCount, '→ 신규', afterCount, '· 충돌', conflicts.length);
+  return beforeCount - afterCount;
+}
+window.migrateBankSenderMapKeys = migrateBankSenderMapKeys;
+
 // ⭐ (2026-08-28 밤작업D) 유령 주문 자동 청소
 //   정의: status='new'/'weighing' 인데 orderNo/customerId/items 결여
 //   원인: Firebase 배열 hole(null) → Object.values 왜곡, 또는 submit 도중 부분 저장 실패
@@ -9931,9 +9967,15 @@ BANK_CSV.extractDescriptionFields = function(descr) {
 };
 
 // ⭐ (2026-08-11) 학습된 은행이름 → 거래처 매핑 조회
+// ⭐ (2026-09-02 밤작업#331) 매주 바뀌는 숫자 패턴 제거 → 한 번 학습이면 영구 유효
+//   제거 대상: "week 35", "wk 12", "day 5", "w 3", "d 15", "202609"(순수 6+자리 숫자)
+//   원인: 명장시티/돈돈 등 · 매주 REFERENCE에 "week N" 붙어와서 · 매주 재학습 필요했음
+//   목적: sender 없어도 · biz의 회사명 부분만 정규화 · 매주 안정된 키
 BANK_CSV.normKey = function(s) {
   return String(s || '').toLowerCase()
-    .replace(/[^\w\s가-힣]/g, ' ')
+    .replace(/[^\w\s가-힣]/g, ' ')                              // 특수문자 → 공백
+    .replace(/\b(week|wk|day)\s*\d+\b/g, ' ')                   // week 35, wk 12, day 5 제거
+    .replace(/\b\d{6,}\b/g, ' ')                                // 6자리 이상 숫자 (날짜/영수증 번호) 제거
     .replace(/\s+/g, ' ')
     .trim();
 };
@@ -18436,6 +18478,16 @@ function initApp(data) {
   cleanupCustomPriceKeys();   // ⭐ (2026-07-09) "" 키 자동 청소 — Firebase 저장 실패 원인 근절
   cleanupAllFavoriteDuplicates();   // ⭐ (2026-08-12) 즐겨찾기 짝 중복 자동 정리 (동시 편집 race 대응)
   cleanupGhostOrders();   // ⭐ (2026-08-28 밤작업D) 유령 주문 자동 청소 — 부분 저장 실패 잔재 제거
+  // ⭐ (2026-09-02 밤작업#331) 학습맵 키 마이그레이션 · normKey 강화 후 · 기존 키도 재정규화
+  //   목적: "week 35" 같은 매주 바뀌는 숫자 제거 · 기존 학습도 새 로직 하에서 즉시 유효
+  //   1회성 · settings._bankMapMigrated_v1 플래그로 재실행 방지
+  try {
+    if (DB.settings && !DB.settings._bankMapMigrated_v1) {
+      migrateBankSenderMapKeys();
+      DB.settings._bankMapMigrated_v1 = true;
+      saveDB();
+    }
+  } catch(e) { console.warn('bankSenderMap 마이그레이션 실패:', e); }
   // ⭐ (2026-09-01 밤작업#326) 오늘 사고 · 감사로그 영구 기록 (한 번만 실행)
   try {
     if (!DB.settings._incident_20260901_invoiceDupLogged) {
