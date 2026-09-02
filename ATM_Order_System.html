@@ -8390,34 +8390,27 @@ window.acknowledgeInvoiceGaps = async function(missingNos) {
   if (typeof viewOffice === 'function') viewOffice();  // 사무실 재렌더
 };
 
-// ⭐ (2026-08-17 v2) 사무실 툴바 · 크레딧 발행 모달
+// ⭐ (2026-09-02 밤작업#328) 크레딧 노트 발행 · 인보이스 스타일 재설계
+//   변경: 단일 라인 → 여러 라인 지원 · 하단 메모란 · 품목 마스터 강제 (Q3=B)
+//   호환: 기존 CN 데이터 · items[] 이미 존재 · 표시만 확장 · 저장 로직 변경 최소
 window.openQuickCreditModal = function() {
+  // 초기 라인 · 빈 라인 1개
+  window._qcLines = [{ productId: '', returnKg: 0, unitPrice: 0, amount: 0 }];
   openModal(
     '<h3 style="margin:0 0 8px;">🧾 크레딧 노트 발행</h3>'
-    + '<div style="font-size:11px; color:var(--muted); margin-bottom:10px;">거래처의 다음 인보이스 준비 화면에서 자동 선택되어 반영됩니다.</div>'
-    + '<div class="grid-2" style="gap:10px;">'
-    +   '<div>'
-    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">거래처 *</label>'
-    +     renderCustomerSearchSelect({selectId:'qcCust', placeholder:'거래처 검색'})
-    +   '</div>'
-    +   '<div>'
-    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">품목 (선택 안 하면 사유만 표시)</label>'
-    +     renderProductSearchSelect({selectId:'qcProd'})
-    +   '</div>'
+    + '<div style="font-size:11px; color:var(--muted); margin-bottom:10px;">거래처의 다음 인보이스 발행 시 · 자동 적용되어 반영됩니다.</div>'
+    + '<div style="margin-bottom:12px;">'
+    +   '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">거래처 *</label>'
+    +   renderCustomerSearchSelect({selectId:'qcCust', placeholder:'거래처 검색'})
     + '</div>'
-    + '<div style="display:grid; grid-template-columns:1fr 1fr 2fr; gap:8px; margin-top:8px;">'
-    +   '<div>'
-    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">반품 중량 (kg)</label>'
-    +     '<input type="number" id="qcKg" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">'
-    +   '</div>'
-    +   '<div>'
-    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">단가 ($/kg)</label>'
-    +     '<input type="number" id="qcPrice" step="0.01" placeholder="0.00" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; text-align:right;">'
-    +   '</div>'
-    +   '<div>'
-    +     '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">사유 / 메모 *</label>'
-    +     '<input type="text" id="qcReason" placeholder="예: 상품 하자 · 재고 반품 · 원본 INV-201122 반품" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px;">'
-    +   '</div>'
+    + '<div id="qcLinesWrap" style="margin-bottom:8px;"></div>'
+    + '<div style="display:flex; justify-content:space-between; align-items:center; margin:8px 0 12px;">'
+    +   '<button class="btn sm" onclick="qcAddLine()">+ 품목 추가</button>'
+    +   '<span style="font-weight:700; color:#C0392B; font-size:14px;">합계: <span id="qcTotalDisp">-$0.00</span></span>'
+    + '</div>'
+    + '<div style="margin-bottom:12px;">'
+    +   '<label style="font-size:11px; color:var(--muted); display:block; margin-bottom:3px;">메모 (선택)</label>'
+    +   '<textarea id="qcMemo" rows="2" placeholder="사유 · 원본 인보이스 번호 · 기타 참고사항" style="width:100%; padding:6px 9px; border:1px solid var(--line); border-radius:4px; font-size:13px; font-family:inherit; resize:vertical;"></textarea>'
     + '</div>'
     + '<div style="margin-top:12px; text-align:right;">'
     +   '<button class="btn" onclick="submitQuickCredit()" style="padding:8px 20px; background:#C0392B; color:#fff;">+ 크레딧 발행</button>'
@@ -8425,46 +8418,128 @@ window.openQuickCreditModal = function() {
     + '<div id="qcUnusedList" style="margin-top:14px; border-top:1px solid var(--line); padding-top:12px;"></div>'
     + '<div class="btn-row" style="margin-top:14px;"><button class="btn secondary" onclick="closeModal()">닫기</button></div>'
   );
-  // ⭐ (2026-08-20) 크레딧 발행 모달 폭 확대 (500 → 750px, 1.5배)
   setTimeout(function(){
     const _m = document.querySelector('#modalBg .modal');
-    if (_m) _m.style.maxWidth = '750px';
+    if (_m) _m.style.maxWidth = '860px';
+    renderQcLines();
     if (typeof renderQuickCreditUnusedList === 'function') renderQuickCreditUnusedList();
   }, 0);
 };
 
-// ⭐ (2026-08-17) 사무실 · 크레딧 빠른 발행 (거래처 다음 인보이스에 자동 반영)
+window.qcAddLine = function() {
+  if (!Array.isArray(window._qcLines)) window._qcLines = [];
+  window._qcLines.push({ productId: '', returnKg: 0, unitPrice: 0, amount: 0 });
+  renderQcLines();
+};
+
+window.qcRemoveLine = function(idx) {
+  if (!Array.isArray(window._qcLines)) return;
+  if (window._qcLines.length <= 1) {
+    // 최소 1줄 유지 · 리셋만
+    window._qcLines[0] = { productId: '', returnKg: 0, unitPrice: 0, amount: 0 };
+  } else {
+    window._qcLines.splice(idx, 1);
+  }
+  renderQcLines();
+};
+
+window.qcLineChange = function(idx, field, value) {
+  if (!Array.isArray(window._qcLines) || !window._qcLines[idx]) return;
+  const line = window._qcLines[idx];
+  if (field === 'productId') {
+    line.productId = value;
+  } else if (field === 'returnKg') {
+    line.returnKg = parseFloat(value) || 0;
+    line.amount = +(line.returnKg * line.unitPrice).toFixed(2);
+  } else if (field === 'unitPrice') {
+    line.unitPrice = parseFloat(value) || 0;
+    line.amount = +(line.returnKg * line.unitPrice).toFixed(2);
+  } else if (field === 'amount') {
+    line.amount = parseFloat(value) || 0;
+  }
+  // 재렌더 없이 · 금액 셀만 갱신 (포커스 유지)
+  if (field === 'returnKg' || field === 'unitPrice') {
+    const amtEl = document.getElementById('qcLineAmt_' + idx);
+    if (amtEl) amtEl.value = line.amount ? line.amount.toFixed(2) : '';
+  }
+  qcUpdateTotal();
+};
+
+window.renderQcLines = function() {
+  const wrap = document.getElementById('qcLinesWrap');
+  if (!wrap) return;
+  const lines = window._qcLines || [];
+  const rows = lines.map(function(line, i){
+    const kgVal = line.returnKg ? line.returnKg : '';
+    const priceVal = line.unitPrice ? line.unitPrice : '';
+    const amtVal = line.amount ? line.amount.toFixed(2) : '';
+    return '<tr>'
+      + '<td style="padding:4px 6px;">' + renderProductSearchSelect({selectId:'qcLineProd_' + i, selectedId: line.productId || '', onChange:"qcLineChange(" + i + ",'productId',this.value)"}) + '</td>'
+      + '<td style="padding:4px 6px;"><input type="number" step="0.01" value="' + kgVal + '" placeholder="0.00" onchange="qcLineChange(' + i + ",'returnKg',this.value)\" style=\"width:80px; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:4px; font-size:12px;\"></td>"
+      + '<td style="padding:4px 6px;"><input type="number" step="0.01" value="' + priceVal + '" placeholder="0.00" onchange="qcLineChange(' + i + ",'unitPrice',this.value)\" style=\"width:80px; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:4px; font-size:12px;\"></td>"
+      + '<td style="padding:4px 6px;"><input type="number" step="0.01" id="qcLineAmt_' + i + '" value="' + amtVal + '" placeholder="0.00" onchange="qcLineChange(' + i + ",'amount',this.value)\" style=\"width:85px; text-align:right; padding:4px 6px; border:1px solid var(--line); border-radius:4px; background:#FFFBE6; font-size:12px; font-weight:600;\"></td>"
+      + '<td style="padding:4px 6px; text-align:center;"><button class="btn sm danger" onclick="qcRemoveLine(' + i + ')" style="padding:3px 8px;">✕</button></td>'
+      + '</tr>';
+  }).join('');
+  wrap.innerHTML =
+    '<div style="overflow-x:auto;">'
+    + '<table class="t" style="width:100%; font-size:12px; margin:0;">'
+    + '<thead><tr style="background:#F5EFE7;">'
+    +   '<th style="min-width:220px; padding:6px 8px;">품목 *</th>'
+    +   '<th class="num" style="width:90px; padding:6px 8px;">반품 (kg)</th>'
+    +   '<th class="num" style="width:90px; padding:6px 8px;">단가 ($/kg)</th>'
+    +   '<th class="num" style="width:100px; padding:6px 8px;">금액 ($)</th>'
+    +   '<th style="width:45px; padding:6px 8px;"></th>'
+    + '</tr></thead><tbody>'
+    + rows
+    + '</tbody></table>'
+    + '</div>';
+  qcUpdateTotal();
+};
+
+window.qcUpdateTotal = function() {
+  const lines = window._qcLines || [];
+  const total = lines.reduce(function(s, l){ return s + (parseFloat(l.amount) || 0); }, 0);
+  const disp = document.getElementById('qcTotalDisp');
+  if (disp) disp.textContent = '-$' + fmtMoney(total);
+};
+
 window.submitQuickCredit = function() {
   const custSel = document.getElementById('qcCust');
-  const prodSel = document.getElementById('qcProd');
-  const kgEl = document.getElementById('qcKg');
-  const priceEl = document.getElementById('qcPrice');
-  const reasonEl = document.getElementById('qcReason');
-  if (!custSel || !reasonEl) return;
+  if (!custSel) return;
   const custId = custSel.value;
   const cust = DB.customers.find(function(c){ return c.id === custId; });
   if (!cust) { alert('❌ 거래처를 선택하세요.'); return; }
-  const reason = (reasonEl.value || '').trim();
-  if (!reason) { alert('❌ 사유/메모를 입력하세요.'); reasonEl.focus(); return; }
-  const kg = parseFloat(kgEl.value) || 0;
-  const price = parseFloat(priceEl.value) || 0;
-  const prodId = prodSel ? prodSel.value : '';
-  const prod = prodId ? DB.products.find(function(p){ return p.id === prodId; }) : null;
-  // 금액 계산 (GST inclusive 관례 · kg × 단가)
-  const amount = +(kg * price).toFixed(2);
-  if (kg <= 0 || price <= 0) {
-    if (!confirm('⚠️ 중량 또는 단가가 0 입니다.\n계산 금액: $' + fmtMoney(amount) + '\n\n이대로 발행할까요?')) return;
+  const memoEl = document.getElementById('qcMemo');
+  const memo = memoEl ? (memoEl.value || '').trim() : '';
+  const rawLines = window._qcLines || [];
+  const items = [];
+  for (let i = 0; i < rawLines.length; i++) {
+    const l = rawLines[i];
+    // 빈 라인 skip
+    if (!l.productId && !l.returnKg && !l.unitPrice && !l.amount) continue;
+    // Q3=B · 품목 마스터 강제
+    if (!l.productId) {
+      alert('❌ ' + (i+1) + '번째 라인 · 품목을 선택해주세요.\n\n(품목 마스터에서만 선택 가능 · 텍스트 입력 불가)');
+      return;
+    }
+    const prod = DB.products.find(function(p){ return p.id === l.productId; });
+    const name = prod ? (prod.name + (prod.brand ? ' (' + prod.brand + ')' : '')) : '(?)';
+    const kg = parseFloat(l.returnKg) || 0;
+    const price = parseFloat(l.unitPrice) || 0;
+    let amount = parseFloat(l.amount) || 0;
+    if (!amount) amount = +(kg * price).toFixed(2);
+    if (amount <= 0) {
+      if (!confirm('⚠️ ' + (i+1) + '번째 라인 (' + name + ') · 금액이 0입니다.\n계속 발행할까요?')) return;
+    }
+    items.push({ productId: l.productId, name: name, returnKg: kg, unitPrice: price, amount: amount, mode: 'kg' });
   }
-  const itemName = prod ? (prod.name + (prod.brand ? ' (' + prod.brand + ')' : '')) : reason;
-  const cnItem = {
-    productId: prodId || '',
-    name: itemName,
-    returnKg: kg,
-    unitPrice: price,
-    amount: amount,
-    mode: 'kg'
-  };
-  // 크레딧 번호 (인보이스 시퀀스 공유)
+  if (items.length === 0) {
+    alert('❌ 품목 라인을 최소 1개 입력해주세요.');
+    return;
+  }
+  const totalAmt = items.reduce(function(s, it){ return s + (it.amount || 0); }, 0);
+  // 크레딧 번호 채번 (인보이스 시퀀스 공유)
   if (!DB.settings) DB.settings = {};
   if (!DB.settings.invoiceNoNext) DB.settings.invoiceNoNext = 200001;
   const cnNo = String(DB.settings.invoiceNoNext++);
@@ -8472,18 +8547,18 @@ window.submitQuickCredit = function() {
   const cn = {
     id: cnId,
     creditNo: cnNo,
-    orderId: null,               // 독립 크레딧 (원본 주문 없음)
+    orderId: null,
     invoiceNo: '',
     customerId: custId,
     issuedAt: new Date().toISOString(),
-    reason: reason,
-    notes: '',
-    items: [cnItem]
+    reason: memo,   // 하위 호환 · reason 필드 = memo
+    notes: memo,    // 하위 호환
+    memo: memo,     // ⭐ 신규 · 명시적 필드
+    items: items
   };
   if (!Array.isArray(DB.creditNotes)) DB.creditNotes = [];
   DB.creditNotes.push(cn);
   saveLocalDB();
-  // Firebase 부분 저장
   try {
     if (typeof DB_REF !== 'undefined' && DB_REF) {
       _lastSaveTime = Date.now();
@@ -8492,16 +8567,15 @@ window.submitQuickCredit = function() {
       DB_REF.child('settings/invoiceNoNext').set(DB.settings.invoiceNoNext);
     }
   } catch(e) { console.warn('quick credit save failed:', e); }
-  try { auditLogAdd('크레딧 빠른 발행: ' + (cust.name||'') + ' · CN' + cnNo + ' · ' + itemName + ' · -$' + fmtMoney(amount)); } catch(_){}
-  showToast('✅ 크레딧 노트 CN' + cnNo + ' 발행됨 · ' + cust.name + '의 다음 인보이스에 자동 적용');
-  // 폼 초기화
-  document.getElementById('qcCust_search').value = '';
+  try { auditLogAdd('크레딧 발행: ' + (cust.name||'') + ' · CN' + cnNo + ' · ' + items.length + '라인 · -$' + fmtMoney(totalAmt) + (memo ? ' · 메모: ' + memo.slice(0,80) : '')); } catch(_){}
+  showToast('✅ 크레딧 노트 CN' + cnNo + ' 발행됨 · ' + cust.name + ' · ' + items.length + '라인 · -$' + fmtMoney(totalAmt) + ' · 다음 인보이스에 자동 적용');
+  // 폼 초기화 · 라인 1개 · 거래처/메모 리셋
+  window._qcLines = [{ productId: '', returnKg: 0, unitPrice: 0, amount: 0 }];
+  renderQcLines();
+  if (memoEl) memoEl.value = '';
+  const custSearch = document.getElementById('qcCust_search');
+  if (custSearch) custSearch.value = '';
   custSel.value = '';
-  document.getElementById('qcProd_search').value = '';
-  if (prodSel) prodSel.value = '';
-  kgEl.value = '';
-  priceEl.value = '';
-  reasonEl.value = '';
   renderQuickCreditUnusedList();
 };
 
@@ -12571,14 +12645,17 @@ function viewInvoice(params) {
       return `<div class="card no-print" style="border-left:4px solid #1B5E20; background:#E8F5E9; margin-bottom:14px;">
         <h3 style="color:#1B5E20; margin-top:0;">📎 이 인보이스에 적용된 크레딧 (${applied.length}건, 총 -$${fmtMoney(totalApplied)})</h3>
         <table class="t">
-          <thead><tr><th>크레딧#</th><th>발행일</th><th>사유</th><th class="num">금액</th><th class="act"></th></tr></thead>
+          <thead><tr><th>크레딧#</th><th>발행일</th><th>라인수</th><th>메모</th><th class="num">금액</th><th class="act"></th></tr></thead>
           <tbody>
             ${applied.map(cn => {
               const cnTotals = computeCreditNoteTotals(cn);
+              // ⭐ (2026-09-02 밤작업#328 · Q1=A) 요약: 크레딧# · 발행일 · 라인수 · 메모 · 금액
+              const memo = cn.memo || cn.reason || cn.notes || '';
               return `<tr>
-                <td><b style="color:#1B5E20;">${cn.creditNo || cn.id.slice(0,8)}</b></td>
+                <td><b style="color:#1B5E20;">CN-${cn.creditNo || cn.id.slice(0,8)}</b></td>
                 <td>${new Date(cn.issuedAt).toLocaleDateString('en-AU')}</td>
-                <td>${cn.reason || '-'}</td>
+                <td class="num">${(cn.items||[]).length}라인</td>
+                <td>${memo || '-'}</td>
                 <td class="num" style="color:#1B5E20; font-weight:700;">-$${fmtMoney(cnTotals.grand)}</td>
                 <td class="act"><button class="btn sm danger" onclick="unapplyCredit('${cn.id}', '${o.id}')">↩️ 적용 취소</button></td>
               </tr>`;
@@ -13717,7 +13794,7 @@ function viewCreditNote(params) {
         </div>
       </div>
       <div style="margin:0 0 10px 0; padding:8px 12px; background:#FDECEA; border-left:4px solid #C0392B; border-radius:4px; font-size:13px;">
-        <b>📝 반품 사유:</b> ${cn.reason||'-'}${cn.notes ? ` <small style="color:var(--muted);">(${cn.notes})</small>` : ''}
+        <b>📝 메모:</b> ${(cn.memo || cn.reason || cn.notes || '-')}
       </div>
       <table>
         <colgroup>
@@ -13784,7 +13861,7 @@ function buildCreditNoteHTML(cn, cust) {
     +     '<div style="text-align:right; font-size:11px;"><b>Terms:</b> ' + termsLabel(cust.terms) + '</div>'
     +   '</div>'
     +   '<div style="margin:0 0 8px 0; padding:5px 10px; background:#FDECEA; border:1px solid #C0392B; border-radius:3px; font-size:10px;">'
-    +     '<b>Reason:</b> ' + (cn.reason||'-') + (cn.notes?' — '+cn.notes:'')
+    +     '<b>Memo:</b> ' + (cn.memo || cn.reason || cn.notes || '-')
     +   '</div>'
     +   '<table style="width:100%; border-collapse:collapse; font-size:11px; margin-bottom:10px; table-layout:fixed;">'
     +     '<colgroup><col style="width:52%;"><col style="width:16%;"><col style="width:16%;"><col style="width:16%;"></colgroup>'
@@ -14197,9 +14274,13 @@ function buildInvoiceHTML(o, cust, totals) {
     const cnNo = cn.creditNo || cn.id.slice(0,8);
     const cnDate = (cn.issuedAt || '').slice(0,10);
     const cnAmt = computeCreditNoteTotals(cn).grand || 0;
-    const reasonInline = cn.reason ? ` <span style="color:#777;font-size:9px;">※ ${String(cn.reason).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
+    const lineCount = (cn.items || []).length;
+    // ⭐ (2026-09-02 밤작업#328 · Q1=A) 요약 표시 · "CN201730 · 3라인 · -$150"
+    const memo = cn.memo || cn.reason || cn.notes || '';
+    const memoInline = memo ? ` <span style="color:#777;font-size:9px;">※ ${String(memo).replace(/&/g,'&amp;').replace(/</g,'&lt;')}</span>` : '';
+    const lineSummary = lineCount > 1 ? ` · ${lineCount}라인 반품` : ' 반품';
     return `<tr style="border-bottom:1px solid #E5DCD3; background:#FDECEA;">
-      <td style="padding:3px 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#C0392B;"><b>크레딧 CN-${cnNo} (반품)</b>${reasonInline}</td>
+      <td style="padding:3px 6px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; color:#C0392B;"><b>크레딧 CN-${cnNo}${lineSummary}</b>${memoInline}</td>
       <td style="padding:3px 6px; color:#C0392B;">${cnDate}</td>
       <td style="padding:3px 6px; text-align:right; color:#C0392B;">—</td>
       <td style="padding:3px 6px; text-align:right; color:#C0392B;">—</td>
@@ -16093,6 +16174,38 @@ function inventoryRolloverIfNeeded() {
   }
   if (inv.lastResetDate === today) return; // 이미 오늘자
 
+  // ⭐ (2026-09-02 밤작업#329) 롤오버 직전 · 종료된 날의 byProduct 스냅샷 저장
+  //   dailyHistory[어제 날짜] = { savedAt, byProduct: {...} }
+  //   과거 재고 조회 · 읽기 전용 표시용
+  //   30일 초과 항목 · 자동 정리 (Firebase 용량)
+  try {
+    if (!inv.dailyHistory) inv.dailyHistory = {};
+    const closedDate = inv.lastResetDate;   // 롤오버로 종료되는 날짜
+    // 딥카피 (Firebase 저장 위해 원본 참조 끊음)
+    const snapByProduct = {};
+    Object.keys(inv.byProduct || {}).forEach(pid => {
+      const e = inv.byProduct[pid];
+      if (!e) return;
+      snapByProduct[pid] = {
+        prev: +(e.prev || 0),
+        receivedToday: +(e.receivedToday || 0),
+        deductedToday: +(e.deductedToday || 0),
+        stock: +(e.stock || 0)
+      };
+    });
+    inv.dailyHistory[closedDate] = {
+      savedAt: new Date().toISOString(),
+      byProduct: snapByProduct
+    };
+    // 30일 초과 정리 · lastResetDate 기준
+    const cutoff = new Date(today);
+    cutoff.setDate(cutoff.getDate() - 30);
+    const cutoffISO = toLocalISODate(cutoff.toISOString());
+    Object.keys(inv.dailyHistory).forEach(k => {
+      if (k < cutoffISO) delete inv.dailyHistory[k];
+    });
+  } catch(eSnap) { console.warn('재고 스냅샷 저장 실패:', eSnap); }
+
   // 날짜 바뀜 → 전체 품목 롤오버. 미달분 이월 없음 = 누계 그냥 0으로
   Object.keys(inv.byProduct).forEach(pid => {
     const e = inv.byProduct[pid];
@@ -16247,21 +16360,151 @@ function inventoryComputeCategorySummary() {
   return summary;
 }
 
-function viewInventory() {
+// ⭐ (2026-09-02 밤작업#329) 재고현황 · 과거 날짜 스냅샷 조회 · 읽기 전용
+function viewInventoryHistory(dateISO) {
+  const app = document.getElementById('app');
+  const today = todayLocalISO();
+  const hist = (DB.inventory && DB.inventory.dailyHistory) ? DB.inventory.dailyHistory[dateISO] : null;
+  if (!hist || !hist.byProduct) {
+    app.innerHTML = `
+      <h2 class="page-title">📦 재고현황 · <span style="color:#5E35B1;">${formatDateDMY(dateISO)}</span> (과거 조회)
+        <button class="btn sm secondary" style="float:right;" onclick="location.hash='#inventory'">← 오늘로</button>
+      </h2>
+      <div class="card">
+        <div class="empty" style="padding:60px 20px;">
+          <div style="font-size:44px; margin-bottom:10px;">📅</div>
+          <div style="font-size:15px; font-weight:700; color:var(--muted);">이 날짜의 재고 스냅샷 없음</div>
+          <div style="font-size:12px; color:#999; margin-top:10px;">
+            · 최근 30일치만 자동 저장됨<br>
+            · 새 스냅샷 저장 시작일: ${formatDateDMY(DB.inventory && DB.inventory.lastResetDate || today)}<br>
+            · 이전 날짜는 · 실사 이력에서 확인 (재고현황 → [지난 실사 이력] 버튼)
+          </div>
+        </div>
+      </div>
+    `;
+    return;
+  }
+  // 카테고리별 요약 계산 (스냅샷 기준)
+  const snap = hist.byProduct;
+  const catSum = {};
+  INVENTORY_CATEGORIES.forEach(cat => {
+    catSum[cat] = { prev: 0, received: 0, deducted: 0, stock: 0, products: [] };
+  });
+  DB.products.forEach(p => {
+    if (!p || !p.active) return;
+    if (!INVENTORY_CATEGORIES.includes(p.cut)) return;
+    const e = snap[p.id];
+    if (!e) return;   // 이 품목 · 이 날 스냅샷에 없으면 skip
+    catSum[p.cut].prev += +(e.prev || 0);
+    catSum[p.cut].received += +(e.receivedToday || 0);
+    catSum[p.cut].deducted += +(e.deductedToday || 0);
+    catSum[p.cut].stock += +(e.stock || 0);
+    catSum[p.cut].products.push({ p, e });
+  });
+  app.innerHTML = `
+    <h2 class="page-title">📦 재고현황 · <span style="color:#5E35B1;">${formatDateDMY(dateISO)}</span> (과거 조회)
+      <button class="btn sm secondary" style="float:right;" onclick="location.hash='#inventory'">← 오늘로</button>
+    </h2>
+    <div style="background:#EDE7F6; border-left:4px solid #5E35B1; padding:10px 14px; margin-bottom:12px; border-radius:4px; font-size:13px;">
+      🔒 <b>읽기 전용</b> · ${formatDateDMY(dateISO)} 종료 시점 · 스냅샷 (저장 시각: ${hist.savedAt ? new Date(hist.savedAt).toLocaleString('ko-KR', { hour12:false }) : '?'})
+    </div>
+    <div style="background:#F5EFE7; border:1px solid var(--line); padding:8px 12px; border-radius:6px; margin-bottom:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <label style="font-size:12px; color:var(--muted);">📅 다른 날짜 조회:</label>
+      <input type="date" id="invHistoryDatePicker2" max="${today}" value="${dateISO}" style="padding:5px 8px; border:1px solid var(--line); border-radius:5px; font-size:12px;">
+      <button class="btn sm" style="background:#5E35B1; color:#fff;" onclick="var d=document.getElementById('invHistoryDatePicker2').value; if(d==='${today}') { location.hash='#inventory'; } else if(d) location.hash='#inventory?date='+d;">🔍 조회</button>
+    </div>
+    <div class="card">
+      <h3>📦 카테고리 요약 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">행 클릭 → 부위별 상세 펼침 · 단위: 박스 (가공육만 팩)</span></h3>
+      <div id="invSummaryWrap"><table class="t">
+        <thead><tr>
+          <th style="width:24px;"></th>
+          <th>품목명</th>
+          <th class="num">전재고</th>
+          <th class="num">입고</th>
+          <th class="num">출고</th>
+          <th class="num">현재고</th>
+        </tr></thead>
+        <tbody>
+          ${INVENTORY_CATEGORIES.map(cat => {
+            const s = catSum[cat];
+            const rid = 'invHistCatRow_' + cat;
+            const detailId = 'invHistCatDetail_' + cat;
+            return `
+              <tr id="${rid}" style="cursor:pointer; background:#FAF0E8;" onclick="var d=document.getElementById('${detailId}'); var r=document.getElementById('${rid}'); if(!d) return; var open=d.style.display!=='none'; d.style.display=open?'none':''; if(r) r.firstElementChild.textContent=open?'▶':'▼';">
+                <td style="font-weight:700; color:var(--brand);">▶</td>
+                <td><b>${cat}</b> <span style="color:var(--muted); font-size:11px;">(${s.products.length}품목 · ${inventoryUnitLabel(cat)})</span></td>
+                <td class="num"><b>${inventoryFmt(s.prev)}</b></td>
+                <td class="num" style="color:var(--ok);">${inventoryFmt(s.received)}</td>
+                <td class="num" style="color:var(--warn);">${inventoryFmt(s.deducted)}</td>
+                <td class="num"><b style="color:var(--brand-dark); font-size:15px;">${inventoryFmt(s.stock)}</b></td>
+              </tr>
+              <tr id="${detailId}" style="display:none;">
+                <td colspan="6" style="padding:0; background:#FFFBF6;">
+                  ${s.products.length === 0 ? `<div style="padding:10px 12px; color:var(--muted); font-size:12px;">이 카테고리에 등록된 품목이 없습니다.</div>` : `
+                  <table class="t" style="margin:0; box-shadow:none;">
+                    <thead><tr style="background:#F0E5D8;">
+                      <th style="width:24px;"></th>
+                      <th>부위별 품목</th>
+                      <th class="num">전재고</th>
+                      <th class="num">입고</th>
+                      <th class="num">출고</th>
+                      <th class="num">현재고</th>
+                    </tr></thead>
+                    <tbody>
+                      ${s.products.slice().sort((a,b) => {
+                        const na = (a.p && a.p.name || '').toString();
+                        const nb = (b.p && b.p.name || '').toString();
+                        return na.localeCompare(nb, ['ko', 'en'], { sensitivity: 'base', numeric: true });
+                      }).map(({p, e}) => `
+                        <tr>
+                          <td></td>
+                          <td>${p.name}</td>
+                          <td class="num">${inventoryFmt(e.prev)}</td>
+                          <td class="num" style="color:var(--ok);">${inventoryFmt(e.receivedToday)}</td>
+                          <td class="num" style="color:var(--warn);">${inventoryFmt(e.deductedToday)}</td>
+                          <td class="num"><b>${inventoryFmt(e.stock)}</b></td>
+                        </tr>
+                      `).join('')}
+                    </tbody>
+                  </table>`}
+                </td>
+              </tr>
+            `;
+          }).join('')}
+        </tbody>
+      </table></div>
+    </div>
+  `;
+}
+window.viewInventoryHistory = viewInventoryHistory;
+
+function viewInventory(params) {
   if (!(OFFICE_UNLOCKED || ADMIN_UNLOCKED)) {
     showOfficeLogin();
     return;
   }
   inventoryRolloverIfNeeded();
+  // ⭐ (2026-09-02 밤작업#329) 과거 날짜 조회 지원 · dailyHistory 스냅샷 읽기 전용
+  const today = todayLocalISO();
+  const qDate = (params && typeof params.get === 'function') ? (params.get('date') || '') : '';
+  const isHistory = qDate && qDate !== today;
+  if (isHistory) {
+    return viewInventoryHistory(qDate);
+  }
   const app = document.getElementById('app');
   app.innerHTML = `
-    <h2 class="page-title">📦 재고현황 — <span style="color:var(--brand);">${formatDateDMY(todayLocalISO())}</span>
+    <h2 class="page-title">📦 재고현황 — <span style="color:var(--brand);">${formatDateDMY(today)}</span>
       <button class="btn sm secondary" style="float:right;" onclick="location.hash='#office'">← 사무실로</button>
       <button class="btn sm success" style="float:right; margin-right:6px;" onclick="saveInventoryPDF()">💾 PDF 저장</button>
       <button class="btn sm" style="float:right; margin-right:6px; background:var(--info);" onclick="printInventoryReport()">🖨️ 인쇄</button>
-      <!-- ⭐ (2026-09-01 밤작업#323) 일회용 · 마이너스 재고 일괄 0 처리 · 사용 후 다음 밤작업에 제거 -->
-      <button class="btn sm" style="float:right; margin-right:6px; background:#C62828; color:#fff;" onclick="inventoryCleanupNegativeStock()" title="현재고가 마이너스인 품목 · 전재고와 현재고 · 모두 0으로 일괄 처리">🧹 마이너스 재고 정리</button>
     </h2>
+    <!-- ⭐ (2026-09-02 밤작업#329) 과거 재고 조회 · 날짜 선택 -->
+    <div style="background:#F5EFE7; border:1px solid var(--line); padding:8px 12px; border-radius:6px; margin-bottom:12px; display:flex; gap:8px; align-items:center; flex-wrap:wrap;">
+      <label style="font-size:12px; color:var(--muted);">📅 과거 재고 조회 (읽기 전용):</label>
+      <input type="date" id="invHistoryDatePicker" max="${today}" style="padding:5px 8px; border:1px solid var(--line); border-radius:5px; font-size:12px;">
+      <button class="btn sm" style="background:#5E35B1; color:#fff;" onclick="var d=document.getElementById('invHistoryDatePicker').value; if(d) location.hash='#inventory?date='+d;">🔍 조회</button>
+      <span style="font-size:11px; color:var(--muted);">※ 최근 30일까지 · 매일 자정 자동 저장</span>
+    </div>
     <div id="invFolderInfo" style="font-size:11px; color:var(--muted); margin: -6px 0 12px 0;"></div>
 
     <div class="card">
@@ -16411,7 +16654,7 @@ function inventoryRenderReturns(days) {
         unit: '작업중량',   // 크레딧 반품은 kg 단위
         qty: 0,
         weightKg: kg,
-        notes: (cn.reason || ''),
+        notes: (cn.memo || cn.reason || cn.notes || ''),
         processedAt: processed[processedKey] || null
       });
     });
@@ -16843,52 +17086,8 @@ window.inventoryClearStocktakeInputs = function() {
   document.querySelectorAll('.invStockInput').forEach(el => { el.value = ''; });
 };
 
-// ⭐ (2026-09-01 밤작업#323) 마이너스 재고 일괄 0 처리 · 일회용
-//   TODO: 2026-09-02 사용 후 · 다음 밤작업에서 · 이 함수 + 버튼 · 제거
-//   대상: e.stock < 0 인 품목 · e.prev + e.stock 둘 다 0으로 처리 · e.receivedToday/deductedToday 초기화
-window.inventoryCleanupNegativeStock = function() {
-  if (!DB.inventory || !DB.inventory.byProduct) {
-    alert('재고 데이터가 없습니다.');
-    return;
-  }
-  const negs = [];
-  Object.keys(DB.inventory.byProduct).forEach(pid => {
-    const e = DB.inventory.byProduct[pid];
-    if (!e) return;
-    const stock = +(e.stock || 0);
-    const prev = +(e.prev || 0);
-    if (stock < 0 || prev < 0) {
-      const p = DB.products.find(x => x.id === pid);
-      negs.push({ pid, name: p ? p.name : '(품목없음)', stock, prev });
-    }
-  });
-  if (negs.length === 0) {
-    alert('✅ 마이너스 재고 없음 · 조치 불필요');
-    return;
-  }
-  const preview = negs.slice(0, 10).map(n => '  • ' + n.name + ': 전재고=' + n.prev + ' · 현재고=' + n.stock).join('\n');
-  const more = negs.length > 10 ? '\n  ... 외 ' + (negs.length - 10) + '건' : '';
-  if (!confirm(
-    '⚠ 마이너스 재고 ' + negs.length + '개 품목 발견\n\n' +
-    preview + more + '\n\n' +
-    '이들의 · 전재고와 현재고를 · 모두 0으로 처리합니다.\n' +
-    '(오늘 입고/출고 값도 · 함께 초기화)\n\n' +
-    '되돌릴 수 없습니다. 계속?'
-  )) return;
-  negs.forEach(n => {
-    const e = DB.inventory.byProduct[n.pid];
-    if (!e) return;
-    e.prev = 0;
-    e.stock = 0;
-    e.receivedToday = 0;
-    e.deductedToday = 0;
-  });
-  saveDB();
-  try { auditLogAdd('마이너스 재고 일괄 정리 (일회용): ' + negs.length + '건 · 전재고/현재고 · 0으로 초기화'); } catch(_){}
-  alert('✅ ' + negs.length + '개 품목 · 정리 완료');
-  if (typeof inventoryRenderSummary === 'function') inventoryRenderSummary();
-  if (typeof inventoryRenderStocktake === 'function') inventoryRenderStocktake();
-};
+// ⭐ (2026-09-02 밤작업#330) inventoryCleanupNegativeStock 함수 제거됨
+//   밤작업#323 일회용 · 2026-09-01 사용 완료 (80건 정리) · 실사 미입력→0 로직으로 대체
 
 window.inventoryApplyStocktakeBulk = function() {
   inventoryRolloverIfNeeded();
