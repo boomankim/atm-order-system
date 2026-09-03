@@ -18897,10 +18897,46 @@ if (FIREBASE_READY && DB_REF) {
   function _handleRemoteUpdate(data) {
     const editing = _isUserEditing();
     if (!editing && data) {
-      // ⭐ (2026-09-01 밤작업#320) 방금 발행한 order · 서버 미반영 시 · 로컬 값 보호
-      //   원인: 도모도모/척스벨리 사고 (2026-09-01) · 리스너로 발행 정보 소실
-      //   보호 대상: window._recentlyIssuedOrders (60초 이내 발행)
-      //   서버 orders에 · status/invoiceNo 반영 안 됐으면 · 서버 데이터에 로컬 값 덮어씀
+      // ⭐ (2026-09-03 밤작업#332) Downgrade 방지 · 동시 편집 race 근본 봉쇄
+      //   원인: 매니저 계근 화면 열어놓고 · 직원 인보이스 발행 시 · 리스너로 발행 정보 유실
+      //   패턴: 로컬 status가 서버보다 진행됐으면 · 서버 값 (덜 진행된) 무시 · 로컬 값 강제 유지
+      //   상태 순서: new < weighing < weighed < invoiced < delivered
+      //   대상 필드: status, invoiceNo, invoicedAt, deliveredAt, weighedAt, items (계근 데이터)
+      //   오늘 4개 거래처 사고 · 동서 유령 · 같은 race · 원천 봉쇄
+      try {
+        const STATUS_ORDER = { 'new': 0, 'weighing': 1, 'weighed': 2, 'invoiced': 3, 'delivered': 4 };
+        if (data && Array.isArray(data.orders) && Array.isArray(DB.orders)) {
+          // 로컬 id → order 인덱스 · O(1) 조회
+          const localById = {};
+          DB.orders.forEach(function(o){ if (o && o.id) localById[o.id] = o; });
+          let protectedCount = 0;
+          data.orders.forEach(function(srv) {
+            if (!srv || !srv.id) return;
+            const local = localById[srv.id];
+            if (!local) return;
+            const sSrv = STATUS_ORDER[srv.status] !== undefined ? STATUS_ORDER[srv.status] : -1;
+            const sLoc = STATUS_ORDER[local.status] !== undefined ? STATUS_ORDER[local.status] : -1;
+            if (sLoc > sSrv) {
+              // 로컬이 더 진행됨 · 로컬 값 유지
+              console.warn('[downgrade 방지]', (local.orderNo||local.id.slice(-8)), '· 서버:', srv.status, '→ 로컬:', local.status);
+              srv.status = local.status;
+              if (local.invoiceNo) srv.invoiceNo = local.invoiceNo;
+              if (local.invoicedAt) srv.invoicedAt = local.invoicedAt;
+              if (local.deliveredAt) srv.deliveredAt = local.deliveredAt;
+              if (local.weighedAt) srv.weighedAt = local.weighedAt;
+              if (Array.isArray(local.items) && local.items.length > 0) srv.items = local.items;
+              if (Array.isArray(local.invoiceItems) && local.invoiceItems.length > 0) srv.invoiceItems = local.invoiceItems;
+              protectedCount++;
+            }
+          });
+          if (protectedCount > 0) {
+            try { auditLogAdd('리스너 downgrade 방지 발동: ' + protectedCount + '건 · 서버 하위 상태 무시 · 로컬 진행 상태 유지'); } catch(_){}
+          }
+        }
+      } catch(eDG) { console.warn('downgrade 방지 예외:', eDG); }
+
+      // ⭐ (2026-09-01 밤작업#320) 방금 발행한 order · 서버 미반영 시 · 로컬 값 보호 (기존 · 60초 명시 보호)
+      //   #332 downgrade 방지와 중복되지만 · 이중 방어로 유지
       try {
         const recent = window._recentlyIssuedOrders || {};
         const recentIds = Object.keys(recent);
