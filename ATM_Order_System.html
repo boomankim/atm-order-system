@@ -16595,24 +16595,15 @@ function viewInventory(params) {
     </div>
 
     <div class="card">
-      <h3>📥 제품 입고 등록</h3>
-      <div class="grid-3" style="margin-bottom:8px;">
-        <div class="field"><label>품목</label>
-          ${renderProductSearchSelect({
-            selectId: 'invReceiptProduct',
-            categories: INVENTORY_CATEGORIES,
-            onChange: 'inventoryUpdateReceiptUnitHint()',
-            placeholder: '🔍 품목 검색 (이름·카테고리·브랜드)'
-          })}
-        </div>
-        <div class="field"><label>입고 수량 <span id="invReceiptUnitHint" style="color:var(--muted); font-size:11px;">(박스/팩)</span></label>
-          <input type="number" id="invReceiptQty" min="1" step="1" placeholder="예: 5">
-        </div>
-        <div class="field" style="align-self:flex-end;">
-          <button class="btn success" onclick="inventoryAddReceipt()">📥 입고 등록</button>
-        </div>
+      <h3>📥 제품 입고 등록 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 여러 품목 동시 입력 · 각 행별 품목/수량 입력 후 [일괄 등록]</span></h3>
+      <div id="invReceiptMultiWrap"></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <button class="btn sm" onclick="inventoryReceiptAddRow()">+ 행 추가</button>
+        <button class="btn sm secondary" onclick="inventoryReceiptClearAll()">🗑 모두 지우기</button>
+        <span style="flex:1;"></span>
+        <button class="btn success" onclick="inventoryAddReceiptBulk()" style="padding:8px 20px;">📥 일괄 등록</button>
       </div>
-      <div style="font-size:11px; color:var(--muted);">※ 정수 입력. 단위는 품목 카테고리에 따름 (가공육=팩, 그 외=박스). 등록 즉시 오늘 입고에 가산되어 현재고에 반영.</div>
+      <div style="font-size:11px; color:var(--muted); margin-top:8px;">※ 정수 입력. 단위는 품목 카테고리에 따름 (가공육=팩, 그 외=박스). 등록 즉시 오늘 입고에 가산되어 현재고에 반영.</div>
     </div>
 
     <!-- ⭐ (2026-08-12) 반품 이력 — 배송완료 인보이스의 음수 수량 라인 자동 추출 -->
@@ -16647,6 +16638,9 @@ function viewInventory(params) {
   `;
   inventoryRenderSummary();
   inventoryRenderOutgoing();
+  // ⭐ (2026-09-03 밤작업#333) 다품목 일괄 입고 · 초기 7행 렌더
+  window._invReceiptRows = null;   // 진입 시 항상 리셋
+  if (typeof inventoryReceiptRenderRows === 'function') inventoryReceiptRenderRows();
   // 월 실사 품목 리스트는 토글 버튼 클릭 시에만 렌더링 (lazy)
   inventoryRefreshFolderInfo();
   // ⭐ (2026-08-12) 반품 이력 렌더 (기본 최근 30일)
@@ -18122,41 +18116,141 @@ window.inventoryUpdateReceiptUnitHint = function() {
 };
 
 window.inventoryAddReceipt = function() {
+  // ⭐ (2026-09-03 밤작업#333) 단품 입고는 · 다품목 일괄 UI로 통합됨 · 이 함수는 하위 호환용
+  inventoryAddReceiptBulk();
+};
+
+// ⭐ (2026-09-03 밤작업#333) 다품목 일괄 입고 · 표 형태 (기본 7행)
+window._invReceiptRows = null;
+window.inventoryReceiptRenderRows = function() {
+  const wrap = document.getElementById('invReceiptMultiWrap');
+  if (!wrap) return;
+  if (!Array.isArray(window._invReceiptRows) || window._invReceiptRows.length === 0) {
+    window._invReceiptRows = [];
+    for (let i = 0; i < 7; i++) window._invReceiptRows.push({ productId: '', qty: '' });
+  }
+  const rows = window._invReceiptRows;
+  const rowsHtml = rows.map(function(r, i){
+    const p = r.productId ? DB.products.find(function(x){ return x.id === r.productId; }) : null;
+    const unit = p ? inventoryUnitLabel(p.cut) : '(박스/팩)';
+    return '<tr>'
+      + '<td style="padding:4px 6px; min-width:320px;">' + renderProductSearchSelect({
+          selectId: 'invBulkProd_' + i,
+          categories: INVENTORY_CATEGORIES,
+          selectedId: r.productId || '',
+          onChange: "inventoryReceiptRowChange(" + i + ",'productId',this.value)"
+        }) + '</td>'
+      + '<td style="padding:4px 6px; width:110px;"><input type="number" step="1" min="1" value="' + (r.qty || '') + '" placeholder="예: 5" onchange="inventoryReceiptRowChange(' + i + ",'qty',this.value)\" style=\"width:100%; text-align:right; padding:6px 8px; border:1px solid var(--line); border-radius:4px;\"></td>"
+      + '<td style="padding:4px 6px; width:80px; color:var(--muted); font-size:12px; text-align:center;">' + unit + '</td>'
+      + '<td style="padding:4px 6px; width:50px; text-align:center;"><button class="btn sm danger" onclick="inventoryReceiptRemoveRow(' + i + ')" style="padding:3px 8px;">✕</button></td>'
+      + '</tr>';
+  }).join('');
+  wrap.innerHTML =
+    '<div style="overflow:visible;">'
+    + '<table class="t" style="width:100%; font-size:13px; margin:0; overflow:visible;">'
+    + '<thead><tr style="background:#F5EFE7;">'
+    +   '<th style="padding:6px 8px; text-align:left;">품목</th>'
+    +   '<th style="padding:6px 8px; text-align:right; width:110px;">수량</th>'
+    +   '<th style="padding:6px 8px; text-align:center; width:80px;">단위</th>'
+    +   '<th style="padding:6px 8px; text-align:center; width:50px;"></th>'
+    + '</tr></thead>'
+    + '<tbody>' + rowsHtml + '</tbody>'
+    + '</table></div>';
+};
+
+window.inventoryReceiptRowChange = function(idx, field, value) {
+  if (!Array.isArray(window._invReceiptRows) || !window._invReceiptRows[idx]) return;
+  window._invReceiptRows[idx][field] = value;
+  // 품목 변경 시 · 단위 힌트 갱신 위해 재렌더 (해당 행만은 어려우니 · 전체 재렌더는 검색창 상태 유실 · 필요 시만)
+  if (field === 'productId') {
+    // 단위 셀만 업데이트
+    const wrap = document.getElementById('invReceiptMultiWrap');
+    if (!wrap) return;
+    const tds = wrap.querySelectorAll('tbody tr');
+    if (tds[idx]) {
+      const unitTd = tds[idx].children[2];
+      if (unitTd) {
+        const p = value ? DB.products.find(function(x){ return x.id === value; }) : null;
+        unitTd.textContent = p ? inventoryUnitLabel(p.cut) : '(박스/팩)';
+      }
+    }
+  }
+};
+
+window.inventoryReceiptAddRow = function() {
+  if (!Array.isArray(window._invReceiptRows)) window._invReceiptRows = [];
+  window._invReceiptRows.push({ productId: '', qty: '' });
+  inventoryReceiptRenderRows();
+};
+
+window.inventoryReceiptRemoveRow = function(idx) {
+  if (!Array.isArray(window._invReceiptRows)) return;
+  if (window._invReceiptRows.length <= 1) {
+    window._invReceiptRows[0] = { productId: '', qty: '' };
+  } else {
+    window._invReceiptRows.splice(idx, 1);
+  }
+  inventoryReceiptRenderRows();
+};
+
+window.inventoryReceiptClearAll = function() {
+  window._invReceiptRows = [];
+  for (let i = 0; i < 7; i++) window._invReceiptRows.push({ productId: '', qty: '' });
+  inventoryReceiptRenderRows();
+};
+
+window.inventoryAddReceiptBulk = function() {
   inventoryRolloverIfNeeded();
-  const pid = document.getElementById('invReceiptProduct').value;
-  const qty = parseInt(document.getElementById('invReceiptQty').value, 10);
-  if (!pid) { alert('품목을 선택하세요.'); return; }
-  if (isNaN(qty) || qty <= 0) { alert('수량을 1 이상의 정수로 입력하세요.'); return; }
-  const e = inventoryEnsureProduct(pid);
-  e.receivedToday += qty;
-  e.stock += qty;
+  const rows = Array.isArray(window._invReceiptRows) ? window._invReceiptRows : [];
+  const valid = [];
+  const errs = [];
+  rows.forEach(function(r, i){
+    const pid = r.productId;
+    const qty = parseInt(r.qty, 10);
+    // 빈 행 (품목 · 수량 모두 없음) skip
+    if (!pid && (!r.qty || String(r.qty).trim() === '')) return;
+    if (!pid) { errs.push('행 ' + (i+1) + ': 품목 미선택'); return; }
+    if (isNaN(qty) || qty <= 0) { errs.push('행 ' + (i+1) + ': 수량 · 1 이상의 정수'); return; }
+    valid.push({ pid: pid, qty: qty });
+  });
+  if (valid.length === 0) {
+    alert('입력된 유효한 행이 없습니다.\n\n' + (errs.length ? '오류:\n' + errs.join('\n') : '품목과 수량을 입력해주세요.'));
+    return;
+  }
+  if (errs.length > 0) {
+    if (!confirm('⚠ 오류 있음:\n' + errs.join('\n') + '\n\n유효한 ' + valid.length + '건만 등록? 계속?')) return;
+  } else {
+    if (!confirm('총 ' + valid.length + '개 품목 · 일괄 입고 등록 · 계속?')) return;
+  }
+  // 실행
+  const results = [];
+  const cats = new Set();
+  valid.forEach(function(v){
+    const e = inventoryEnsureProduct(v.pid);
+    e.receivedToday += v.qty;
+    e.stock += v.qty;
+    const p = DB.products.find(function(x){ return x.id === v.pid; });
+    if (p && p.cut) cats.add(p.cut);
+    results.push({ name: p ? p.name : '(?)', qty: v.qty, unit: p ? inventoryUnitLabel(p.cut) : '단위' });
+  });
   saveDB();
-  const p = DB.products.find(x => x.id === pid);
-  const unit = p ? inventoryUnitLabel(p.cut) : '단위';
-  // 카테고리 현황 + 출고 목록 즉시 재렌더 → 화면에 바로 반영
+  try { auditLogAdd('재고 다품목 입고 · ' + valid.length + '건 · ' + results.map(function(r){ return r.name + ' ' + r.qty + r.unit; }).join(', ').slice(0, 300)); } catch(_){}
   inventoryRenderSummary();
   inventoryRenderOutgoing();
-  // 입고된 품목 카테고리는 펼쳐서 바로 확인 가능하게
-  if (p && p.cut) {
-    const detail = document.getElementById('invCatDetail_' + p.cut);
-    const row = document.getElementById('invCatRow_' + p.cut);
+  // 카테고리 자동 펼침
+  cats.forEach(function(cut){
+    const detail = document.getElementById('invCatDetail_' + cut);
+    const row = document.getElementById('invCatRow_' + cut);
     if (detail && detail.style.display === 'none') {
       detail.style.display = '';
       if (row && row.firstElementChild) row.firstElementChild.textContent = '▼';
     }
-  }
-  document.getElementById('invReceiptQty').value = '';
-  // ⭐ (2026-08-16) 품목 검색 위젯 초기화 — 연속 입고 등록 편의
-  try {
-    const sel = document.getElementById('invReceiptProduct');
-    const search = document.getElementById('invReceiptProduct_search');
-    if (sel) sel.value = '';
-    if (search) search.value = '';
-    if (typeof inventoryUpdateReceiptUnitHint === 'function') inventoryUpdateReceiptUnitHint();
-  } catch(_){}
-  // 등록 완료 — 확실한 피드백 (toast 무시 방지)
-  showToast(`📥 ${p ? p.name : '품목'} ${qty}${unit} 입고 완료`);
-  alert(`✅ 입고 등록되었습니다.\n\n품목: ${p ? p.name : '품목'}\n수량: ${qty}${unit}\n\n📦 카테고리 현황에 즉시 반영되었습니다.`);
+  });
+  // 폼 리셋 · 7행 빈 상태
+  inventoryReceiptClearAll();
+  const summary = results.map(function(r){ return '  · ' + r.name + ' ' + r.qty + r.unit; }).join('\n');
+  showToast('📥 ' + valid.length + '개 품목 · 입고 완료');
+  alert('✅ 일괄 입고 등록 완료 · ' + valid.length + '건\n\n' + summary + '\n\n📦 카테고리 현황에 즉시 반영되었습니다.');
 };
 
 // ---------- PDF 저장 (통합 폴더) ----------
