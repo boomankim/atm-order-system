@@ -18126,8 +18126,7 @@ window.inventoryReceiptRenderRows = function() {
   const wrap = document.getElementById('invReceiptMultiWrap');
   if (!wrap) return;
   if (!Array.isArray(window._invReceiptRows) || window._invReceiptRows.length === 0) {
-    window._invReceiptRows = [];
-    for (let i = 0; i < 7; i++) window._invReceiptRows.push({ productId: '', qty: '' });
+    window._invReceiptRows = [{ productId: '', qty: '' }];
   }
   const rows = window._invReceiptRows;
   const rowsHtml = rows.map(function(r, i){
