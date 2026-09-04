@@ -16654,6 +16654,19 @@ function viewInventory(params) {
       <div id="invOutgoingWrap"></div>
     </div>
 
+    <!-- ⭐ (2026-09-05 밤작업#335) 제품 출고 등록 · 다품목 일괄 · 사유 자유입력 · 마이너스 재고 허용 -->
+    <div class="card" style="border-left:4px solid var(--warn, #FB8C00);">
+      <h3>📤 제품 출고 등록 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 폐기·샘플·반품·이벤트 등 · 재고 차감 (매출 인보이스 연동 없음)</span></h3>
+      <div id="invOutboundMultiWrap"></div>
+      <div style="margin-top:10px; display:flex; gap:8px; flex-wrap:wrap; align-items:center;">
+        <button class="btn sm" onclick="inventoryOutboundAddRow()">+ 행 추가</button>
+        <button class="btn sm secondary" onclick="inventoryOutboundClearAll()">🗑 모두 지우기</button>
+        <span style="flex:1;"></span>
+        <button class="btn warn" onclick="inventoryAddOutboundBulk()" style="padding:8px 20px; background:#FB8C00; color:#fff;">📤 일괄 출고</button>
+      </div>
+      <div style="font-size:11px; color:var(--muted); margin-top:8px;">※ 정수 입력. 사유는 자유입력 (예: 폐기, 샘플, 반품, 이벤트). 마이너스 재고 허용. 그날 출고에 가산되어 현재고에서 차감.</div>
+    </div>
+
     <div class="card">
       <h3>📥 제품 입고 등록 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">— 여러 품목 동시 입력 · 각 행별 품목/수량 입력 후 [일괄 등록]</span></h3>
       <div id="invReceiptMultiWrap"></div>
@@ -16664,6 +16677,19 @@ function viewInventory(params) {
         <button class="btn success" onclick="inventoryAddReceiptBulk()" style="padding:8px 20px;">📥 일괄 등록</button>
       </div>
       <div style="font-size:11px; color:var(--muted); margin-top:8px;">※ 정수 입력. 단위는 품목 카테고리에 따름 (가공육=팩, 그 외=박스). 등록 즉시 오늘 입고에 가산되어 현재고에 반영.</div>
+    </div>
+
+    <!-- ⭐ (2026-09-05 밤작업#335) 입출고 통합 이력 · 최근 100건 · 필터 [전체/입고/출고] -->
+    <div class="card">
+      <div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">
+        <h3 style="margin:0;">📋 입출고 이력 <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:8px;">최근 100건 · 최대 500건 저장</span></h3>
+        <div style="display:flex; gap:4px;" id="invTxnFilterBtns">
+          <button class="btn sm" data-txnf="all" onclick="renderInventoryTxnLog('all')" style="background:var(--brand); color:#fff;">전체</button>
+          <button class="btn sm secondary" data-txnf="in" onclick="renderInventoryTxnLog('in')">입고 📥</button>
+          <button class="btn sm secondary" data-txnf="out" onclick="renderInventoryTxnLog('out')">출고 📤</button>
+        </div>
+      </div>
+      <div id="invTxnLogWrap"></div>
     </div>
 
     <!-- ⭐ (2026-08-12) 반품 이력 — 배송완료 인보이스의 음수 수량 라인 자동 추출 -->
@@ -16701,6 +16727,11 @@ function viewInventory(params) {
   // ⭐ (2026-09-03 밤작업#333) 다품목 일괄 입고 · 초기 7행 렌더
   window._invReceiptRows = null;   // 진입 시 항상 리셋
   if (typeof inventoryReceiptRenderRows === 'function') inventoryReceiptRenderRows();
+  // ⭐ (2026-09-05 밤작업#335) 다품목 일괄 출고 · 초기 1행 렌더 + 입출고 이력 렌더
+  window._invOutboundRows = null;
+  if (typeof inventoryOutboundRenderRows === 'function') inventoryOutboundRenderRows();
+  window._invTxnFilter = window._invTxnFilter || 'all';
+  if (typeof renderInventoryTxnLog === 'function') renderInventoryTxnLog(window._invTxnFilter);
   // 월 실사 품목 리스트는 토글 버튼 클릭 시에만 렌더링 (lazy)
   inventoryRefreshFolderInfo();
   // ⭐ (2026-08-12) 반품 이력 렌더 (기본 최근 30일)
@@ -18291,9 +18322,21 @@ window.inventoryAddReceiptBulk = function() {
     const p = DB.products.find(function(x){ return x.id === v.pid; });
     if (p && p.cut) cats.add(p.cut);
     results.push({ name: p ? p.name : '(?)', qty: v.qty, unit: p ? inventoryUnitLabel(p.cut) : '단위' });
+    // ⭐ (2026-09-05 밤작업#335) 입출고 통합 이력 · 입고 라인 기록
+    try {
+      if (!DB.inventory) DB.inventory = {};
+      if (!Array.isArray(DB.inventory.txnLog)) DB.inventory.txnLog = [];
+      DB.inventory.txnLog.push({
+        ts: Date.now(), type: 'in', productId: v.pid,
+        productName: p ? p.name : '(?)', cut: p ? (p.cut || '') : '',
+        qty: v.qty, reason: ''
+      });
+      if (DB.inventory.txnLog.length > 500) DB.inventory.txnLog.splice(0, DB.inventory.txnLog.length - 500);
+    } catch(_){}
   });
   saveDB();
   try { auditLogAdd('재고 다품목 입고 · ' + valid.length + '건 · ' + results.map(function(r){ return r.name + ' ' + r.qty + r.unit; }).join(', ').slice(0, 300)); } catch(_){}
+  try { if (typeof renderInventoryTxnLog === 'function') renderInventoryTxnLog(window._invTxnFilter || 'all'); } catch(_){}
   inventoryRenderSummary();
   inventoryRenderOutgoing();
   // 카테고리 자동 펼침
@@ -18310,6 +18353,205 @@ window.inventoryAddReceiptBulk = function() {
   const summary = results.map(function(r){ return '  · ' + r.name + ' ' + r.qty + r.unit; }).join('\n');
   showToast('📥 ' + valid.length + '개 품목 · 입고 완료');
   alert('✅ 일괄 입고 등록 완료 · ' + valid.length + '건\n\n' + summary + '\n\n📦 카테고리 현황에 즉시 반영되었습니다.');
+};
+
+// ⭐ (2026-09-05 밤작업#335) 다품목 일괄 출고 · 사유 자유입력 · 마이너스 재고 허용 · auditLog 없음
+window._invOutboundRows = null;
+window.inventoryOutboundRenderRows = function() {
+  const wrap = document.getElementById('invOutboundMultiWrap');
+  if (!wrap) return;
+  if (!Array.isArray(window._invOutboundRows) || window._invOutboundRows.length === 0) {
+    window._invOutboundRows = [{ productId: '', qty: '', reason: '' }];
+  }
+  const rows = window._invOutboundRows;
+  const rowsHtml = rows.map(function(r, i){
+    const p = r.productId ? DB.products.find(function(x){ return x.id === r.productId; }) : null;
+    const unit = p ? inventoryUnitLabel(p.cut) : '(박스/팩)';
+    return '<tr>'
+      + '<td style="padding:4px 6px; min-width:300px;">' + renderProductSearchSelect({
+          selectId: 'invOutProd_' + i,
+          categories: INVENTORY_CATEGORIES,
+          selectedId: r.productId || '',
+          onChange: "inventoryOutboundRowChange(" + i + ",'productId',this.value)"
+        }) + '</td>'
+      + '<td style="padding:4px 6px; width:100px;"><input type="number" step="1" min="1" value="' + (r.qty || '') + '" placeholder="예: 2" onchange="inventoryOutboundRowChange(' + i + ",'qty',this.value)\" style=\"width:100%; text-align:right; padding:6px 8px; border:1px solid var(--line); border-radius:4px;\"></td>"
+      + '<td style="padding:4px 6px; width:70px; color:var(--muted); font-size:12px; text-align:center;">' + unit + '</td>'
+      + '<td style="padding:4px 6px; min-width:180px;"><input type="text" value="' + String(r.reason || '').replace(/"/g,'&quot;') + '" placeholder="폐기 / 샘플 / 반품 / 이벤트" onchange="inventoryOutboundRowChange(' + i + ",'reason',this.value)\" style=\"width:100%; padding:6px 8px; border:1px solid var(--line); border-radius:4px;\"></td>"
+      + '<td style="padding:4px 6px; width:50px; text-align:center;"><button class="btn sm danger" onclick="inventoryOutboundRemoveRow(' + i + ')" style="padding:3px 8px;">✕</button></td>'
+      + '</tr>';
+  }).join('');
+  wrap.innerHTML =
+    '<div style="overflow:visible;">'
+    + '<table class="t" style="width:100%; font-size:13px; margin:0; overflow:visible;">'
+    + '<thead><tr style="background:#FFF3E0;">'
+    +   '<th style="padding:6px 8px; text-align:left;">품목</th>'
+    +   '<th style="padding:6px 8px; text-align:right; width:100px;">수량</th>'
+    +   '<th style="padding:6px 8px; text-align:center; width:70px;">단위</th>'
+    +   '<th style="padding:6px 8px; text-align:left;">사유 (자유입력)</th>'
+    +   '<th style="padding:6px 8px; text-align:center; width:50px;"></th>'
+    + '</tr></thead>'
+    + '<tbody>' + rowsHtml + '</tbody>'
+    + '</table></div>';
+};
+
+window.inventoryOutboundRowChange = function(idx, field, value) {
+  if (!Array.isArray(window._invOutboundRows) || !window._invOutboundRows[idx]) return;
+  window._invOutboundRows[idx][field] = value;
+  if (field === 'productId') {
+    const wrap = document.getElementById('invOutboundMultiWrap');
+    if (!wrap) return;
+    const tds = wrap.querySelectorAll('tbody tr');
+    if (tds[idx]) {
+      const unitTd = tds[idx].children[2];
+      if (unitTd) {
+        const p = value ? DB.products.find(function(x){ return x.id === value; }) : null;
+        unitTd.textContent = p ? inventoryUnitLabel(p.cut) : '(박스/팩)';
+      }
+    }
+  }
+};
+
+window.inventoryOutboundAddRow = function() {
+  if (!Array.isArray(window._invOutboundRows)) window._invOutboundRows = [];
+  window._invOutboundRows.push({ productId: '', qty: '', reason: '' });
+  inventoryOutboundRenderRows();
+};
+
+window.inventoryOutboundRemoveRow = function(idx) {
+  if (!Array.isArray(window._invOutboundRows)) return;
+  if (window._invOutboundRows.length <= 1) {
+    window._invOutboundRows[0] = { productId: '', qty: '', reason: '' };
+  } else {
+    window._invOutboundRows.splice(idx, 1);
+  }
+  inventoryOutboundRenderRows();
+};
+
+window.inventoryOutboundClearAll = function() {
+  window._invOutboundRows = [];
+  for (let i = 0; i < 3; i++) window._invOutboundRows.push({ productId: '', qty: '', reason: '' });
+  inventoryOutboundRenderRows();
+};
+
+window.inventoryAddOutboundBulk = function() {
+  inventoryRolloverIfNeeded();
+  const rows = Array.isArray(window._invOutboundRows) ? window._invOutboundRows : [];
+  const valid = [];
+  const errs = [];
+  rows.forEach(function(r, i){
+    const pid = r.productId;
+    const qty = parseInt(r.qty, 10);
+    const reason = String(r.reason || '').trim();
+    if (!pid && (!r.qty || String(r.qty).trim() === '')) return;
+    if (!pid) { errs.push('행 ' + (i+1) + ': 품목 미선택'); return; }
+    if (isNaN(qty) || qty <= 0) { errs.push('행 ' + (i+1) + ': 수량 · 1 이상의 정수'); return; }
+    valid.push({ pid: pid, qty: qty, reason: reason });
+  });
+  if (valid.length === 0) {
+    alert('입력된 유효한 행이 없습니다.\n\n' + (errs.length ? '오류:\n' + errs.join('\n') : '품목과 수량을 입력해주세요.'));
+    return;
+  }
+  if (errs.length > 0) {
+    if (!confirm('⚠ 오류 있음:\n' + errs.join('\n') + '\n\n유효한 ' + valid.length + '건만 등록? 계속?')) return;
+  } else {
+    if (!confirm('총 ' + valid.length + '개 품목 · 일괄 출고 등록 · 계속?')) return;
+  }
+  const results = [];
+  const cats = new Set();
+  valid.forEach(function(v){
+    const e = inventoryEnsureProduct(v.pid);
+    e.stock -= v.qty;                  // ⭐ 마이너스 허용
+    e.deductedToday = (e.deductedToday || 0) + v.qty;
+    const p = DB.products.find(function(x){ return x.id === v.pid; });
+    if (p && p.cut) cats.add(p.cut);
+    results.push({ name: p ? p.name : '(?)', qty: v.qty, unit: p ? inventoryUnitLabel(p.cut) : '단위', reason: v.reason });
+    // 입출고 통합 이력 · 출고 라인
+    try {
+      if (!DB.inventory) DB.inventory = {};
+      if (!Array.isArray(DB.inventory.txnLog)) DB.inventory.txnLog = [];
+      DB.inventory.txnLog.push({
+        ts: Date.now(), type: 'out', productId: v.pid,
+        productName: p ? p.name : '(?)', cut: p ? (p.cut || '') : '',
+        qty: v.qty, reason: v.reason || ''
+      });
+      if (DB.inventory.txnLog.length > 500) DB.inventory.txnLog.splice(0, DB.inventory.txnLog.length - 500);
+    } catch(_){}
+  });
+  saveDB();
+  inventoryRenderSummary();
+  inventoryRenderOutgoing();
+  cats.forEach(function(cut){
+    const detail = document.getElementById('invCatDetail_' + cut);
+    const row = document.getElementById('invCatRow_' + cut);
+    if (detail && detail.style.display === 'none') {
+      detail.style.display = '';
+      if (row && row.firstElementChild) row.firstElementChild.textContent = '▼';
+    }
+  });
+  inventoryOutboundClearAll();
+  try { if (typeof renderInventoryTxnLog === 'function') renderInventoryTxnLog(window._invTxnFilter || 'all'); } catch(_){}
+  const summary = results.map(function(r){ return '  · ' + r.name + ' ' + r.qty + r.unit + (r.reason ? ' (' + r.reason + ')' : ''); }).join('\n');
+  showToast('📤 ' + valid.length + '개 품목 · 출고 완료');
+  alert('✅ 일괄 출고 등록 완료 · ' + valid.length + '건\n\n' + summary + '\n\n📦 카테고리 현황에 즉시 반영되었습니다.');
+};
+
+// ⭐ (2026-09-05 밤작업#335) 입출고 통합 이력 렌더 · 최근 100건 · 필터 [all/in/out]
+window._invTxnFilter = window._invTxnFilter || 'all';
+window.renderInventoryTxnLog = function(filter) {
+  const wrap = document.getElementById('invTxnLogWrap');
+  if (!wrap) return;
+  const f = (filter === 'in' || filter === 'out') ? filter : 'all';
+  window._invTxnFilter = f;
+  // 필터 버튼 하이라이트
+  try {
+    const btns = document.querySelectorAll('#invTxnFilterBtns [data-txnf]');
+    btns.forEach(function(b){
+      const isActive = b.getAttribute('data-txnf') === f;
+      b.classList.toggle('secondary', !isActive);
+      b.style.background = isActive ? 'var(--brand)' : '';
+      b.style.color = isActive ? '#fff' : '';
+    });
+  } catch(_){}
+  const log = (DB.inventory && Array.isArray(DB.inventory.txnLog)) ? DB.inventory.txnLog : [];
+  let filtered = log.slice();
+  if (f !== 'all') filtered = filtered.filter(function(x){ return x.type === f; });
+  filtered.sort(function(a,b){ return (b.ts||0) - (a.ts||0); });
+  filtered = filtered.slice(0, 100);
+  if (filtered.length === 0) {
+    wrap.innerHTML = '<div style="padding:16px; text-align:center; color:var(--muted); font-size:13px;">이력 없음</div>';
+    return;
+  }
+  const rowsHtml = filtered.map(function(x){
+    const d = new Date(x.ts || 0);
+    const dstr = d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0')
+      + ' ' + String(d.getHours()).padStart(2,'0') + ':' + String(d.getMinutes()).padStart(2,'0');
+    const badge = (x.type === 'in')
+      ? '<span style="background:#43A047; color:#fff; padding:2px 8px; border-radius:10px; font-size:11px;">📥 입고</span>'
+      : '<span style="background:#FB8C00; color:#fff; padding:2px 8px; border-radius:10px; font-size:11px;">📤 출고</span>';
+    const p = x.productId ? DB.products.find(function(y){ return y.id === x.productId; }) : null;
+    const unit = p ? inventoryUnitLabel(p.cut) : (x.cut ? inventoryUnitLabel(x.cut) : '');
+    const qtyDisp = (x.type === 'out' ? '-' : '+') + x.qty + unit;
+    const reason = String(x.reason || '').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    return '<tr>'
+      + '<td style="padding:5px 8px; white-space:nowrap; color:var(--muted); font-size:12px;">' + dstr + '</td>'
+      + '<td style="padding:5px 8px; text-align:center;">' + badge + '</td>'
+      + '<td style="padding:5px 8px;">' + (x.productName || '(?)') + '</td>'
+      + '<td style="padding:5px 8px; text-align:right; font-weight:600; color:' + (x.type === 'out' ? '#E53935' : '#2E7D32') + ';">' + qtyDisp + '</td>'
+      + '<td style="padding:5px 8px; color:var(--muted); font-size:12px;">' + reason + '</td>'
+      + '</tr>';
+  }).join('');
+  wrap.innerHTML =
+    '<div style="max-height:400px; overflow-y:auto; border:1px solid var(--line); border-radius:6px;">'
+    + '<table class="t" style="width:100%; font-size:13px; margin:0;">'
+    + '<thead style="position:sticky; top:0; background:#F5EFE7; z-index:1;"><tr>'
+    +   '<th style="padding:6px 8px; text-align:left;">시각</th>'
+    +   '<th style="padding:6px 8px; text-align:center; width:80px;">구분</th>'
+    +   '<th style="padding:6px 8px; text-align:left;">품목</th>'
+    +   '<th style="padding:6px 8px; text-align:right; width:100px;">수량</th>'
+    +   '<th style="padding:6px 8px; text-align:left;">사유</th>'
+    + '</tr></thead>'
+    + '<tbody>' + rowsHtml + '</tbody>'
+    + '</table></div>';
 };
 
 // ---------- PDF 저장 (통합 폴더) ----------
