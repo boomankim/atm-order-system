@@ -6898,7 +6898,8 @@ window.openCartEditModal = function(idx) {
   const p = DB.products.find(x => x.id === item.productId);
   const pName = p ? p.name : '(품목)';
   const pBrand = p ? (p.brand || '') : '';
-  const qtyStep = item.unit === '작업중량' ? 0.1 : 1;
+  // ⭐ (2026-09-05 밤작업#334) 박스도 0.5 단위 허용 (반박스 주문 지원)
+  const qtyStep = item.unit === '작업중량' ? 0.1 : (item.unit === '박스' ? 0.5 : 1);
   const allowedUnits = ['박스','팩','작업중량'];
   const unitLong = { '박스':'박스/box', '팩':'팩/pack', '작업중량':'kg' };
   const qtyVal = (item.quantity == null || isNaN(item.quantity)) ? '' : item.quantity;
@@ -7956,9 +7957,20 @@ function viewWeigh(params) {
         <tbody>
           ${order.items.map((it, i) => {
             const p = DB.products.find(x => x.id === it.productId);
-            const orderDisplay = it.unit === '작업중량'
-              ? `<b>${it.quantity} kg</b> <small style="color:var(--muted);">작업</small>`
-              : `${it.quantity} ${it.unit}`;
+            // ⭐ (2026-09-05 밤작업#334) 계근 화면에서도 수량·단위 편집 가능
+            //   박스 0.5 단위 · 작업중량 0.1 단위 · 팩 1 단위
+            const _wQtyStep = it.unit === '작업중량' ? '0.1' : (it.unit === '박스' ? '0.5' : '1');
+            const orderDisplay =
+              `<input type="number" step="${_wQtyStep}" min="0" value="${it.quantity != null ? it.quantity : 0}"`
+              + ` style="width:60px;padding:5px;border:1px solid var(--line);border-radius:4px;text-align:right;font-size:13px;"`
+              + ` onfocus="this.select()"`
+              + ` onchange="updateWeighOrderQty('${order.id}', ${i}, this.value)">`
+              + ` <select style="padding:5px 3px;border:1px solid var(--line);border-radius:4px;font-size:11px;"`
+              + ` onchange="updateWeighOrderUnit('${order.id}', ${i}, this.value)">`
+              + `<option value="박스"${it.unit==='박스'?' selected':''}>박스</option>`
+              + `<option value="팩"${it.unit==='팩'?' selected':''}>팩</option>`
+              + `<option value="작업중량"${it.unit==='작업중량'?' selected':''}>작업kg</option>`
+              + `</select>`;
             // ⭐ (2026-08-22 B-2) 삭제된 품목 · 빨간 배경 + "삭제됨" 뱃지 로 명시 (숨기지 않음)
             const isDeleted = !p;
             const pName  = p ? p.name  : `⚠ 삭제된 품목 (원본 ID: ${(it.productId||'').slice(0,12)}…)`;
@@ -8069,6 +8081,38 @@ function updateWarehouseMemo(orderId, idx, val) {
   saveOrderItemField(orderId, 'items', idx, 'warehouseMemo');
 }
 window.updateWarehouseMemo = updateWarehouseMemo;
+
+// ⭐ (2026-09-05 밤작업#334) 계근 화면 주문 수량·단위 편집 헬퍼
+//   박스는 0.5 단위 허용 · 팩은 정수 · 작업중량은 소수 허용
+function updateWeighOrderQty(orderId, idx, val) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o || !o.items || !o.items[idx]) return;
+  const it = o.items[idx];
+  let newQty;
+  if (it.unit === '작업중량' || it.unit === '박스') {
+    newQty = parseFloat(val);
+  } else {
+    newQty = parseInt(val, 10);
+  }
+  if (isNaN(newQty) || newQty <= 0) {
+    alert('수량은 0보다 커야 합니다.');
+    if (typeof route === 'function') route();
+    return;
+  }
+  it.quantity = newQty;
+  saveOrderItemField(orderId, 'items', idx, 'quantity');
+}
+function updateWeighOrderUnit(orderId, idx, val) {
+  const o = DB.orders.find(x => x.id === orderId);
+  if (!o || !o.items || !o.items[idx]) return;
+  o.items[idx].unit = String(val || '박스');
+  saveOrderItemField(orderId, 'items', idx, 'unit');
+  // 단위가 바뀌면 수량 input 의 step 갱신을 위해 화면 재렌더
+  if (typeof route === 'function') route();
+}
+window.updateWeighOrderQty = updateWeighOrderQty;
+window.updateWeighOrderUnit = updateWeighOrderUnit;
+
 function renderWeighingTotal(o) {
   let total = 0, weighed = 0;
   o.items.forEach(it => {
@@ -11124,6 +11168,15 @@ function fmtMoney(n) {
 function unitEn(u) {
   return { '박스': 'box', '팩': 'pack' }[u] || u;
 }
+// ⭐ (2026-09-05 밤작업#334) 인보이스 PDF/화면용: 박스가 소수 (예: 0.5) 이면 "0.5 box" 처럼 공백 삽입
+//   기존 정수 표시는 하위 호환 위해 "1box" 유지
+function qtyUnitDisplay(q, u) {
+  var n = Number(q);
+  if (isNaN(n)) n = 0;
+  var frac = !Number.isInteger(n);
+  var sep = frac ? ' ' : '';
+  return n + sep + unitEn(u);
+}
 // 결제조건 표기 (현금/Cash, 7day 등)
 function termsLabel(t) {
   return { '현금': '현금/Cash', '계좌이체': '계좌이체/Transfer', '7일 외상': '7day', '14일 외상': '14day', '30일 외상': '30day' }[t] || (t || '-');
@@ -11833,12 +11886,14 @@ function renderPrepTbody(o) {
     var p = DB.products.find(function(x){ return x.id === it.productId; });
     var w = isCancelled ? 0 : it.actualWeightKg;
     var wDisplay = isCancelled ? '0.00' : (w != null ? parseFloat(w).toFixed(2) : '');
-    // ⭐ (2026-08-14) 작업3-C: 추가된 라인은 주문 수량·단위 편집 가능 (원본 라인은 텍스트 그대로)
+    // ⭐ (2026-09-05 밤작업#334) 모든 활성 라인에서 수량·단위 편집 가능 (기존은 추가 라인만)
+    //   박스는 0.5 단위 · 작업중량은 0.1 단위 · 팩은 1 단위
     var orderDisplay;
-    if (isAdded && !isCancelled) {
-      orderDisplay = '<input type="number" step="1" min="0" value="' + (it.quantity || 0) + '"'
+    if (!isCancelled) {
+      var _qStep = it.unit === '작업중량' ? '0.1' : (it.unit === '박스' ? '0.5' : '1');
+      orderDisplay = '<input type="number" step="' + _qStep + '" min="0" value="' + (it.quantity != null ? it.quantity : 0) + '"'
         + ' data-prep-key="q_' + i + '"'
-        + ' style="width:56px;padding:5px;border:1px solid var(--line);border-radius:4px;text-align:right;font-size:12px;"'
+        + ' style="width:64px;padding:5px;border:1px solid var(--line);border-radius:4px;text-align:right;font-size:12px;"'
         + ' onfocus="this.select()"'
         + ' onchange="updatePrepQuantity(window._prepOid,' + i + ',this.value)">'
         + ' <select data-prep-key="u_' + i + '" style="padding:5px 3px;border:1px solid var(--line);border-radius:4px;font-size:11px;"'
@@ -12098,11 +12153,14 @@ window.updatePrepQuantity = function(orderId, idx, val) {
   var newQty;
   if (it.unit === '작업중량') {
     newQty = parseFloat(val);
+  } else if (it.unit === '박스') {
+    // ⭐ (2026-09-05 밤작업#334) 박스 0.5 단위 허용
+    newQty = parseFloat(val);
   } else {
-    newQty = parseInt(val, 10);   // 박스·팩은 정수
+    newQty = parseInt(val, 10);   // 팩은 정수
   }
-  if (isNaN(newQty) || newQty < 1) {
-    alert('수량은 1 이상 입력해주세요.');
+  if (isNaN(newQty) || newQty <= 0) {
+    alert('수량은 0보다 커야 합니다.');
     // 재렌더로 이전 값 복원
     renderPrepTbody(o);
     renderPrepTotals(o);
@@ -12120,6 +12178,8 @@ window.updatePrepUnit = function(orderId, idx, val) {
   getInvoiceItems(o)[idx].unit = newUnit;
   var listKey = o.invoiceItems ? 'invoiceItems' : 'items';
   saveOrderItemField(orderId, listKey, idx, 'unit');
+  // ⭐ (2026-09-05 밤작업#334) 단위 변경 시 수량 input 의 step 도 갱신되도록 tbody 재렌더
+  renderPrepTbody(o);
   renderPrepTotals(o);
 };
 
@@ -12773,7 +12833,7 @@ function viewInvoice(params) {
             const price = lineUnitPrice(it, p, cust);
             const orderDisplay = it.unit === '작업중량'
               ? `${it.quantity}kg`
-              : `${it.quantity}${unitEn(it.unit)}`;
+              : `${qtyUnitDisplay(it.quantity, it.unit)}`;
             const noteInline = it.notes ? ` <span style="color:#777;font-size:9px;">※ ${it.notes}</span>` : '';
             if (w == null) {
               return `<tr>
@@ -13111,7 +13171,7 @@ function sendInvoice(id) {
     const p = DB.products.find(x => x.id === it.productId);
     const w = it.actualWeightKg;
     const price = lineUnitPrice(it, p, cust);
-    const orderText = it.unit === '작업중량' ? `${it.quantity}kg` : `${it.quantity}${unitEn(it.unit)}`;
+    const orderText = it.unit === '작업중량' ? `${it.quantity}kg` : `${qtyUnitDisplay(it.quantity, it.unit)}`;
     if (w == null) {
       msg += `· ${p.name}(${p.brand}) ${orderText} → 계근 대기\n`;
     } else {
@@ -14293,7 +14353,7 @@ function buildInvoiceHTML(o, cust, totals) {
     const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
     const w = it.actualWeightKg;
     const price = lineUnitPrice(it, p, cust);
-    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg` : `${it.quantity}${unitEn(it.unit)}`;
+    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg` : `${qtyUnitDisplay(it.quantity, it.unit)}`;
     // 흑백 인쇄 시 회색 음영도 토너 소모 — zebra striping 제거. 행 구분은 셀 하단선만.
     const rowStyle = 'border-bottom:1px solid #E5DCD3;';
     // 요청사항(notes)은 같은 셀 안에 작게 inline 표기 (줄바꿈 회피)
@@ -14446,7 +14506,7 @@ function buildOrderSheetHTML(o, cust) {
   const itemRows = o.items.map((it, idx) => {
     const p = DB.products.find(x => x.id === it.productId) || { name: '?', brand: '?' };
     const w = it.actualWeightKg;
-    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg` : `${it.quantity}${unitEn(it.unit)}`;
+    const orderDisplay = it.unit === '작업중량' ? `${it.quantity}kg` : `${qtyUnitDisplay(it.quantity, it.unit)}`;
     const bg = idx % 2 === 1 ? '#FAF6F1' : '#ffffff';
     const weightCell = (w == null)
       ? `<td style="padding:7px 8px; text-align:right; color:#B8860B;">계근 대기</td>`
@@ -19193,6 +19253,187 @@ if (FIREBASE_READY && DB_REF) {
       }).catch(err => console.warn('[PWA] SW 등록 실패:', err));
     });
   }
+
+  // ⭐ (2026-09-05 밤작업#334) 태블릿 UX 강화 · 새로고침 HUD + 연결 상태 + 자동 재연결
+  //   1. 우하단 · 반투명 새로고침 버튼 (상시) · 탭=reload · 롱프레스=SW 캐시삭제+reload
+  //   2. 우상단 · Firebase 연결 상태 점 · 초록/노랑/빨강
+  //   3. visibilitychange · 백→포 전환 시 · 오래 백그라운드였으면 자동 새로고침
+  //   태블릿 · Chrome 백그라운드 Tab Freezing / Wi-Fi 끊김 대응
+  (function setupRefreshHUD() {
+    if (typeof document === 'undefined') return;
+    // 인쇄 시엔 HUD 숨김
+    const hudStyle = document.createElement('style');
+    hudStyle.id = 'atm-refresh-hud-style';
+    hudStyle.textContent = `
+      #atm-refresh-btn {
+        position: fixed; right: 14px; bottom: 14px;
+        width: 52px; height: 52px; border-radius: 50%;
+        background: rgba(255,255,255,0.82); color: #2E5C8A;
+        border: 1.5px solid rgba(46,92,138,0.55);
+        display: flex; align-items: center; justify-content: center;
+        font-size: 24px; z-index: 99998; cursor: pointer;
+        box-shadow: 0 3px 10px rgba(0,0,0,0.20);
+        user-select: none; -webkit-tap-highlight-color: transparent;
+        transition: transform 0.12s ease, background 0.2s ease;
+      }
+      #atm-refresh-btn:active { transform: scale(0.92); }
+      #atm-refresh-btn.warn {
+        background: #E67E22; color: #fff; border-color: #A0521A;
+        animation: atmRefreshPulse 1.2s ease-in-out infinite;
+      }
+      @keyframes atmRefreshPulse {
+        0%,100% { box-shadow: 0 3px 10px rgba(230,126,34,0.30); }
+        50%     { box-shadow: 0 3px 20px rgba(230,126,34,0.85); }
+      }
+      #atm-conn-dot {
+        position: fixed; right: 14px; top: 10px;
+        width: 12px; height: 12px; border-radius: 50%;
+        background: #999; z-index: 99998;
+        box-shadow: 0 0 0 2px rgba(255,255,255,0.8), 0 1px 3px rgba(0,0,0,0.3);
+        transition: background 0.25s ease;
+        pointer-events: none;
+      }
+      #atm-conn-dot.ok   { background: #27AE60; }
+      #atm-conn-dot.warn { background: #F1C40F; }
+      #atm-conn-dot.bad  { background: #C0392B;
+        animation: atmDotBlink 1s ease-in-out infinite; }
+      @keyframes atmDotBlink { 50% { opacity: 0.35; } }
+      @media print {
+        #atm-refresh-btn, #atm-conn-dot { display: none !important; }
+      }
+    `;
+    document.head.appendChild(hudStyle);
+
+    // 새로고침 버튼 생성
+    const btn = document.createElement('button');
+    btn.id = 'atm-refresh-btn';
+    btn.type = 'button';
+    btn.title = '새로고침 (길게 누르면 캐시 삭제)';
+    btn.innerHTML = '&#x21bb;';   // ↻
+    let _pressTimer = null;
+    let _pressLong = false;
+    function _doReload(deep) {
+      try {
+        if (deep && 'serviceWorker' in navigator && navigator.serviceWorker.controller) {
+          navigator.serviceWorker.controller.postMessage('CLEAR_CACHE');
+        }
+      } catch (_) {}
+      setTimeout(() => { location.reload(); }, deep ? 250 : 0);
+    }
+    btn.addEventListener('pointerdown', (e) => {
+      _pressLong = false;
+      _pressTimer = setTimeout(() => {
+        _pressLong = true;
+        if (navigator.vibrate) navigator.vibrate(40);
+        if (confirm('캐시까지 완전히 지우고 새로고침할까요?\n(느리게 열릴 수 있음)')) {
+          _doReload(true);
+        }
+      }, 800);
+    });
+    btn.addEventListener('pointerup', () => {
+      if (_pressTimer) { clearTimeout(_pressTimer); _pressTimer = null; }
+    });
+    btn.addEventListener('pointerleave', () => {
+      if (_pressTimer) { clearTimeout(_pressTimer); _pressTimer = null; }
+    });
+    btn.addEventListener('click', (e) => {
+      if (_pressLong) { e.preventDefault(); return; }
+      _doReload(false);
+    });
+
+    // 연결 상태 점
+    const dot = document.createElement('div');
+    dot.id = 'atm-conn-dot';
+    dot.title = '연결 상태';
+
+    function _mount() {
+      if (document.body) {
+        if (!document.getElementById('atm-refresh-btn')) document.body.appendChild(btn);
+        if (!document.getElementById('atm-conn-dot')) document.body.appendChild(dot);
+      }
+    }
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', _mount);
+    } else {
+      _mount();
+    }
+
+    // Firebase 연결 상태 리스너 (.info/connected)
+    let _connOk = null;
+    let _connWarnTimer = null;
+    function setDotState(state) {
+      dot.classList.remove('ok','warn','bad');
+      dot.classList.add(state);
+      if (state === 'bad') {
+        btn.classList.add('warn');
+        dot.title = '연결 끊김 · 새로고침 필요';
+      } else if (state === 'warn') {
+        dot.title = '연결 재시도 중';
+      } else {
+        btn.classList.remove('warn');
+        dot.title = '실시간 동기화 정상';
+      }
+    }
+    try {
+      if (typeof firebase !== 'undefined' && firebase.database && (typeof FIREBASE_READY === 'undefined' || FIREBASE_READY)) {
+        const infoRef = firebase.database().ref('.info/connected');
+        infoRef.on('value', snap => {
+          const ok = snap.val() === true;
+          if (ok) {
+            _connOk = true;
+            if (_connWarnTimer) { clearTimeout(_connWarnTimer); _connWarnTimer = null; }
+            setDotState('ok');
+          } else {
+            _connOk = false;
+            // 3초 내 재연결되면 노랑, 그 이상이면 빨강
+            setDotState('warn');
+            if (_connWarnTimer) clearTimeout(_connWarnTimer);
+            _connWarnTimer = setTimeout(() => {
+              if (_connOk === false) setDotState('bad');
+            }, 3500);
+          }
+        });
+      } else {
+        // Firebase 없음 (오프라인 모드) — 회색 유지
+      }
+    } catch (e) { console.warn('[HUD] conn watch fail:', e); }
+
+    // visibilitychange · 오래 백그라운드였으면 자동 새로고침 유도
+    //   30초+ 백그라운드 → 리스너 죽었을 가능성 높음
+    //   90초+ 백그라운드 → 무조건 새로고침 (편집 중이면 확인)
+    let _hiddenAt = 0;
+    document.addEventListener('visibilitychange', () => {
+      if (document.visibilityState === 'hidden') {
+        _hiddenAt = Date.now();
+        return;
+      }
+      if (document.visibilityState !== 'visible' || !_hiddenAt) return;
+      const awayMs = Date.now() - _hiddenAt;
+      _hiddenAt = 0;
+      if (awayMs < 30000) return;   // 30초 미만 · 무시
+      // 편집 중이면 새로고침 강제 안 함 · 새로고침 버튼만 강조
+      let editing = false;
+      try { if (typeof _isUserEditing === 'function') editing = _isUserEditing(); } catch(_) {}
+      if (editing) {
+        btn.classList.add('warn');
+        return;
+      }
+      if (awayMs > 90000) {
+        // 오래 자리 비웠으면 자동 새로고침
+        _doReload(false);
+      } else {
+        // 30~90초 · 리스너 재점검 시도 · 실패 시 강조
+        try {
+          if (typeof firebase !== 'undefined' && firebase.database) {
+            firebase.database().goOffline();
+            setTimeout(() => firebase.database().goOnline(), 100);
+          }
+        } catch(_) {}
+        // 4초 후에도 연결 안 되면 강조
+        setTimeout(() => { if (_connOk === false) btn.classList.add('warn'); }, 4000);
+      }
+    });
+  })();
 
   // ---------------- 환경 감지 ----------------
   function isStandalone() {
