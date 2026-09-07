@@ -7339,6 +7339,153 @@ window.handleTomorrowDelivery = function(custId) {
   // 취소 시 모달 유지 — 사용자가 지정일 배송 선택 가능
 };
 
+// ⭐ (2026-09-07 밤작업#337-L1) 오프라인 큐 · localStorage 우선 저장 · 백그라운드 재시도
+//   목적: Firebase 저장 실패해도 주문 원본을 localStorage 에 보관 · 연결 회복 시 자동 재전송
+//   키: atm_order_pending_queue = [{ id, order, submissionId, custId, deliveryDateISO, addedAt, attempts, lastAttempt }]
+const PENDING_QUEUE_KEY = 'atm_order_pending_queue';
+function pendingQueueRead() {
+  try {
+    const raw = localStorage.getItem(PENDING_QUEUE_KEY);
+    if (!raw) return [];
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  } catch(_) { return []; }
+}
+function pendingQueueWrite(arr) {
+  try { localStorage.setItem(PENDING_QUEUE_KEY, JSON.stringify(Array.isArray(arr) ? arr : [])); } catch(_){}
+}
+function pendingQueueAdd(entry) {
+  try {
+    const q = pendingQueueRead();
+    if (!q.some(e => e && e.id === entry.id)) { q.push(entry); pendingQueueWrite(q); }
+  } catch(_){}
+}
+function pendingQueueRemove(id) {
+  try {
+    const q = pendingQueueRead().filter(e => e && e.id !== id);
+    pendingQueueWrite(q);
+  } catch(_){}
+}
+function pendingQueueBackoffMs(attempts) {
+  // 30s / 1m / 2m / 5m / 10m (cap)
+  const steps = [30*1000, 60*1000, 2*60*1000, 5*60*1000, 10*60*1000];
+  return steps[Math.min(attempts, steps.length - 1)];
+}
+async function pendingQueueSubmit(entry) {
+  // 큐 엔트리 재시도 · submissionId 로 idempotent 보장
+  if (typeof DB_REF === 'undefined' || !DB_REF) return false;
+  try {
+    const order = entry.order;
+    const submissionId = entry.submissionId;
+    // 이미 서버에 있으면 성공 처리
+    try {
+      const snap = await DB_REF.child('orders').once('value');
+      const list = snap.val() || [];
+      const arr = Array.isArray(list) ? list : Object.values(list);
+      if (arr.find(o => o && (o.submissionId === submissionId || o.id === order.id))) return true;
+    } catch(_){}
+    const committed = await new Promise(resolve => {
+      let done = false;
+      const finish = ok => { if (!done) { done = true; resolve(ok); } };
+      const timer = setTimeout(() => finish(false), 10000);
+      try { _lastSaveTime = Date.now(); } catch(_){}
+      DB_REF.child('orders').transaction(currentList => {
+        const list2 = Array.isArray(currentList) ? currentList.slice() : [];
+        if (list2.some(x => x && (x.id === order.id || (submissionId && x.submissionId === submissionId)))) return list2;
+        list2.push(order);
+        return list2;
+      }, (error, ok) => { clearTimeout(timer); finish(!!(ok && !error)); });
+    });
+    if (!committed) return false;
+    // verify
+    await new Promise(r => setTimeout(r, 700));
+    const snap2 = await DB_REF.child('orders').once('value');
+    const list2 = snap2.val() || [];
+    const arr2 = Array.isArray(list2) ? list2 : Object.values(list2);
+    return !!arr2.find(o => o && (o.submissionId === submissionId || o.id === order.id));
+  } catch(e) { console.warn('[pendingQueueSubmit] fail:', e); return false; }
+}
+let _pendingQueueLoopStarted = false;
+async function pendingQueueRetryLoop() {
+  if (_pendingQueueLoopStarted) return;
+  _pendingQueueLoopStarted = true;
+  const tick = async () => {
+    try {
+      const q = pendingQueueRead();
+      if (!q.length) return;
+      const now = Date.now();
+      for (const entry of q) {
+        if (!entry) continue;
+        const last = entry.lastAttempt || 0;
+        const wait = pendingQueueBackoffMs(entry.attempts || 0);
+        if (now - last < wait) continue;
+        entry.lastAttempt = now;
+        entry.attempts = (entry.attempts || 0) + 1;
+        pendingQueueWrite(pendingQueueRead().map(e => e && e.id === entry.id ? entry : e));
+        const ok = await pendingQueueSubmit(entry);
+        if (ok) {
+          pendingQueueRemove(entry.id);
+          try { auditLogAdd('✅ 미확정 주문 자동 재전송 성공: ' + (entry.order && entry.order.orderNo)); } catch(_){}
+          try { if (typeof showToast === 'function') showToast('✅ 미확정 주문 저장 완료 · #' + (entry.order && entry.order.orderNo), 6000); } catch(_){}
+          try { if (typeof renderPendingQueueBanner === 'function') renderPendingQueueBanner(); } catch(_){}
+        }
+      }
+    } catch(e) { console.warn('[pendingQueueRetryLoop] tick fail:', e); }
+  };
+  tick();
+  setInterval(tick, 30 * 1000);
+  document.addEventListener('visibilitychange', () => {
+    if (document.visibilityState === 'visible') tick();
+  });
+}
+// 거래처 화면용 노란 배너 렌더 · 큐 비었으면 제거
+function renderPendingQueueBanner() {
+  try {
+    const q = pendingQueueRead();
+    const existing = document.getElementById('atm-pending-queue-banner');
+    if (!q.length) { if (existing) existing.remove(); return; }
+    const n = q.length;
+    const html = '⏳ 미확정 주문 <b>' + n + '건</b> · 재전송 대기 · 인터넷 확인해 주세요';
+    if (existing) { existing.innerHTML = html; return; }
+    const b = document.createElement('div');
+    b.id = 'atm-pending-queue-banner';
+    b.style.cssText = 'position:fixed; top:8px; left:50%; transform:translateX(-50%); background:#FFF3C4; color:#5C0F0F; border:2px solid #FFC107; padding:8px 16px; border-radius:8px; font-size:13px; font-weight:700; box-shadow:0 4px 14px rgba(0,0,0,0.20); z-index:99998; max-width:92vw;';
+    b.innerHTML = html;
+    document.body.appendChild(b);
+  } catch(_){}
+}
+// 사무실 · 감시 배너 (5분+ 대기 중인 큐 항목)
+function renderOfficePendingQueueMonitor() {
+  try {
+    const host = document.getElementById('office-pending-queue-monitor');
+    if (!host) return;
+    const q = pendingQueueRead();
+    const now = Date.now();
+    const stuck = q.filter(e => e && (now - (e.addedAt || 0)) > 5 * 60 * 1000);
+    if (!stuck.length) { host.innerHTML = ''; return; }
+    const rows = stuck.map(e => {
+      const o = e.order || {};
+      const custName = (DB.customers.find(c => c.id === e.custId) || {}).name || e.custId || '(unknown)';
+      const mins = Math.floor((now - (e.addedAt || now)) / 60000);
+      return '<li>' + custName + ' · ' + (o.orderNo || '(no#)') + ' · ' + mins + '분 대기</li>';
+    }).join('');
+    host.innerHTML =
+      '<div style="background:#FDECEA; border:2px solid #C62828; color:#5C0F0F; padding:10px 14px; border-radius:8px; margin:8px 0; font-size:13px;">' +
+        '<div style="font-weight:800; margin-bottom:4px;">⚠️ 미확정 주문 감시 · 이 태블릿 큐 · ' + stuck.length + '건 · 5분+ 대기</div>' +
+        '<ul style="margin:4px 0 4px 18px; padding:0;">' + rows + '</ul>' +
+        '<div style="font-size:11px; color:#7A2323;">※ 이 감시는 <b>이 태블릿의 로컬 큐</b>만 봅니다. 다른 태블릿에서 발생한 큐는 여기에 안 나옵니다.</div>' +
+      '</div>';
+  } catch(_){}
+}
+let _officeQueueMonitorTimer = null;
+function startOfficeQueueMonitor() {
+  try {
+    if (_officeQueueMonitorTimer) clearInterval(_officeQueueMonitorTimer);
+    renderOfficePendingQueueMonitor();
+    _officeQueueMonitorTimer = setInterval(renderOfficePendingQueueMonitor, 60 * 1000);
+  } catch(_){}
+}
+
 async function submitOrder(custId, deliveryDateISO) {
   // ⭐ (2026-08-01) 방어 1: 최근 8초 내 같은 거래처+CART → 즉시 차단 (더블 클릭 방어)
   // ⭐ (2026-08-13) 방어 2: localStorage 5분 dedup — 탭 닫아도 유지, 인터넷 느린 재시도 커버
@@ -7348,6 +7495,32 @@ async function submitOrder(custId, deliveryDateISO) {
     return alert('⚠️ 거래처가 지정되지 않았습니다.\n주문 링크를 다시 확인하거나 관리자에게 문의하세요.');
   }
   if (CART.length === 0) return alert('주문 품목을 추가해주세요.');
+
+  // ⭐ (2026-09-07 밤작업#337-L2) Heartbeat pre-submit · Firebase .info/connected 로 연결 확인
+  //   목적: 태블릿이 인터넷 끊긴 상태로 전송 시도 → 유실 사고 사전 차단.
+  //   실패해도 큐 (L1) 가 백업하므로 alert 만 하고 계속 진행.
+  try {
+    if (typeof firebase !== 'undefined' && firebase.database) {
+      const _connOk = await new Promise(resolve => {
+        try {
+          firebase.database().ref('.info/connected').once('value', s => resolve(s.val() === true));
+          setTimeout(() => resolve(false), 2500);
+        } catch(_) { resolve(false); }
+      });
+      if (!_connOk) {
+        await new Promise(r => setTimeout(r, 3000));
+        const _retry = await new Promise(resolve => {
+          try {
+            firebase.database().ref('.info/connected').once('value', s => resolve(s.val() === true));
+            setTimeout(() => resolve(false), 2000);
+          } catch(_) { resolve(false); }
+        });
+        if (!_retry) {
+          alert('⚠️ 인터넷 연결이 원활하지 않습니다.\n\n주문은 저장되었으며, 연결 회복 시 자동 전송됩니다.\n\n창을 닫지 마시고 잠시 기다려 주세요.');
+        }
+      }
+    }
+  } catch(_){}
 
   const _now = Date.now();
   const _cartSig = String(CART.length) + ':' + CART.map(function(i){ return i.productId + '_' + (i.quantity||0) + '_' + (i.unit||''); }).join('|');
@@ -7466,6 +7639,22 @@ async function submitOrder(custId, deliveryDateISO) {
   };
   DB.orders.push(order);
 
+  // ⭐ (2026-09-07 밤작업#337-L1) 오프라인 큐 등록 · Firebase 저장 확인 전에 로컬 원본 보존
+  //   목적: 이후 어느 단계에서 실패해도 원본은 큐에서 자동 재전송됨.
+  try {
+    pendingQueueAdd({
+      id: order.id,
+      order: order,
+      submissionId: submissionId,
+      custId: custId,
+      deliveryDateISO: _finalDeliveryDate,
+      addedAt: Date.now(),
+      attempts: 0,
+      lastAttempt: 0
+    });
+    try { renderPendingQueueBanner(); } catch(_){}
+  } catch(_){}
+
   // Auto-add ordered (productId + notes) pairs to customer favourites
   // Same product with different notes => separate favorite cards.
   const custForFav = DB.customers.find(c => c.id === custId);
@@ -7571,6 +7760,8 @@ async function submitOrder(custId, deliveryDateISO) {
           const arr = Array.isArray(list) ? list : Object.values(list);
           const saved = arr.find(o => o && (o.submissionId === submissionId || o.id === order.id));
           if (saved) {
+            // ⭐ (2026-09-07 밤작업#337-L1) 서버 저장 확인 → 큐에서 제거
+            try { pendingQueueRemove(order.id); renderPendingQueueBanner(); } catch(_){}
             const savedCount = Array.isArray(saved.items) ? saved.items.length : 0;
             if (savedCount !== _itemCount) {
               console.warn('[C-2] items count mismatch · local=' + _itemCount + ' saved=' + savedCount);
@@ -7608,6 +7799,7 @@ async function submitOrder(custId, deliveryDateISO) {
                 const arr3 = Array.isArray(list3) ? list3 : Object.values(list3);
                 if (arr3.find(o => o && (o.submissionId === submissionId || o.id === order.id))) {
                   recovered = true;
+                  try { pendingQueueRemove(order.id); renderPendingQueueBanner(); } catch(_){}
                   console.log('[C-2] ✅ 자동 재저장 성공 (시도 ' + (att+1) + '):', order.orderNo);
                   try { auditLogAdd('주문 자동 재저장 성공: ' + order.orderNo + ' (시도 ' + (att+1) + ')'); } catch(_){}
                   break;
@@ -7632,6 +7824,14 @@ async function submitOrder(custId, deliveryDateISO) {
       '<div style="font-size:17px; font-weight:700; color:#2E7D32;">주문이 정상 접수되었습니다</div>' +
       '<div style="font-size:14px; font-weight:700; color:#5C0F0F; margin-top:8px; background:#FFF3C4; padding:6px 14px; border-radius:6px; display:inline-block;">📦 총 ' + _itemCount + '개 품목</div>' +
       '<div style="font-size:12px; color:var(--muted); margin-top:7px;">주문번호: ' + order.orderNo + '</div>';
+    // ⭐ (2026-09-07 밤작업#337-L3) 확정 배너 · 5초 · 성공 시각 확인 강화
+    try {
+      const _lb = document.createElement('div');
+      _lb.style.cssText = 'position:fixed; top:60px; left:50%; transform:translateX(-50%); background:#FFF9C4; color:#5C0F0F; border:2px solid #FFC107; padding:10px 18px; border-radius:8px; font-size:14px; font-weight:700; box-shadow:0 4px 14px rgba(0,0,0,0.25); z-index:99999;';
+      _lb.innerHTML = '✅ 주문 <b>' + order.orderNo + '</b> · Firebase 저장 확인 완료';
+      document.body.appendChild(_lb);
+      setTimeout(() => { try { _lb.remove(); } catch(_){} }, 5500);
+    } catch(_){}
     if (okBtn) {
       okBtn.disabled = false;
       okBtn.style.opacity = '1';
@@ -7640,20 +7840,24 @@ async function submitOrder(custId, deliveryDateISO) {
       okBtn.onclick = function(){ closeModal(); CART = []; clearCartDraft(); location.hash = '#orderDetail?id=' + order.id; };
     }
   } else {
-    // 서버 전송이 확인되지 않음 → 중복 방지를 위해 방금 추가한 주문을 로컬에서 제거하고, 장바구니는 유지해 재시도 가능하게 둔다.
-    DB.orders = DB.orders.filter(x => x.id !== order.id);
+    // ⭐ (2026-09-07 밤작업#337-L1) 서버 전송 미확인 → 큐 (L1) 에 이미 등록됨 · 자동 재시도.
+    //   기존 · DB.orders 에서 즉시 제거 + 빨간 최종 실패 배너.
+    //   변경 · 로컬 DB 유지 · 카트 비움 · 노란 대기 배너 · 큐가 30s 간격으로 재전송.
+    try { CART = []; clearCartDraft(); } catch(_){}
     saveLocalDB();
     if (stateEl) stateEl.innerHTML =
-      '<div style="font-size:44px; line-height:1; margin-bottom:10px;">⚠️</div>' +
-      '<div style="font-size:16px; font-weight:700; color:#C62828;">주문 전송이 확인되지 않았습니다</div>' +
-      '<div style="font-size:12px; color:var(--muted); margin-top:7px;">인터넷 연결을 확인한 뒤<br>다시 [주문 제출]을 눌러 주세요.</div>';
+      '<div style="font-size:44px; line-height:1; margin-bottom:10px;">⏳</div>' +
+      '<div style="font-size:16px; font-weight:700; color:#F57C00;">저장 진행 중 · 재시도 대기</div>' +
+      '<div style="font-size:13px; color:#5C0F0F; margin-top:6px; background:#FFF3C4; padding:6px 12px; border-radius:6px; display:inline-block;">📦 주문번호 ' + order.orderNo + '</div>' +
+      '<div style="font-size:12px; color:var(--muted); margin-top:8px;">인터넷이 회복되면 자동으로 전송됩니다.<br>창을 닫으셔도 저장은 계속 시도됩니다.</div>';
     if (okBtn) {
       okBtn.disabled = false;
       okBtn.style.opacity = '1';
       okBtn.style.cursor = 'pointer';
-      okBtn.textContent = '닫기';
-      okBtn.onclick = function(){ closeModal(); }; // 장바구니 유지 → 바로 재시도 가능
+      okBtn.textContent = '확인';
+      okBtn.onclick = function(){ closeModal(); location.hash = '#orderDetail?id=' + order.id; };
     }
+    try { renderPendingQueueBanner(); } catch(_){}
   }
 }
 
@@ -8359,6 +8563,8 @@ function viewOffice() {
     <div id="masterFolderInfo" style="margin: -6px 0 8px; font-size: 11px; color: var(--muted);"></div>
     ${_invoiceGapBanner}
     ${_backupBanner}
+    <!-- ⭐ (2026-09-07 밤작업#337-L4) 미확정 주문 감시 · 이 태블릿 localStorage 큐 · 5분+ 대기 -->
+    <div id="office-pending-queue-monitor"></div>
     <div class="card">
       <h3>인보이스 발행 대기 (${ready.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); float:right;">거래처/주문번호 클릭 → 품목·단가 확인 → 발행</span></h3>
       ${ready.length === 0 ? `<div class="empty"><div class="icon">📥</div>발행 대기 중인 주문이 없습니다.</div>` : `
@@ -14142,7 +14348,12 @@ function viewMyOrders() {
   }
   const allOrders = DB.orders.filter(o => o.customerId === CUSTOMER_MODE)
     .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
-  const orders = allOrders.slice(0, 3);
+  // ⭐ (2026-09-07 밤작업#337-L3) 최근 5건 · 큐 미확정 태그 표시
+  const orders = allOrders.slice(0, 5);
+  let _pendingIdSet = new Set();
+  try {
+    pendingQueueRead().forEach(e => { if (e && e.custId === CUSTOMER_MODE && e.order && e.order.id) _pendingIdSet.add(e.order.id); });
+  } catch(_){}
 
   app.innerHTML = `
     <h2 class="page-title">👋 ${cust.name}
@@ -14165,7 +14376,7 @@ function viewMyOrders() {
              </tr></thead>
              <tbody>
                ${orders.map(o => `<tr>
-                 <td><b>${o.orderNo}</b></td>
+                 <td><b>${o.orderNo}</b>${_pendingIdSet.has(o.id) ? ' <span style="background:#FFF3C4; color:#5C0F0F; border:1px solid #FFC107; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:700;">미확정</span>' : ''}</td>
                  <td>${(o.orderDate||'').slice(0,10)}</td>
                  <td>${o.items.length}개</td>
                  <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
@@ -18912,7 +19123,7 @@ const ROUTES = {
   'myOrders': viewMyOrders,
   'warehouse': viewWarehouse,
   'weigh': viewWeigh,
-  'office': viewOffice,
+  'office': function(params){ const r = viewOffice(params); try { startOfficeQueueMonitor(); } catch(_){} return r; },
   'invoicePrep': viewInvoicePrep,
   'invoice': viewInvoice,
   'creditIssue': viewCreditIssue,   // ⭐ (2026-07-07) 크레딧 노트 발행
@@ -19885,6 +20096,31 @@ if (FIREBASE_READY && DB_REF) {
       banner.remove();
     });
   }
+})();
+
+// ⭐ (2026-09-07 밤작업#337) 오프라인 큐 부트스트랩
+//   · pendingQueueRetryLoop 시작 · 30초 간격 백그라운드 재전송
+//   · 화면 진입 시 노란 배너 · 큐 있으면 표시
+//   · #office 진입 시 감시 배너 시작
+(function _bootstrapPendingQueue(){
+  function _kick() {
+    try { if (typeof pendingQueueRetryLoop === 'function') pendingQueueRetryLoop(); } catch(_){}
+    try { if (typeof renderPendingQueueBanner === 'function') renderPendingQueueBanner(); } catch(_){}
+  }
+  function _hashSync() {
+    try {
+      const h = String(location.hash || '');
+      if (typeof renderPendingQueueBanner === 'function') renderPendingQueueBanner();
+      if (h.indexOf('office') >= 0 && typeof startOfficeQueueMonitor === 'function') startOfficeQueueMonitor();
+    } catch(_){}
+  }
+  if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', () => { setTimeout(_kick, 800); setTimeout(_hashSync, 900); });
+  } else {
+    setTimeout(_kick, 800); setTimeout(_hashSync, 900);
+  }
+  window.addEventListener('hashchange', _hashSync);
+  window.addEventListener('online', _kick);
 })();
 </script>
 
