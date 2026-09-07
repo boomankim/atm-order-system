@@ -15138,13 +15138,41 @@ function hideBackupProgress() {
   if (ov) ov.remove();
 }
 
+// ⭐ (2026-09-07 밤작업#338) Wake Lock · 백업 중 화면 sleep 방지
 let _backupInProgress = false;
+let _backupWakeLock = null;
+window._backupInProgress = false;   // HUD 자동 새로고침 · 이 플래그 체크
+async function _requestBackupWakeLock() {
+  try {
+    if ('wakeLock' in navigator) {
+      _backupWakeLock = await navigator.wakeLock.request('screen');
+      console.info('[Backup] Wake Lock 활성 · 화면 sleep 방지');
+      // 화면 다시 켜질 때 재획득 (탭 전환 후 복귀 대비)
+      document.addEventListener('visibilitychange', _reacquireBackupWakeLock);
+    } else {
+      console.warn('[Backup] Wake Lock API 미지원 · 브라우저 · 화면 sleep 방지 안 됨');
+    }
+  } catch (e) { console.warn('[Backup] Wake Lock 요청 실패:', e); }
+}
+async function _reacquireBackupWakeLock() {
+  if (_backupInProgress && document.visibilityState === 'visible' && !_backupWakeLock) {
+    try { _backupWakeLock = await navigator.wakeLock.request('screen'); } catch(_) {}
+  }
+}
+async function _releaseBackupWakeLock() {
+  try {
+    if (_backupWakeLock) { await _backupWakeLock.release(); _backupWakeLock = null; }
+    document.removeEventListener('visibilitychange', _reacquireBackupWakeLock);
+  } catch (e) { console.warn('[Backup] Wake Lock release 실패:', e); }
+}
 async function exportAllFull() {
   if (_backupInProgress) {
     showToast('⏳ 전체 백업이 이미 진행 중입니다. 잠시만 기다려 주세요.');
     return;
   }
   _backupInProgress = true;
+  window._backupInProgress = true;
+  await _requestBackupWakeLock();
   try {
   showBackupProgress();
   await updateBackupProgress('JSON 백업 저장 중', 0, 0, '');
@@ -15191,6 +15219,8 @@ async function exportAllFull() {
   } finally {
     hideBackupProgress();
     _backupInProgress = false;
+    window._backupInProgress = false;
+    await _releaseBackupWakeLock();
   }
 }
 
@@ -19951,6 +19981,11 @@ if (FIREBASE_READY && DB_REF) {
       const awayMs = Date.now() - _hiddenAt;
       _hiddenAt = 0;
       if (awayMs < 30000) return;   // 30초 미만 · 무시
+      // ⭐ (2026-09-07 밤작업#338) 백업 진행 중 · 자동 새로고침 봉쇄
+      if (window._backupInProgress) {
+        console.info('[HUD] 백업 진행 중 · 자동 새로고침 스킵');
+        return;
+      }
       // 편집 중이면 새로고침 강제 안 함 · 새로고침 버튼만 강조
       let editing = false;
       try { if (typeof _isUserEditing === 'function') editing = _isUserEditing(); } catch(_) {}
