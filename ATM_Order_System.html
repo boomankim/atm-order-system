@@ -2769,23 +2769,53 @@ async function renderAuditAdmin() {
   }
   const logs = Array.isArray(DB.auditLog) ? DB.auditLog.slice() : [];
   logs.sort((a, b) => (b.ts || '').localeCompare(a.ts || ''));   // 최신 위로
+  // ⭐ (2026-09-07 밤작업#336) 감사로그 검색창 · 실시간 필터 · 대소문자 무시 · 부분 문자열
+  const _rowsHtml = logs.map(function(e) {
+    const ts = e.ts ? new Date(e.ts).toLocaleString('ko-KR', {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '-';
+    const txt = String(e.text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+    const _hay = ((e.ts || '') + ' ' + (e.text || '')).toLowerCase().replace(/"/g,'&quot;');
+    return '<tr data-audit-hay="' + _hay + '"><td style="white-space:nowrap; color:var(--muted); font-size:12px;">' + ts + '</td>'
+      + '<td>' + txt + '</td></tr>';
+  }).join('');
   body.innerHTML = '<div class="card">'
     + '<h3>🔒 감사 로그 <span style="font-weight:400; color:var(--muted); font-size:12px; margin-left:8px;">— 보스 액션 기록 (총 ' + logs.length + '건)</span></h3>'
     + '<div style="font-size:12px; color:var(--muted); margin-bottom:12px;">최근 순으로 정렬. 삭제 불가 (읽기 전용).</div>'
     + (logs.length === 0
       ? '<div class="empty">기록된 감사 로그가 없습니다.</div>'
-      : '<table class="t"><thead><tr>'
+      : '<div style="display:flex; align-items:center; gap:8px; margin-bottom:10px; flex-wrap:wrap;">'
+        + '<input type="search" id="auditSearchBox" placeholder="검색: 인보이스#, 거래처명, 액션, 사유..." '
+        + 'style="width:360px; max-width:100%; padding:6px 10px; border:1px solid #CBD5E0; border-radius:4px; font-size:13px;" '
+        + 'oninput="filterAuditLog()">'
+        + '<button class="btn sm secondary" onclick="clearAuditSearch()" title="검색 초기화">✕</button>'
+        + '<span id="auditSearchCount" style="font-size:12px; color:var(--muted);">전체 ' + logs.length + '건</span>'
+        + '</div>'
+        + '<table class="t"><thead><tr>'
         + '<th style="width:180px;">언제</th><th>무엇을</th>'
-        + '</tr></thead><tbody>'
-        + logs.map(function(e) {
-          const ts = e.ts ? new Date(e.ts).toLocaleString('ko-KR', {year:'numeric', month:'2-digit', day:'2-digit', hour:'2-digit', minute:'2-digit', second:'2-digit'}) : '-';
-          const txt = String(e.text || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
-          return '<tr><td style="white-space:nowrap; color:var(--muted); font-size:12px;">' + ts + '</td>'
-            + '<td>' + txt + '</td></tr>';
-        }).join('')
+        + '</tr></thead><tbody id="auditLogTbody">'
+        + _rowsHtml
         + '</tbody></table>')
     + '</div>';
 }
+window.filterAuditLog = function() {
+  const box = document.getElementById('auditSearchBox');
+  const tbody = document.getElementById('auditLogTbody');
+  const cnt = document.getElementById('auditSearchCount');
+  if (!box || !tbody) return;
+  const q = (box.value || '').trim().toLowerCase();
+  const rows = tbody.querySelectorAll('tr');
+  let shown = 0;
+  rows.forEach(function(tr){
+    const hay = tr.getAttribute('data-audit-hay') || '';
+    const match = !q || hay.indexOf(q) >= 0;
+    tr.style.display = match ? '' : 'none';
+    if (match) shown++;
+  });
+  if (cnt) cnt.textContent = q ? ('검색 결과 ' + shown + ' / 전체 ' + rows.length + '건') : ('전체 ' + rows.length + '건');
+};
+window.clearAuditSearch = function() {
+  const box = document.getElementById('auditSearchBox');
+  if (box) { box.value = ''; window.filterAuditLog(); box.focus(); }
+};
 window.renderAuditAdmin = renderAuditAdmin;
 window.unlockAuditLog = async function() {
   const ok = await verifyBossPassword('감사 로그 조회');
@@ -3133,6 +3163,10 @@ async function ordAdmDeleteOne(oid) {
   saveLocalDB();
   // ⭐ (2026-08-04) 감사 로그
   try { auditLogAdd(`주문 개별 삭제: ${orderNo} (${custName})`); } catch(_){}
+  // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · 삭제된 주문에 invoiceNo가 있으면 결번 발생
+  if (o.invoiceNo) {
+    try { auditLogAdd('[결번원인] 결번 발생 · ' + o.invoiceNo + ' · 원인: 관리자 수동 삭제 · 거래처: ' + custName + ' · ' + new Date().toISOString()); } catch(_){}
+  }
   route();
 }
 window.ordAdmDeleteOne = ordAdmDeleteOne;
@@ -3146,12 +3180,22 @@ async function ordAdmDeleteSelected(cid) {
   const ok = await verifyBossPassword('선택한 주문 ' + ids.length + '건 삭제');
   if (!ok) return;
   if (!confirm(`선택한 ${ids.length}건의 주문을 삭제할까요?\n복구할 수 없습니다.`)) return;
+  // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · 삭제 전에 invoiceNo 있는 주문 수집
+  const _deletedInvNos = [];
+  ids.forEach(function(_id){
+    const _o = DB.orders.find(x => x && x.id === _id);
+    if (_o && _o.invoiceNo) _deletedInvNos.push(_o.invoiceNo);
+  });
   DB.orders = DB.orders.filter(o => !ids.includes(o.id));
   // Phase 2 동시성: 트랜잭션으로 일괄 삭제
   removeEntitiesFromFirebase('orders', ids);
   saveLocalDB();
   // ⭐ (2026-08-04) 감사 로그
   try { auditLogAdd(`주문 선택 삭제: ${custName} (${ids.length}건)`); } catch(_){}
+  // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · 삭제된 인보이스마다 결번 원인 기록
+  _deletedInvNos.forEach(function(_inv){
+    try { auditLogAdd('[결번원인] 결번 발생 · ' + _inv + ' · 원인: 관리자 수동 삭제 · 거래처: ' + custName + ' · ' + new Date().toISOString()); } catch(_){}
+  });
   route();
 }
 window.ordAdmDeleteSelected = ordAdmDeleteSelected;
@@ -8253,9 +8297,48 @@ function viewOffice() {
         }, 0);
         // ⭐ 결번 확정 버튼 · missingAll 전체 · JSON 으로 인코딩해 안전 전달
         const _missingJson = JSON.stringify(missingAll).replace(/"/g, '&quot;');
+        // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · auditLog에서 [결번원인] 프리픽스 매칭
+        //   각 유실 번호별 최신 원인 엔트리를 찾아 색상 뱃지로 표시
+        const _causeMap = {};
+        try {
+          const _logs = Array.isArray(DB.auditLog) ? DB.auditLog : [];
+          for (let i = _logs.length - 1; i >= 0; i--) {
+            const _e = _logs[i];
+            if (!_e || !_e.text) continue;
+            const _t = String(_e.text);
+            if (_t.indexOf('[결번원인]') !== 0) continue;
+            // 형식: [결번원인] 결번 발생 · <invNo> · 원인: <cause> · ...
+            const _parts = _t.split(' · ');
+            if (_parts.length < 3) continue;
+            const _inv = _parts[1].trim();
+            const _causeSeg = _parts[2] || '';
+            const _causeText = _causeSeg.replace(/^원인:\s*/, '').trim();
+            if (!_causeMap[_inv]) {
+              _causeMap[_inv] = { cause: _causeText, ts: _e.ts || '' };
+            }
+          }
+        } catch(_){}
+        const _pillFor = function(n){
+          const _key = String(n);
+          const _hit = _causeMap[_key];
+          let _bg = '#E5E7EB', _fg = '#4B5563', _label = '원인 불명 · 배포 이전 사고 가능성', _time = '';
+          if (_hit) {
+            _label = _hit.cause || '원인 불명';
+            if (_label.indexOf('동시 발행 race') >= 0)      { _bg = '#FCE4E4'; _fg = '#C0392B'; }
+            else if (_label.indexOf('Firebase 저장 실패') >= 0){ _bg = '#FDEBD3'; _fg = '#E67E22'; }
+            else if (_label.indexOf('관리자 수동 삭제') >= 0) { _bg = '#DCE7F5'; _fg = '#2E5C8A'; }
+            if (_hit.ts) {
+              try { _time = new Date(_hit.ts).toLocaleString('ko-KR',{month:'2-digit',day:'2-digit',hour:'2-digit',minute:'2-digit'}); } catch(_){ _time = _hit.ts.slice(0,16); }
+            }
+          }
+          return '<span style="display:inline-block; padding:2px 8px; margin:2px 4px 2px 0; border-radius:10px; background:' + _bg + '; color:' + _fg + '; font-size:11px; line-height:1.4;">'
+            + '<b>' + _key + '</b> · ' + _label + (_time ? ' · ' + _time : '')
+            + '</span>';
+        };
+        const _pillsHtml = displayMissing.map(_pillFor).join('');
         _invoiceGapBanner = '<div style="padding:12px 14px; margin-bottom:12px; background:#FFEBEE; border-left:4px solid #C62828; border-radius:4px; font-size:13px;">'
           + '<b style="color:#C62828;">⚠ 인보이스 번호 유실 감지</b> · 다음 발급 번호 <b>' + nextNo + '</b> · 실제 저장된 최대 <b>' + maxSaved + '</b> · 갭 <b>' + gap + '건</b><br>'
-          + '<span style="color:#5C1010; font-size:12px;">유실된 번호: ' + displayMissing.join(', ') + (gap > 10 ? ' 외 ' + (gap - 10) + '건' : '') + '</span>'
+          + '<div style="margin-top:6px;">' + _pillsHtml + (gap > 10 ? '<span style="font-size:11px; color:#8C1616;"> 외 ' + (gap - 10) + '건</span>' : '') + '</div>'
           + '<div style="margin-top:8px; display:flex; gap:6px; flex-wrap:wrap;">'
           + '<button class="btn sm" style="background:#C62828; color:#fff;" onclick=\'acknowledgeInvoiceGaps(' + _missingJson + ')\'>✓ 결번 확정 · ' + gap + '건 (감사로그 기록)</button>'
           + '<button class="btn sm" style="background:#6C7A89; color:#fff;" onclick="location.hash=\'#admin\'">🔧 관리자 진단 이동</button>'
@@ -12476,6 +12559,8 @@ async function issueInvoice(orderId) {
           '· 반복 발생 시 관리자에게 알림\n\n' +
           '⚠ 로컬 폴백 발급은 · 중복 배정 위험으로 · 비활성화됨');
     try { auditLogAdd('❌ 인보이스 채번 실패 · Firebase 트랜잭션 응답 없음 · 발행 취소'); } catch(_){}
+    // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · 배너 파서용 표준 프리픽스
+    try { auditLogAdd('[결번원인] 결번 발생 · (채번전) · 원인: 동시 발행 race · 인쇄본 파기 필요 · ' + new Date().toISOString()); } catch(_){}
     return;
   }
   // 🛡️ (2026-07-30) await 동안 snapshot 이 DB.orders 를 교체했을 수 있음.
@@ -12665,6 +12750,8 @@ async function issueInvoice(orderId) {
         }
       } catch(eFinal) { console.error('최후 push 실패:', eFinal); }
       try { auditLogAdd(`⚠️ 인보이스 저장 검증 3회 실패: ${invoiceNo} · 서버 저장 여부 미확인 · lastError=` + (lastError && lastError.message || '(없음)')); } catch(_){}
+      // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · 배너 파서용 표준 프리픽스
+      try { auditLogAdd('[결번원인] 결번 발생 · ' + invoiceNo + ' · 원인: Firebase 저장 실패 · ' + (lastError && lastError.message || 'unknown') + ' · ' + new Date().toISOString()); } catch(_){}
 
       if (typeof showToast === 'function') showToast('⚠ 인보이스 ' + invoiceNo + ' 저장 검증 실패 · 확인 필요', 15000);
       alert('⚠ 인보이스 ' + invoiceNo + ' 저장 검증 실패\n\n' +
