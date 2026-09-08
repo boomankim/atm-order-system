@@ -1227,7 +1227,9 @@ function renderPrices(){
   const pids=Object.keys(book).filter(pid=>!q || normText(productName(pid)).indexOf(q)>=0);
   const box=$('#priceList');
   if(!pids.length){ box.innerHTML='<span class="muted">'+(q?'검색 결과 없음':'매입 기록이 쌓이면 여기에 표시됩니다.')+'</span>'; return; }
-  pids.sort((a,b)=>productName(a).localeCompare(productName(b),'ko'));
+  // 최근 매입일이 최신인 품목부터 (같은 날짜면 품목 이름순)
+  pids.sort((a,b)=>((book[b][0].date||'').localeCompare(book[a][0].date||''))
+    || productName(a).localeCompare(productName(b),'ko'));
   box.innerHTML='<table class="simple"><tr><th>품목</th><th>최근 매입</th><th class="right">$/kg</th><th class="right">직전 대비</th></tr>'
     + pids.map(pid=>{
       const h=book[pid]; const last=h[0]; const prev=h[1];
