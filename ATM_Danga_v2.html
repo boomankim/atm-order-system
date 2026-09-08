@@ -447,9 +447,11 @@ function suggestMatches(rawDesc, topN){
     .slice(0, topN||3);
 }
 // 별칭 키: 매입처 품목코드가 있으면 코드 기준(가장 안정), 없으면 정규화 품명 기준
+// 숫자 코드(21162)뿐 아니라 영문 혼합 코드(JC5141, 55818-3-BM, BAR-BCKR)도 코드로 인정
 function aliasKeyOf(line){
-  if(line.rawCode && /^\d{3,8}$/.test(String(line.rawCode).trim()))
-    return 'c_'+String(line.rawCode).trim();
+  const c=String(line.rawCode||'').trim().toUpperCase();
+  if(/^[A-Z0-9][A-Z0-9\-\/\.]{2,14}$/.test(c) && (/\d/.test(c) || /^[A-Z]{2,6}-[A-Z0-9]{2,8}$/.test(c)))
+    return 'c_'+safeKey(c);
   return 'd_'+safeKey(normText(line.rawDesc).replace(/ /g,'_'));
 }
 function lookupAlias(supplierKey, line){
@@ -630,18 +632,30 @@ function detectInvoiceNo(text){
   return m[1].replace(/^S[1l](?=\d{7,})/,'SI');
 }
 function detectDate(text){
+  // 후보를 전부 모은 뒤, 말이 되는 날짜(2024~2035년)만 채택 — OCR이 연도를 잘라 읽는 오류 방지
   const p2=s=>String(s).padStart(2,'0');
-  let m=/\b(\d{1,2})\/(\d{1,2})\/(20\d{2})\b/.exec(text);              // 26/08/2026
-  if(m) return m[3]+'-'+p2(m[2])+'-'+p2(m[1]);
   const MON={JAN:'01',FEB:'02',MAR:'03',APR:'04',MAY:'05',JUN:'06',JUL:'07',AUG:'08',SEP:'09',OCT:'10',NOV:'11',DEC:'12'};
-  m=/\b(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b/.exec(text);               // 28-Aug-26
-  if(m && MON[m[2].toUpperCase()]){
-    const y=m[3].length===2?'20'+m[3]:m[3];
-    return y+'-'+MON[m[2].toUpperCase()]+'-'+p2(m[1]);
+  const cands=[]; let m, re;
+  re=/\b(\d{1,2})\/(\d{1,2})\/(20\d{2})\b/g;                           // 26/08/2026
+  while((m=re.exec(text))) cands.push(m[3]+'-'+p2(m[2])+'-'+p2(m[1]));
+  re=/\b(\d{1,2})-([A-Za-z]{3})-(\d{2,4})\b/g;                         // 28-Aug-26
+  while((m=re.exec(text))){ const mo=MON[m[2].toUpperCase()];
+    if(mo){ const y=m[3].length===2?'20'+m[3]:m[3]; cands.push(y+'-'+mo+'-'+p2(m[1])); } }
+  re=/\b(\d{1,2})\/(\d{1,2})\/(\d{2})\b/g;                             // 27/08/26
+  while((m=re.exec(text))) cands.push('20'+m[3]+'-'+p2(m[2])+'-'+p2(m[1]));
+  for(const d of cands){
+    const y=+d.slice(0,4), mo=+d.slice(5,7), dd=+d.slice(8,10);
+    if(y>=2024 && y<=2035 && mo>=1 && mo<=12 && dd>=1 && dd<=31) return d;
   }
-  m=/\b(\d{1,2})\/(\d{1,2})\/(\d{2})\b/.exec(text);                    // 27/08/26
-  if(m) return '20'+m[3]+'-'+p2(m[2])+'-'+p2(m[1]);
   return todayISO();
+}
+// OCR 노이즈(표 괘선·밑줄 등) 제거
+function cleanDesc(s){
+  return String(s||'')
+    .replace(/[—–―═_=~|†•¦]+/g,' ')
+    .replace(/-{2,}/g,' ')
+    .replace(/[.,;:!]{2,}/g,' ')
+    .replace(/\s+/g,' ').trim().slice(0,80);
 }
 function looksLikeItemDesc(line){
   const L=line.trim();
@@ -788,6 +802,8 @@ function parseInvoiceText(text){
     if((it.amount==null||isNaN(it.amount)) && !isNaN(it.qtyKg) && !isNaN(it.unitPrice))
       it.amount = Math.round(it.qtyKg*it.unitPrice*100)/100;
   });
+  // 품명 노이즈(괘선·밑줄 등) 청소
+  items.forEach(it=>{ it.rawDesc=cleanDesc(it.rawDesc); });
   // 잡음 제거: 의미 토큰이 없고 숫자도 없는 줄 (예: "2206 CHILLED" 같은 코드 꼬리표)
   const cleaned = items.filter(it=> tokenize(it.rawDesc).length>0 || !isNaN(it.qtyKg) || !isNaN(it.unitPrice));
   items.length=0; cleaned.forEach(x=>items.push(x));
@@ -1190,6 +1206,18 @@ function renderHistory(){
   }).join('');
 }
 $('#invList').addEventListener('click', e=>{
+  if(e.target.closest('[data-dateinp]')) return; // 날짜 입력칸 클릭은 접기 방지
+  const dsBtn=e.target.closest('[data-datesave]');
+  if(dsBtn){
+    const key=dsBtn.dataset.datesave;
+    const inp=$('#invList').querySelector('[data-dateinp="'+key+'"]');
+    const nd=inp && inp.value;
+    if(!nd){ toast('날짜를 선택해 주세요'); return; }
+    REF_DANGA.child('invoices/'+key+'/date').set(nd)
+      .then(()=>toast('날짜가 '+nd+'로 변경됐습니다'))
+      .catch(err=>toast('변경 실패: '+err.message));
+    return;
+  }
   const delBtn=e.target.closest('[data-delinv]');
   if(delBtn){
     const key=delBtn.dataset.delinv;
@@ -1205,9 +1233,12 @@ $('#invList').addEventListener('click', e=>{
   if(!det.classList.contains('hidden')){ det.classList.add('hidden'); return; }
   const v=INVOICES[row.dataset.key]; if(!v) return;
   det.innerHTML='<table class="simple"><tr><th>품목</th><th class="right">kg</th><th class="right">$/kg</th></tr>'
-    +(v.lines||[]).map(l=>'<tr><td>'+(l.productId?esc(productName(l.productId)):'<span style="color:var(--red)">[보류] '+esc(l.rawDesc)+'</span>')
+    +(v.lines||[]).map(l=>'<tr><td>'+(l.productId?esc(productName(l.productId)):'<span style="color:var(--red)">[보류] '+esc(cleanDesc(l.rawDesc))+'</span>')
       +'</td><td class="right">'+fmt(l.qtyKg)+'</td><td class="right pricechip">'+fmt(l.unitPrice)+'</td></tr>').join('')
-    +'</table><div class="btnrow" style="margin-top:8px;"><button class="btn btn-sm btn-red" data-delinv="'+esc(row.dataset.key)+'">인보이스 삭제</button></div>';
+    +'</table><div class="btnrow" style="margin-top:10px;align-items:center;">'
+    +'<input type="date" class="meta small" value="'+esc(v.date||'')+'" data-dateinp="'+esc(row.dataset.key)+'">'
+    +'<button class="btn btn-sm btn-ghost" data-datesave="'+esc(row.dataset.key)+'">날짜 변경</button>'
+    +'<button class="btn btn-sm btn-red" style="margin-left:auto;" data-delinv="'+esc(row.dataset.key)+'">인보이스 삭제</button></div>';
   det.classList.remove('hidden');
 });
 
@@ -1263,7 +1294,7 @@ function renderAliases(){
   Object.keys(ALIAS).forEach(sup=>{
     Object.keys(ALIAS[sup]||{}).forEach(ak=>{
       const e=ALIAS[sup][ak];
-      const label=(e.rawCode?('#'+e.rawCode+' '):'')+(e.sample||ak);
+      const label=(e.rawCode?('#'+e.rawCode+' '):'')+cleanDesc(e.sample||ak);
       if(q && normText(label+' '+productName(e.productId)).indexOf(q)<0) return;
       rows.push({sup, ak, label, pid:e.productId});
     });
