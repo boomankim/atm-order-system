@@ -13054,12 +13054,21 @@ async function issueInvoice(orderId) {
   }
   const _invoiceHash = '#invoice?id=' + orderId;
   location.hash = _invoiceHash;
-  // setTimeout 폴백 — 어떤 이유로든 hash 변경 실패 시 강제 재시도
-  setTimeout(() => {
-    if (location.hash.indexOf('#invoicePrep') === 0) {
-      location.hash = _invoiceHash;
+  // ⭐ (2026-09-09 밤작업#340) 폴백 강화 · #invoicePrep 뿐 아니라 #office · #home 로 튕겨져도 인보이스 화면 강제 복귀
+  //   원인: viewInvoice 진입 시 o(order)를 찾지 못하면 자동으로 #office 로 이동 · 리스너 sync 순간 발생 가능
+  //   대책: 3회 재시도 · 500ms · 1s · 2s · 최대 2초 안에 · 인보이스 PDF 화면 자동 표시
+  const _forceInvoice = () => {
+    const h = location.hash || '';
+    if (!h.startsWith('#invoice?')) {
+      // DB 에 order 있고 · invoiceNo 있으면 · 강제 이동
+      const _o = DB.orders.find(x => x && x.id === orderId);
+      if (_o && _o.invoiceNo) { location.hash = _invoiceHash; return true; }
     }
-  }, 200);
+    return false;
+  };
+  setTimeout(_forceInvoice, 300);
+  setTimeout(_forceInvoice, 1000);
+  setTimeout(_forceInvoice, 2000);
 
   // 5) PDF/JSON 자동 백업은 페이지 전환 후 백그라운드
   autoSaveInvoice(orderId).catch(e => console.warn('autoSaveInvoice error:', e));
