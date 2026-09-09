@@ -12852,6 +12852,11 @@ async function issueInvoice(orderId) {
     return;
   }
   // ⭐ (2026-09-08 밤작업#339 강화#1-b) · try/finally · 예외 시에도 락 즉시 해제
+  // ⭐ (2026-09-10 긴급수정) · try 밖 참조하는 변수 · 사전 호이스팅 (scope 오류 방지)
+  let _appliedCount = 0;
+  const _appliedNos = [];
+  let savedPriceCount = 0;
+  let cust = null;
   try {
   oCurrent.invoiceNo = invoiceNo;
   oCurrent.status = 'invoiced';
@@ -12862,8 +12867,7 @@ async function issueInvoice(orderId) {
   o.invoicedAt = invoicedAtISO;
 
   // 2) ⭐ 거래처 맞춤 단가 저장 (다음 인보이스 자동 인식의 핵심). 라인 단가가 0/마스터든 무관 — 무조건 잠금.
-  const cust = DB.customers.find(x => x.id === o.customerId);
-  let savedPriceCount = 0;
+  cust = DB.customers.find(x => x.id === o.customerId);
   if (cust) {
     const lines = getInvoiceItems(o);
     lines.forEach(it => {
@@ -12910,8 +12914,7 @@ async function issueInvoice(orderId) {
   //   window._prepSelectedCreditIds 는 invoicePrep 화면에서 체크된 크레딧 ID 배열.
   //   각 크레딧에 appliedToOrderId + appliedAt 세팅 → 스테이트먼트·매출일보 FIFO 에서 제외됨.
   const _selectedCreditIds = Array.isArray(window._prepSelectedCreditIds) ? window._prepSelectedCreditIds.slice() : [];
-  let _appliedCount = 0;
-  const _appliedNos = [];
+  // _appliedCount, _appliedNos · try 상단에 호이스팅됨 (2026-09-10 긴급수정)
   (DB.creditNotes || []).forEach(function(cn){
     if (!cn) return;
     if (_selectedCreditIds.indexOf(cn.id) >= 0) {
