@@ -2787,6 +2787,13 @@ async function renderAuditAdmin() {
         + 'style="width:360px; max-width:100%; padding:6px 10px; border:1px solid #CBD5E0; border-radius:4px; font-size:13px;" '
         + 'oninput="filterAuditLog()">'
         + '<button class="btn sm secondary" onclick="clearAuditSearch()" title="검색 초기화">✕</button>'
+        // ⭐ (2026-09-11 밤작업#341-B) 시스템 방어 로그 숨기기 · 체크박스 · localStorage 저장
+        + '<label style="font-size:13px; color:var(--muted); display:flex; align-items:center; gap:4px; cursor:pointer; user-select:none;">'
+        + '<input type="checkbox" id="auditHideSysCk" onchange="toggleHideSysAudit()" '
+        + (((function(){try{return localStorage.getItem("atm_audit_hide_sys")==="1";}catch(_){return false;}})()) ? 'checked' : '')
+        + ' style="cursor:pointer;">'
+        + '🔧 시스템 방어 로그 숨기기'
+        + '</label>'
         + '<span id="auditSearchCount" style="font-size:12px; color:var(--muted);">전체 ' + logs.length + '건</span>'
         + '</div>'
         + '<table class="t"><thead><tr>'
@@ -2795,22 +2802,56 @@ async function renderAuditAdmin() {
         + _rowsHtml
         + '</tbody></table>')
     + '</div>';
+  // ⭐ (2026-09-11 밤작업#341-B) 초기 렌더 후 · 체크박스 상태에 따라 · 시스템 방어 로그 즉시 숨김
+  setTimeout(function(){ try { if (typeof window.filterAuditLog === 'function') window.filterAuditLog(); } catch(_) {} }, 0);
 }
+// ⭐ (2026-09-11 밤작업#341-B) 시스템 방어 로그 패턴 · 감사로그 뷰어에서 · 체크박스로 숨김
+const SYS_DEFENSE_LOG_PATTERNS = [
+  '리스너 downgrade 방지',
+  '발행 리스너 보호',
+  '[결번원인]',
+  'firebase 쓰기 실패',
+  'firebase 저장 실패',
+  '자동 재저장',
+  'orphan 감지',
+  '유령 주문 감지'
+];
+function _isSysDefenseLog(hay) {
+  const h = (hay || '').toLowerCase();
+  for (let i = 0; i < SYS_DEFENSE_LOG_PATTERNS.length; i++) {
+    if (h.indexOf(SYS_DEFENSE_LOG_PATTERNS[i].toLowerCase()) >= 0) return true;
+  }
+  return false;
+}
+window.toggleHideSysAudit = function() {
+  const ck = document.getElementById('auditHideSysCk');
+  try { localStorage.setItem('atm_audit_hide_sys', ck && ck.checked ? '1' : '0'); } catch(_) {}
+  window.filterAuditLog();
+};
 window.filterAuditLog = function() {
   const box = document.getElementById('auditSearchBox');
   const tbody = document.getElementById('auditLogTbody');
   const cnt = document.getElementById('auditSearchCount');
+  const ck = document.getElementById('auditHideSysCk');
   if (!box || !tbody) return;
   const q = (box.value || '').trim().toLowerCase();
+  const hideSys = !!(ck && ck.checked);
   const rows = tbody.querySelectorAll('tr');
-  let shown = 0;
+  let shown = 0, hiddenSys = 0;
   rows.forEach(function(tr){
     const hay = tr.getAttribute('data-audit-hay') || '';
-    const match = !q || hay.indexOf(q) >= 0;
+    let match = !q || hay.indexOf(q) >= 0;
+    if (match && hideSys && _isSysDefenseLog(hay)) { match = false; hiddenSys++; }
     tr.style.display = match ? '' : 'none';
     if (match) shown++;
   });
-  if (cnt) cnt.textContent = q ? ('검색 결과 ' + shown + ' / 전체 ' + rows.length + '건') : ('전체 ' + rows.length + '건');
+  if (cnt) {
+    let msg;
+    if (q) msg = '검색 결과 ' + shown + ' / 전체 ' + rows.length + '건';
+    else msg = '전체 ' + rows.length + '건 · 표시 ' + shown + '건';
+    if (hideSys && hiddenSys > 0) msg += ' (🔧 시스템 방어 ' + hiddenSys + '건 숨김)';
+    cnt.textContent = msg;
+  }
 };
 window.clearAuditSearch = function() {
   const box = document.getElementById('auditSearchBox');
@@ -19747,7 +19788,19 @@ if (FIREBASE_READY && DB_REF) {
             }
           });
           if (protectedCount > 0) {
-            try { auditLogAdd('리스너 downgrade 방지 발동: ' + protectedCount + '건 · 서버 하위 상태 무시 · 로컬 진행 상태 유지'); } catch(_){}
+            // ⭐ (2026-09-11 밤작업#341) 감사로그 압축 · 60초 창 · 같은 시간대 반복 로그 억제
+            //   원인: 활발한 발행 시간대 · 리스너 tick 마다 방어 발동 → 감사로그 95% 잡음
+            //   대책: 60초 창 · 첫 발동만 감사로그 · 나머지 · console에만
+            try {
+              const _now = Date.now();
+              const _lastDG = window._downgradeLastLogTs || 0;
+              if (_now - _lastDG > 60000) {
+                auditLogAdd('리스너 downgrade 방지 발동: ' + protectedCount + '건 · 서버 하위 상태 무시 · 로컬 진행 상태 유지');
+                window._downgradeLastLogTs = _now;
+              } else {
+                console.info('[downgrade 방지] 60초 창 · 로그 압축 · protectedCount=' + protectedCount);
+              }
+            } catch(_){}
           }
         }
       } catch(eDG) { console.warn('downgrade 방지 예외:', eDG); }
