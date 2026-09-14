@@ -132,7 +132,7 @@ tr.open td{background:#fffbeb}
   </div>
   <div class="k-status"><span class="dot" id="kDot"></span><span id="kConn">연결 확인 중…</span><span style="margin-left:auto" id="kInCount"></span></div>
   <div class="k-grid" id="kGrid"></div>
-  <div class="k-foot"><span>이름을 누르고 <b>출근</b> 또는 <b>퇴근</b>을 선택하세요</span><button class="lnk" onclick="go('#admin')">관리자</button></div>
+  <div class="k-foot"><span>이름을 누르고 <b>출근</b> 또는 <b>퇴근</b>을 선택하세요 <span style="opacity:.5" id="kVer"></span></span><button class="lnk" onclick="go('#admin')">관리자</button></div>
 </div>
 
 <!-- ===================== ADMIN ===================== -->
@@ -146,7 +146,7 @@ tr.open td{background:#fffbeb}
 
   <div id="aMain" class="hidden">
     <div class="a-head">
-      <h1>출퇴근 관리</h1>
+      <h1>출퇴근 관리 <span class="muted" style="font-size:12px;font-weight:400" id="aVer"></span></h1>
       <div class="row" style="margin:0">
         <span class="muted" id="aConn"></span>
         <button class="btn gray" onclick="go('#kiosk')">출퇴근 화면</button>
@@ -237,7 +237,7 @@ tr.open td{background:#fffbeb}
       </div>
       <div class="card">
         <h3>직원 목록 <span class="muted">(순서 = 화면 순서 · 각 태블릿에는 설정된 회사의 직원만 표시)</span></h3>
-        <div class="tbl-wrap"><table><thead><tr><th>순서</th><th>이름</th><th>회사</th><th>태블릿 표시</th><th>상태</th><th></th></tr></thead><tbody id="eBody"></tbody></table></div>
+        <div class="tbl-wrap"><table><thead><tr><th>순서</th><th>이름 <span class="muted" style="font-weight:400">(칸에서 바로 수정 → Enter)</span></th><th>회사</th><th>태블릿 표시</th><th>상태</th><th></th></tr></thead><tbody id="eBody"></tbody></table></div>
         <p class="muted">퇴사자는 "비활성"으로 바꾸면 태블릿·입력표에서 사라지고 기록은 남습니다. ATM 직원이 고기마을에서도 알바하면 "양쪽 태블릿"으로 두세요 — 고기마을에서 찍은 시간은 기록에 '고기마을'로 표시되고 직원관리 앱에서 캐쉬 알바로 계산됩니다. 시급·세금신고액 등 급여 정보는 직원관리 앱에서 관리합니다.</p>
       </div>
     </div>
@@ -302,6 +302,7 @@ tr.open td{background:#fffbeb}
 const FIREBASE_CONFIG = { apiKey:"AIzaSyCsrsbrCeWyc9AU5en8vP9NkSwYN3xwNAA", databaseURL:"https://atm-order-system-default-rtdb.asia-southeast1.firebasedatabase.app", projectId:"atm-order-system", storageBucket:"atm-order-system.firebasestorage.app", messagingSenderId:"356675041494", appId:"1:356675041494:web:cb492963627ec620d3f177" }; // 예: { apiKey:"...", authDomain:"...", databaseURL:"...", projectId:"...", storageBucket:"...", messagingSenderId:"...", appId:"..." }
 const DB_ROOT = 'attendance_db';
 const DEFAULT_PW = '1234';
+const APP_VER = 'v2026.09.14c';
 let PERIOD_ANCHOR = '2026-08-17'; // 페이 기간 시작 월요일 기준일 — 설정에서 변경 가능
 
 /* ---------- state ---------- */
@@ -375,7 +376,7 @@ function syncPeriodInputs(){ const [f,t]=periodRange(); ['pFrom'].forEach(i=>doc
 
 /* ---------- persistence ---------- */
 function ref(p){return db.ref(DB_ROOT+(p?'/'+p:''));}
-function write(path,val){
+function dbWrite(path,val){
   if(db){ ref(path).set(val).catch(e=>{console.error(e);toast('저장 오류: '+e.message)}); }
   const parts=path.split('/'); let o=S; for(let i=0;i<parts.length-1;i++){o[parts[i]]=o[parts[i]]||{};o=o[parts[i]];}
   if(val===null) delete o[parts[parts.length-1]]; else o[parts[parts.length-1]]=val;
@@ -445,12 +446,12 @@ function tapEmp(id){
 }
 function doIn(id){
   const now=new Date(); const d=fmtDate(now); const rid=uid();
-  write(`records/${d}/${rid}`,{empId:id,in:fmtTime(now),out:null,breakAuto:true,breakMin:null,note:'',src:'kiosk',site:kioskCo(),ts:now.getTime()});
+  dbWrite(`records/${d}/${rid}`,{empId:id,in:fmtTime(now),out:null,breakAuto:true,breakMin:null,note:'',src:'kiosk',site:kioskCo(),ts:now.getTime()});
   finishMd('출근',id,fmtTime(now),null);
 }
 function doOut(id,d,rid){
   const now=new Date(); const r=S.records[d][rid]; const outT=fmtTime(now);
-  write(`records/${d}/${rid}`,{...r,out:outT,outTs:now.getTime()});
+  dbWrite(`records/${d}/${rid}`,{...r,out:outT,outTs:now.getTime()});
   finishMd('퇴근',id,r.in,outT,{...r,out:outT});
 }
 function finishMd(kind,id,inT,outT,r){
@@ -500,11 +501,11 @@ function showLeaveReq(id){
 function submitLeaveReq(id){
   const start=document.getElementById('lqFrom').value, end=document.getElementById('lqTo').value||start;
   if(!start){toast('시작일을 선택하세요');return;} if(end<start){toast('종료일이 시작일보다 앞입니다');return;}
-  write('leaves/'+uid(),{empId:id,start,end,type:'AL',note:document.getElementById('lqNote').value||'',status:'req',src:'kiosk',ts:Date.now()});
+  dbWrite('leaves/'+uid(),{empId:id,start,end,type:'AL',note:document.getElementById('lqNote').value||'',status:'req',src:'kiosk',ts:Date.now()});
   showMd(`<div class="done-md"><div class="icon">🏖</div><h2>휴가 신청 완료</h2><div class="sub" style="margin-top:10px">${start.replace(/-/g,'.')} ~ ${end.replace(/-/g,'.')}<br>사장님 확인 후 확정됩니다.</div><button class="cancel" onclick="closeMd()">확인</button></div>`);
   autoT=setTimeout(closeMd,6000);
 }
-function cancelLeaveReq(lid,id){ write('leaves/'+lid,null); showLeaveReq(id); }
+function cancelLeaveReq(lid,id){ dbWrite('leaves/'+lid,null); showLeaveReq(id); }
 
 /* ---------- ADMIN ---------- */
 function adminLogin(){ const pw=document.getElementById('aPw').value; if(pw===(S.settings.adminPw||DEFAULT_PW)){sessionStorage.setItem('att_admin','1');document.getElementById('aPw').value='';route();} else toast('비밀번호가 틀렸습니다'); }
@@ -555,8 +556,8 @@ function renderManual(){
 function setManual(date,empId,val){
   const h=val===''?null:roundQ(Number(val)||0);
   const rid='m_'+empId;
-  if(h==null||h===0) write(`records/${date}/${rid}`,null);
-  else write(`records/${date}/${rid}`,{empId,hours:h,src:'manual',ts:Date.now()});
+  if(h==null||h===0) dbWrite(`records/${date}/${rid}`,null);
+  else dbWrite(`records/${date}/${rid}`,{empId,hours:h,src:'manual',ts:Date.now()});
 }
 /* 휴가 관리 */
 function daysBetween(a,b){ return Math.round((parseDate(b)-parseDate(a))/864e5)+1; }
@@ -564,11 +565,11 @@ function addLeave(){
   const empId=document.getElementById('lvEmp').value, start=document.getElementById('lvFrom').value, end=document.getElementById('lvTo').value||start;
   if(!empId||!start){toast('직원과 시작일을 입력하세요');return;} if(end<start){toast('종료일이 시작일보다 앞입니다');return;}
   const base=editingLeave?S.leaves[editingLeave]:{src:'admin',ts:Date.now()};
-  write('leaves/'+(editingLeave||uid()),{...base,empId,start,end,type:document.getElementById('lvType').value,note:document.getElementById('lvNote').value,status:'ok',editedAt:Date.now()});
+  dbWrite('leaves/'+(editingLeave||uid()),{...base,empId,start,end,type:document.getElementById('lvType').value,note:document.getElementById('lvNote').value,status:'ok',editedAt:Date.now()});
   toast(editingLeave?'휴가 수정됨':'휴가 등록됨'); cancelEditLeave();
 }
-function delLeave(id){ if(!confirm('이 휴가를 삭제할까요?'))return; write('leaves/'+id,null); }
-function approveLeave(id){ write('leaves/'+id,{...S.leaves[id],status:'ok',approvedAt:Date.now()}); toast('승인됨'); }
+function delLeave(id){ if(!confirm('이 휴가를 삭제할까요?'))return; dbWrite('leaves/'+id,null); }
+function approveLeave(id){ dbWrite('leaves/'+id,{...S.leaves[id],status:'ok',approvedAt:Date.now()}); toast('승인됨'); }
 function editLeave(id){ const l=S.leaves[id]; if(!l) return;
   document.getElementById('lvEmp').value=l.empId; document.getElementById('lvFrom').value=l.start; document.getElementById('lvTo').value=l.end; document.getElementById('lvType').value=l.type; document.getElementById('lvNote').value=l.note||'';
   editingLeave=id; document.getElementById('lvBtn').textContent='수정 저장'; document.getElementById('lvCancel').classList.remove('hidden'); window.scrollTo({top:0,behavior:'smooth'}); }
@@ -629,25 +630,26 @@ function closeEdit(){document.getElementById('editOv').classList.add('hidden');}
 function saveEdit(){
   const empId=document.getElementById('edEmp').value, date=document.getElementById('edDate').value, inT=document.getElementById('edIn').value, outT=document.getElementById('edOut').value||null;
   const old=ed.date?S.records[ed.date][ed.id]:{};
-  if(old.hours!=null){ write(`records/${ed.date}/${ed.id}`,{...old,note:document.getElementById('edNote').value}); closeEdit(); return; }
+  if(old.hours!=null){ dbWrite(`records/${ed.date}/${ed.id}`,{...old,note:document.getElementById('edNote').value}); closeEdit(); return; }
   if(!empId||!date||!inT){toast('직원·날짜·출근시간은 필수입니다');return;}
   const auto=document.getElementById('edBreakAuto').checked;
   const rec={...old,empId,in:inT,out:outT,breakAuto:auto,breakMin:auto?null:Number(document.getElementById('edBreak').value||0),note:document.getElementById('edNote').value,edited:Date.now()};
   if(!old.src) rec.src='admin';
-  if(ed.date&&ed.date!==date) write(`records/${ed.date}/${ed.id}`,null);
-  write(`records/${date}/${ed.id||uid()}`,rec); closeEdit(); toast('저장됨');
+  if(ed.date&&ed.date!==date) dbWrite(`records/${ed.date}/${ed.id}`,null);
+  dbWrite(`records/${date}/${ed.id||uid()}`,rec); closeEdit(); toast('저장됨');
 }
-function deleteEdit(){ if(!confirm('이 기록을 삭제할까요?'))return; write(`records/${ed.date}/${ed.id}`,null); closeEdit(); toast('삭제됨'); }
+function deleteEdit(){ if(!confirm('이 기록을 삭제할까요?'))return; dbWrite(`records/${ed.date}/${ed.id}`,null); closeEdit(); toast('삭제됨'); }
 
 /* 직원 */
 function renderEmps(){
+  const ae=document.activeElement; if(ae&&ae.closest&&ae.closest('#eBody')&&ae.tagName==='INPUT') return; // 입력 중엔 표를 다시 그리지 않음
   const emps=sortedEmps(false);
-  document.getElementById('eBody').innerHTML=emps.map(e=>`<tr><td><button class="btn gray sm" onclick="moveEmp('${e.id}',-1)">▲</button> <button class="btn gray sm" onclick="moveEmp('${e.id}',1)">▼</button></td><td><input type="text" value="${esc(e.name)}" onchange="write('employees/${e.id}/name',this.value.trim())" style="width:140px"></td><td><select onchange="write('employees/${e.id}/company',this.value)"><option value="ATM" ${e.company==='ATM'?'selected':''}>ATM</option><option value="MW" ${e.company==='MW'?'selected':''}>고기마을</option></select></td><td><select onchange="write('employees/${e.id}/sites',this.value)"><option value="" ${e.sites!=='BOTH'?'selected':''}>소속 회사만</option><option value="BOTH" ${e.sites==='BOTH'?'selected':''}>양쪽 태블릿</option></select></td><td><select onchange="write('employees/${e.id}/active',this.value==='1')"><option value="1" ${e.active!==false?'selected':''}>활성</option><option value="0" ${e.active===false?'selected':''}>비활성</option></select></td><td><button class="btn red sm" onclick="delEmp('${e.id}')">삭제</button></td></tr>`).join('')||'<tr><td colspan="6" class="muted">직원 없음</td></tr>';
+  document.getElementById('eBody').innerHTML=emps.map(e=>`<tr><td><button class="btn gray sm" onclick="moveEmp('${e.id}',-1)">▲</button> <button class="btn gray sm" onclick="moveEmp('${e.id}',1)">▼</button></td><td><input type="text" value="${esc(e.name)}" onchange="if(this.value.trim()) dbWrite('employees/${e.id}/name',this.value.trim())" onkeydown="if(event.key==='Enter') this.blur()" style="width:140px" title="이름 수정 후 Enter 또는 다른 곳 클릭"></td><td><select onchange="dbWrite('employees/${e.id}/company',this.value)"><option value="ATM" ${e.company==='ATM'?'selected':''}>ATM</option><option value="MW" ${e.company==='MW'?'selected':''}>고기마을</option></select></td><td><select onchange="dbWrite('employees/${e.id}/sites',this.value)"><option value="" ${e.sites!=='BOTH'?'selected':''}>소속 회사만</option><option value="BOTH" ${e.sites==='BOTH'?'selected':''}>양쪽 태블릿</option></select></td><td><select onchange="dbWrite('employees/${e.id}/active',this.value==='1')"><option value="1" ${e.active!==false?'selected':''}>활성</option><option value="0" ${e.active===false?'selected':''}>비활성</option></select></td><td><button class="btn red sm" onclick="delEmp('${e.id}')">삭제</button></td></tr>`).join('')||'<tr><td colspan="6" class="muted">직원 없음</td></tr>';
 }
-function addEmp(){ const n=document.getElementById('eName').value.trim(); if(!n)return; const order=sortedEmps(false).length; write('employees/'+uid(),{name:n,company:document.getElementById('eCo').value,active:true,order}); document.getElementById('eName').value=''; toast(n+' 추가됨'); }
-function bulkAddEmp(){ let order=sortedEmps(false).length; document.getElementById('eBulk').value.split('\n').map(l=>l.trim()).filter(Boolean).forEach(l=>{const [n,c]=l.split(',').map(s=>s.trim()); write('employees/'+uid(),{name:n,company:(c||'').toUpperCase().startsWith('M')||(c||'').includes('고기')?'MW':'ATM',active:true,order:order++});}); document.getElementById('eBulk').value=''; toast('일괄 추가 완료'); }
-function delEmp(id){ if(!confirm(`${empName(id)} 직원을 삭제할까요? (기록은 남지만 이름이 "(삭제된 직원)"으로 표시됩니다. 퇴사자는 "비활성"을 권장)`))return; write('employees/'+id,null); }
-function moveEmp(id,dir){ const emps=sortedEmps(false); const i=emps.findIndex(e=>e.id===id); const j=i+dir; if(j<0||j>=emps.length)return; [emps[i],emps[j]]=[emps[j],emps[i]]; emps.forEach((e,k)=>{ if(e.order!==k) write(`employees/${e.id}/order`,k); }); }
+function addEmp(){ const n=document.getElementById('eName').value.trim(); if(!n)return; const order=sortedEmps(false).length; dbWrite('employees/'+uid(),{name:n,company:document.getElementById('eCo').value,active:true,order}); document.getElementById('eName').value=''; toast(n+' 추가됨'); }
+function bulkAddEmp(){ let order=sortedEmps(false).length; document.getElementById('eBulk').value.split('\n').map(l=>l.trim()).filter(Boolean).forEach(l=>{const [n,c]=l.split(',').map(s=>s.trim()); dbWrite('employees/'+uid(),{name:n,company:(c||'').toUpperCase().startsWith('M')||(c||'').includes('고기')?'MW':'ATM',active:true,order:order++});}); document.getElementById('eBulk').value=''; toast('일괄 추가 완료'); }
+function delEmp(id){ if(!confirm(`${empName(id)} 직원을 삭제할까요? (기록은 남지만 이름이 "(삭제된 직원)"으로 표시됩니다. 퇴사자는 "비활성"을 권장)`))return; dbWrite('employees/'+id,null); }
+function moveEmp(id,dir){ const emps=sortedEmps(false); const i=emps.findIndex(e=>e.id===id); const j=i+dir; if(j<0||j>=emps.length)return; [emps[i],emps[j]]=[emps[j],emps[i]]; emps.forEach((e,k)=>{ if(e.order!==k) dbWrite(`employees/${e.id}/order`,k); }); }
 
 /* 설정 */
 function renderSettings(){
@@ -655,14 +657,15 @@ function renderSettings(){
   document.getElementById('sFbState').textContent=FIREBASE_CONFIG?'(파일에 내장됨)':(LS.get('att_fb',null)?'(이 기기에 저장됨)':'(미설정 · 로컬 모드)');
   document.getElementById('sFb').value=FIREBASE_CONFIG?'':(LS.get('att_fb',null)?JSON.stringify(LS.get('att_fb'),null,2):'');
 }
-function saveRules(){ write('settings/lunchMin',Number(document.getElementById('sLunch').value)); write('settings/lunchMinHours',Number(document.getElementById('sLunchMin').value)); write('settings/autoClose',Number(document.getElementById('sAuto').value)); const an=document.getElementById('sAnchor').value; if(an) write('settings/periodAnchor',mondayOf(an)); curPeriod=null; toast('규칙 저장됨'); }
-function changePw(){ const a=document.getElementById('sPw1').value,b=document.getElementById('sPw2').value; if(!a||a!==b){toast('비밀번호가 일치하지 않습니다');return;} write('settings/adminPw',a); document.getElementById('sPw1').value=document.getElementById('sPw2').value=''; toast('비밀번호 변경됨'); }
+function saveRules(){ dbWrite('settings/lunchMin',Number(document.getElementById('sLunch').value)); dbWrite('settings/lunchMinHours',Number(document.getElementById('sLunchMin').value)); dbWrite('settings/autoClose',Number(document.getElementById('sAuto').value)); const an=document.getElementById('sAnchor').value; if(an) dbWrite('settings/periodAnchor',mondayOf(an)); curPeriod=null; toast('규칙 저장됨'); }
+function changePw(){ const a=document.getElementById('sPw1').value,b=document.getElementById('sPw2').value; if(!a||a!==b){toast('비밀번호가 일치하지 않습니다');return;} dbWrite('settings/adminPw',a); document.getElementById('sPw1').value=document.getElementById('sPw2').value=''; toast('비밀번호 변경됨'); }
 function saveFb(){ let t=document.getElementById('sFb').value.trim(); if(!t){toast('설정을 붙여넣으세요');return;} try{ t=t.replace(/^\s*(const|var|let)\s+\w+\s*=\s*/,'').replace(/;\s*$/,''); const cfg=(new Function('return ('+t+')'))(); if(!cfg.databaseURL) throw new Error('databaseURL 없음'); LS.set('att_fb',cfg); location.reload(); }catch(e){toast('형식 오류: '+e.message);} }
 function clearFb(){ localStorage.removeItem('att_fb'); location.reload(); }
 function backupAll(){ download(`출퇴근_백업_${todayStr()}.json`,JSON.stringify(S,null,2),'application/json'); }
 function restoreAll(inp){ const f=inp.files[0]; if(!f)return; const rd=new FileReader(); rd.onload=()=>{ try{ const v=JSON.parse(rd.result); if(!v.employees||!v.records) throw 0; if(!confirm('현재 데이터를 백업 파일로 덮어씁니다. 계속할까요?'))return; if(db) ref().set(v); S=v; LS.set('att_cache',S); rerender(); toast('복원 완료'); }catch(e){toast('올바른 백업 파일이 아닙니다');} }; rd.readAsText(f); inp.value=''; }
 
 /* ---------- boot ---------- */
+document.getElementById('aVer').textContent=APP_VER; document.getElementById('kVer').textContent=APP_VER;
 initFirebase(); route(); renderKiosk();
 if('wakeLock' in navigator){ const req=()=>navigator.wakeLock.request('screen').catch(()=>{}); req(); document.addEventListener('visibilitychange',()=>{if(document.visibilityState==='visible')req();}); }
 </script>
