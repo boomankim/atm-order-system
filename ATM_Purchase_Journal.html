@@ -1778,6 +1778,8 @@ async function saveFolderHandle(handle){
     });
   } catch(e) { return false; }
 }
+// ⭐ (2026-09-15 밤작업#342) 잘못된 폴더 선택 감지 · 서브폴더 이름 목록
+const _MASTER_FORBIDDEN_NAMES = ['매출일보', '매입일보', '재고현황', 'ATM Invoice', 'ATM 주문서', 'ATM Credit', '_백업(JSON)'];
 async function pickFolder(){
   if (!window.showDirectoryPicker) {
     alert('이 브라우저는 폴더 지정을 지원하지 않습니다.\nChrome/Edge 최신 버전을 사용해 주세요.\n\n(다운로드 폴더에 저장됩니다)');
@@ -1786,13 +1788,16 @@ async function pickFolder(){
   try {
     // ⭐ (2026-08-11) 통합 마스터 폴더로 저장 (Order System과 공유)
     const handle = await window.showDirectoryPicker({ mode:'readwrite' });
+    // ⭐ (2026-09-15 밤작업#342) 폴더 이름 검증 · 서브폴더 선택 시 · 경고 + 재선택 강제
+    if (_MASTER_FORBIDDEN_NAMES.indexOf(handle.name) >= 0) {
+      alert('⚠️ 잘못된 폴더 선택\n\n선택한 폴더 이름: "' + handle.name + '"\n\n이 폴더는 · 시스템 서브폴더입니다.\n상위 폴더 (예: ATM CLAUDE)를 · 다시 선택해 주세요.\n\n- 폴더 선택창 · 폴더 이름 · 한 번만 클릭\n- 더블클릭하면 · 그 폴더 안으로 · 들어감 (주의)\n- 하단 · [폴더 선택] · 최종 확정');
+      return null;
+    }
     await saveMasterHandle(handle);
     _masterDirHandle = handle;
-    // 표준 서브폴더 미리 생성
-    const subs = ['매출일보', '매입일보', '재고현황', 'ATM Invoice', 'ATM 주문서', 'ATM Credit', '_백업(JSON)'];
-    for (const s of subs) {
-      try { await handle.getDirectoryHandle(s, { create: true }); } catch(_){}
-    }
+    // ⭐ (2026-09-15 밤작업#342) 자동 서브폴더 사전 생성 · 제거
+    //   원인: 잘못된 폴더 선택 시 · 이 로직이 · 서브폴더 · 자동 생성 · 폴더 구조 오염
+    //   대책: 실제 저장 순간에만 · 필요한 서브폴더만 · 생성
     try {
       _folderHandle = await handle.getDirectoryHandle('매입일보', { create: true });
     } catch(_) { _folderHandle = handle; }

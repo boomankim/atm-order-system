@@ -9637,28 +9637,59 @@ async function refreshDailyReportFolderInfo(dateISO) {
   }
 }
 
-function saveDailySalesSnapshot(dateISO, rows) {
+// ⭐ (2026-09-15 밤작업#343) 매출일보 스냅샷 · 최근 30일만 유지 · QuotaExceededError 자동 청소
+const DAILY_SALES_LOG_KEEP_DAYS = 30;
+function _pruneDailySalesLog(log) {
   try {
-    const key = 'atm_daily_sales_log';
-    const log = JSON.parse(localStorage.getItem(key) || '{}');
-    const totals = dailyReportTotals(rows);
-    log[dateISO] = {
-      date: dateISO,
-      savedAt: new Date().toISOString(),
-      totals,
-      rows: rows.map(r => ({
-        custId: r.c.id,
-        custName: r.c.name,
-        terms: r.c.terms,
-        priorBalance: r.priorBalance,
-        todaySales: r.todaySales,
-        todayPaid: r.todayPaid,
-        currentBalance: r.currentBalance,
-        overdue: r.overdue,
-      })),
-    };
-    localStorage.setItem(key, JSON.stringify(log));
-  } catch (e) { console.warn('일보 스냅샷 저장 실패', e); }
+    const cutoff = new Date();
+    cutoff.setDate(cutoff.getDate() - DAILY_SALES_LOG_KEEP_DAYS);
+    const cutoffISO = cutoff.getFullYear() + '-' + String(cutoff.getMonth()+1).padStart(2,'0') + '-' + String(cutoff.getDate()).padStart(2,'0');
+    let removed = 0;
+    Object.keys(log).forEach(function(k){
+      if (k < cutoffISO) { delete log[k]; removed++; }
+    });
+    if (removed > 0) console.info('[매출일보 스냅샷] 옛 항목 · ' + removed + '개 · 자동 삭제 (30일 초과)');
+    return removed;
+  } catch(_) { return 0; }
+}
+function saveDailySalesSnapshot(dateISO, rows) {
+  const key = 'atm_daily_sales_log';
+  let log = {};
+  try { log = JSON.parse(localStorage.getItem(key) || '{}'); } catch(_) { log = {}; }
+  const totals = dailyReportTotals(rows);
+  log[dateISO] = {
+    date: dateISO,
+    savedAt: new Date().toISOString(),
+    totals,
+    rows: rows.map(r => ({
+      custId: r.c.id,
+      custName: r.c.name,
+      terms: r.c.terms,
+      priorBalance: r.priorBalance,
+      todaySales: r.todaySales,
+      todayPaid: r.todayPaid,
+      currentBalance: r.currentBalance,
+      overdue: r.overdue,
+    })),
+  };
+  // 사전 청소 · 30일 초과 항목 제거
+  _pruneDailySalesLog(log);
+  // 저장 시도 · Quota 초과 시 · 옛 항목 · 절반 삭제 후 · 재시도 (최대 3회)
+  for (let attempt = 0; attempt < 3; attempt++) {
+    try {
+      localStorage.setItem(key, JSON.stringify(log));
+      return;
+    } catch(e) {
+      const isQuota = e && (e.name === 'QuotaExceededError' || e.code === 22);
+      if (!isQuota) { console.warn('일보 스냅샷 저장 실패 (Quota 아님)', e); return; }
+      // Quota 초과 · 가장 옛 항목 · 절반 삭제 후 · 재시도
+      const keys = Object.keys(log).sort();
+      const removeCount = Math.max(1, Math.floor(keys.length / 2));
+      for (let i = 0; i < removeCount && i < keys.length - 1; i++) { delete log[keys[i]]; }
+      console.warn('[매출일보 스냅샷] Quota 초과 · 옛 ' + removeCount + '개 삭제 후 재시도 (' + (attempt+1) + '/3)');
+    }
+  }
+  console.warn('[매출일보 스냅샷] 3회 재시도 실패 · 저장 포기 · 화면 정상 동작 (Firebase에서 재계산)');
 }
 
 window.printDailyReport = function() {
@@ -14704,6 +14735,8 @@ async function getMasterSubDir(subName) {
     return null;
   }
 }
+// ⭐ (2026-09-15 밤작업#342) 잘못된 폴더 선택 감지 · 서브폴더 이름 목록
+const _MASTER_FORBIDDEN_NAMES = ['매출일보', '매입일보', '재고현황', 'ATM Invoice', 'ATM 주문서', 'ATM Credit', '_백업(JSON)'];
 window.setMasterFolder = async function() {
   if (!window.showDirectoryPicker) {
     alert('이 브라우저는 폴더 선택을 지원하지 않습니다.\nChrome 또는 Edge를 사용해 주세요.');
@@ -14711,13 +14744,16 @@ window.setMasterFolder = async function() {
   }
   try {
     const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+    // ⭐ (2026-09-15 밤작업#342) 폴더 이름 검증 · 서브폴더 선택 시 · 경고 + 재선택 강제
+    if (_MASTER_FORBIDDEN_NAMES.indexOf(handle.name) >= 0) {
+      alert('⚠️ 잘못된 폴더 선택\n\n선택한 폴더 이름: "' + handle.name + '"\n\n이 폴더는 · 시스템 서브폴더입니다.\n상위 폴더 (예: ATM CLAUDE)를 · 다시 선택해 주세요.\n\n- 폴더 선택창 · 폴더 이름 · 한 번만 클릭\n- 더블클릭하면 · 그 폴더 안으로 · 들어감 (주의)\n- 하단 · [폴더 선택] · 최종 확정');
+      return false;
+    }
     await idbSet('masterDirHandle', handle);
     _masterDirHandle = handle;
-    // 마스터 폴더 안에 표준 서브폴더 미리 생성 (첫 저장 시 자동생성되지만 명시적으로)
-    const subs = ['매출일보', '매입일보', '재고현황', 'ATM Invoice', 'ATM 주문서', 'ATM Credit', '_백업(JSON)'];
-    for (const s of subs) {
-      try { await handle.getDirectoryHandle(s, { create: true }); } catch(_){}
-    }
+    // ⭐ (2026-09-15 밤작업#342) 자동 서브폴더 사전 생성 · 제거
+    //   원인: 잘못된 폴더 선택 시 · 이 로직이 · 서브폴더 · 자동 생성 · 폴더 구조 오염
+    //   대책: 실제 저장 순간에만 · getMasterSubDir가 · 필요한 서브폴더만 · 생성
     alert('✅ 통합 저장 폴더 설정 완료!\n\n📁 ' + handle.name + '\n\n앞으로 모든 저장(매출일보 · 매입일보 · 재고현황 · 인보이스 PDF · 전체 백업)이\n이 폴더 하위 서브폴더에 자동 저장됩니다.\n\n예:\n  ' + handle.name + '/매출일보/2026-08/…\n  ' + handle.name + '/매입일보/2026-08/…\n  ' + handle.name + '/ATM Invoice/거래처/…\n  ' + handle.name + '/_백업(JSON)/2026-08-11/…');
     if (typeof refreshMasterFolderInfo === 'function') refreshMasterFolderInfo();
     if (typeof refreshDailyReportFolderInfo === 'function') { try { refreshDailyReportFolderInfo(); } catch(_){} }
