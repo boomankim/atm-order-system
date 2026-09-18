@@ -15671,7 +15671,10 @@ function viewStatement(params) {
     //   거래처에게 스테이트먼트 보낼 때 "선입금", "선입금 적용" 같은 혼동스러운 용어 없음.
     let bal = 0;
     let totInv = 0, totPay = 0;
-    let rows = '';
+    // ⭐ (2026-09-18 밤작업#344) 스테이트먼트 · 최신 날짜 · 위쪽 정렬 (Q1=A)
+    //   변경: 문자열 누적 → 행 배열 · 발란스는 시간순 계산 (정확 유지) · 표시만 뒤집기
+    //   결과: 최신 거래 · 맨 위 · Opening Balance · 맨 아래 · Closing Balance 별도 최상단
+    const rowArr = [];
     let openingBal = null;
 
     // 각 이벤트 walkthrough — pre-period는 상태만 갱신, in-period는 행 출력 + 총계 반영
@@ -15690,11 +15693,11 @@ function viewStatement(params) {
     const emitOpening = () => {
       if (openingBal !== null) return;
       openingBal = bal;
-      rows += '<tr style="color:#666;">'
+      rowArr.push('<tr style="color:#666;">'
         + '<td>' + _fmtDMY(dateFrom) + '</td>'
         + '<td>Opening Balance</td>'
         + '<td></td><td></td><td class="num"></td><td class="num"></td>'
-        + '<td class="num"><b>' + _fmtBal(openingBal) + '</b></td></tr>';
+        + '<td class="num"><b>' + _fmtBal(openingBal) + '</b></td></tr>');
     };
 
     for (const ev of allEvents) {
@@ -15730,7 +15733,7 @@ function viewStatement(params) {
           const amtDisp = isCredit
             ? '<span style="color:#C0392B;">-$' + fmtMoney(Math.abs(ev.amount)) + '</span>'
             : '$' + fmtMoney(ev.amount);
-          rows += '<tr>'
+          rowArr.push('<tr>'
             + '<td>' + _fmtDMY(ev.date) + '</td>'
             + '<td>' + activity + delayText + '</td>'
             + '<td></td>'
@@ -15738,7 +15741,7 @@ function viewStatement(params) {
             + '<td class="num">' + amtDisp + '</td>'
             + '<td class="num"></td>'
             + '<td class="num"><b>' + _fmtBal(bal) + '</b></td>'
-            + '</tr>';
+            + '</tr>');
         }
       } else if (ev.kind === 'pay') {
         // 입금 — 각 payment 개별 행 (CSV 등록도 개별 저장)
@@ -15763,7 +15766,7 @@ function viewStatement(params) {
             }
             referenceText = _esc(refStr);
           }
-          rows += '<tr>'
+          rowArr.push('<tr>'
             + '<td>' + _fmtDMY(ev.date) + '</td>'
             + '<td>' + activity + '</td>'
             + '<td style="color:#666; font-size:11px;">' + referenceText + '</td>'
@@ -15771,12 +15774,21 @@ function viewStatement(params) {
             + '<td class="num"></td>'
             + '<td class="num">' + amtDisp + '</td>'
             + '<td class="num"><b>' + _fmtBal(bal) + '</b></td>'
-            + '</tr>';
+            + '</tr>');
         }
       }
     }
     // 이벤트가 하나도 in-period 에 없었어도 이월 잔액은 표시
     emitOpening();
+    // ⭐ (2026-09-18 밤작업#344) 표시 순서 뒤집기 · 최신 위 · 옛날 아래
+    //   Closing Balance · 최상단에 추가 (Q1=A)
+    rowArr.reverse();
+    const _closingRow = '<tr style="background:#FFF8E1; color:#5C0F0F; font-weight:700;">'
+      + '<td>' + _fmtDMY(dateTo) + '</td>'
+      + '<td>Closing Balance</td>'
+      + '<td></td><td></td><td class="num"></td><td class="num"></td>'
+      + '<td class="num"><b>' + _fmtBal(bal) + '</b></td></tr>';
+    const rows = _closingRow + rowArr.join('');
 
     const balColor = bal > 0 ? 'var(--warn)' : (bal < -0.001 ? 'var(--success)' : 'var(--muted)');
     const balDisplay = bal < -0.001 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
