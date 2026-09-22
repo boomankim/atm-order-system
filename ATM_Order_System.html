@@ -2099,10 +2099,11 @@ window.addEventListener('hashchange', function(e){
       const oldPath = oldHash.split('?')[0];
       const newPath = newHash.split('?')[0];
       // ⭐ (2026-09-22 밤작업 · 발행 후 수정 · 뒤로가기 · 루프 · 수정)
-      //   'prep' (인보이스 준비/수정)에서 · 'invoice' (발행 완료 뷰)로 이동 시 · 이전 · 저장 · 안 함
-      //   원인: 수정 저장 → invoice · 뷰 · 뒤로가기 클릭 · prep 페이지로 감 · 무한 루프
-      //   대책: prep · invoice · 서로 · 이동 시 · _prevHashForBack 유지 · (그 이전 · office/history 등)
-      if (oldPath !== newPath && oldPath !== 'invoice' && oldPath !== 'prep') {
+      //   'invoicePrep' (인보이스 준비/수정)에서 · 'invoice' (발행 완료 뷰)로 이동 시 · 이전 · 저장 · 안 함
+      //   원인: 수정 저장 → invoice · 뷰 · 뒤로가기 클릭 · invoicePrep 페이지로 감 · 무한 루프
+      //   대책: invoicePrep · invoice · 서로 · 이동 시 · _prevHashForBack 유지 · (그 이전 · office/history 등)
+      //   최초 · 시도 · 'prep'으로 · 필터링 · 잘못됨 · 실제 · 라우트 · 'invoicePrep'
+      if (oldPath !== newPath && oldPath !== 'invoice' && oldPath !== 'invoicePrep') {
         window._prevHashForBack = '#' + oldHash;
       }
     }
