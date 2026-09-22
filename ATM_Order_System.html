@@ -19353,8 +19353,23 @@ document.querySelectorAll('.nav .tab').forEach(t => {
 
 // Bootstrap
 // -------- App Initialisation --------
+// ⭐ (2026-09-22 밤작업#345) Firebase 스냅샷 · 배열 필드 강제 변환
+//   원인: Firebase RTDB · 키가 · 비순차 정수 · 또는 · 문자열이면 · 배열 대신 · 객체 반환
+//   증상: DB.orders.filter is not a function · viewOffice · viewWarehouse · 크래시 · 앱 · 완전 · 다운
+//   대책: 로드 직후 · 배열 필드 · Object.values() · 강제 배열화
+function _coerceArrayFields(obj) {
+  if (!obj || typeof obj !== 'object') return;
+  const ARRAY_FIELDS = ['orders', 'customers', 'products', 'payments', 'creditNotes', 'auditLog', 'bankSenderMap'];
+  ARRAY_FIELDS.forEach(function(k) {
+    var v = obj[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      obj[k] = Object.values(v).filter(function(x) { return x !== null && x !== undefined; });
+    }
+  });
+}
 function initApp(data) {
   if (data) {
+    _coerceArrayFields(data);
     DB = data;
   } else {
     // Nothing in Firebase yet — migrate from localStorage or start fresh
@@ -19959,6 +19974,8 @@ if (FIREBASE_READY && DB_REF) {
           });
         }
       } catch(eP) { console.warn('발행 보호 예외:', eP); }
+      // ⭐ (2026-09-22 밤작업#345) Firebase 스냅샷 · 배열 필드 강제 변환 (리스너 업데이트 시)
+      _coerceArrayFields(data);
       DB = data;
       saveLocalDB();
       // ⭐ (2026-08-14) Firebase 실시간 동기화 후 즐겨찾기 중복 자동 정리
