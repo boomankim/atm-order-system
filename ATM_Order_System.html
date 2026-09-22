@@ -1048,6 +1048,10 @@ window._atmTabLock = { isSecondary: false, tabId: '', primary: null };
     _showSecondaryBanner();
     _lockButtons();
   }
+  // ⭐ (2026-09-22 수정) 오탐 방지 · 초기 · 로드 시 · 하트비트가 · 5초 이상 · 오래됐으면 · 무조건 · 승격
+  //   원인: 새로고침 시 · beforeunload 완료 전에 · 새 페이지 · 로드 · 오래된 하트비트 · 남아 · 보조탭 · 오해
+  //   대책: 5초 이상 · 오래된 · 하트비트는 · "다른 살아있는 탭" 아님 · 즉시 · 승격
+  const RECENT_HEARTBEAT_MS = 5000;
   function _heartbeat() {
     const primary = _readPrimary();
     if (!primary) {
@@ -1061,7 +1065,14 @@ window._atmTabLock = { isSecondary: false, tabId: '', primary: null };
       try { localStorage.setItem(HEARTBEAT_KEY, String(_now())); } catch(_){}
       return;
     }
-    // 다른 · 탭이 · 주 탭 · 나는 · 보조
+    // 다른 · 탭이 · 주 탭 · but · 하트비트가 · 5초 이상 · 오래됐으면 · 오탐 · 방지 · 승격
+    const age = _now() - primary.ts;
+    if (age > RECENT_HEARTBEAT_MS) {
+      // 오래된 · 하트비트 · = · 죽은 · 탭 · 또는 · 새로고침 · 잔재 · 승격
+      _becomePrimary();
+      return;
+    }
+    // 최근 · 하트비트 · = · 진짜 · 다른 · 살아있는 · 탭 · 보조 진입
     if (!window._atmTabLock.isSecondary) _becomeSecondary(primary.id);
   }
   function _lockButtons() {
