@@ -3120,6 +3120,8 @@ window.togglePriceComparePanel = function(customerId) {
     panel.remove();
     return;
   }
+  // 새로 · 열 때 · 선택 · 초기화 · (검색 · 상태로 · 시작)
+  window._pcpSelectedProductId = '';
   // localStorage에서 마지막 크기/필터 · 복원
   const savedSize = (function(){
     try { return JSON.parse(localStorage.getItem('priceComparePanelSize') || '{}'); }
@@ -3144,7 +3146,7 @@ window.togglePriceComparePanel = function(customerId) {
   const custName = cust ? cust.name : '(거래처 없음)';
   panel.innerHTML =
     '<div style="padding:10px 12px; background:var(--brand); color:#fff; display:flex; align-items:center; gap:8px; cursor:move;" id="pcpHeader">' +
-      '<span style="font-weight:700; font-size:14px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="' + custName.replace(/"/g,'&quot;') + '">💰 ' + custName + '</span>' +
+      '<span style="font-weight:700; font-size:14px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="' + custName.replace(/"/g,'&quot;') + '">💰 단가 비교 <span style="font-weight:400; opacity:0.9;">· ' + custName + '</span></span>' +
       '<button type="button" onclick="togglePriceComparePanel()" style="background:none; border:none; color:#fff; font-size:20px; cursor:pointer; padding:0 4px; line-height:1;" title="닫기">×</button>' +
     '</div>' +
     '<div style="padding:8px 10px; background:#F8F8F8; border-bottom:1px solid var(--line); display:flex; gap:6px; align-items:center; flex-wrap:wrap;">' +
@@ -3195,10 +3197,16 @@ window.togglePriceComparePanel = function(customerId) {
   renderPriceComparePanelBody();
 };
 
+// ⭐ (2026-09-22 수정) 관리자 · 단가 · 비교 · 처럼 · 품목 · 찾으면 · 거래처별 · 단가 · 리스트 · 표시
+//   흐름:
+//   1) 검색창 · 비어있음 · → · 상단 · 안내 문구
+//   2) 검색어 · 입력 · → · 매칭 · 품목 · 리스트 · (클릭 · 대상)
+//   3) 품목 · 클릭 · → · 해당 품목 · 거래처별 · 단가 · + · 최근 사용 인보이스 · 표시
+//   4) 기간 필터: · 최근 X개월 · 이내 · 사용된 것만 · 표시
+window._pcpSelectedProductId = '';
 window.renderPriceComparePanelBody = function() {
   const panel = document.getElementById('priceComparePanel');
   if (!panel) return;
-  const custId = panel.dataset.custId || '';
   const body = document.getElementById('pcpBody');
   const period = document.getElementById('pcpPeriod').value;
   const search = (document.getElementById('pcpSearch').value || '').trim().toLowerCase();
@@ -3212,64 +3220,120 @@ window.renderPriceComparePanelBody = function() {
   else if (period === '3m') { cutoffDate = new Date(now); cutoffDate.setMonth(cutoffDate.getMonth() - 3); }
   else if (period === '6m') { cutoffDate = new Date(now); cutoffDate.setMonth(cutoffDate.getMonth() - 6); }
   const cutoffStr = cutoffDate ? cutoffDate.toISOString().slice(0, 10) : '';
-  // 해당 · 거래처 · 최근 · 인보이스 · 이력 · 수집
-  const orders = (DB.orders || [])
-    .filter(function(o) {
-      if (!o || !o.invoiceNo) return false;
-      if (custId && o.customerId !== custId) return false;
-      if (cutoffStr) {
-        const dt = (o.invoicedAt || o.orderDate || '').slice(0, 10);
-        if (!dt || dt < cutoffStr) return false;
-      }
-      return true;
-    })
-    .sort(function(a, b) {
-      return (b.invoicedAt || b.orderDate || '').localeCompare(a.invoicedAt || a.orderDate || '');
-    });
-  // 라인 별 · 품목/단가 · 뽑기
-  const lines = [];
-  orders.forEach(function(o) {
-    const items = getInvoiceItems(o);
-    const dt = (o.invoicedAt || o.orderDate || '').slice(0, 10);
-    (items || []).forEach(function(it) {
-      if (!it || !it.productId) return;
-      const p = (DB.products || []).find(function(x) { return x.id === it.productId; });
-      const pname = p ? p.name : (it.name || '?');
-      // 검색 · 필터
-      if (search && pname.toLowerCase().indexOf(search) < 0 && (it.notes || '').toLowerCase().indexOf(search) < 0) return;
-      lines.push({
-        date: dt,
-        invNo: o.invoiceNo || '',
-        productId: it.productId,
-        productName: pname,
-        notes: it.notes || '',
-        price: it.price || 0,
-        weight: it.weight || 0
-      });
-    });
-  });
-  if (lines.length === 0) {
-    body.innerHTML = '<div style="color:var(--muted); padding:20px; text-align:center; font-size:13px;">해당 기간 · 발행된 · 인보이스 · 없음</div>';
+
+  // 검색 · 비어있음: · 안내 · 상태 (선택 · 품목 · 있으면 · 그것 · 자동 · 표시)
+  if (!search && !window._pcpSelectedProductId) {
+    body.innerHTML =
+      '<div style="color:var(--muted); padding:20px 8px; text-align:center; font-size:13px; line-height:1.6;">' +
+      '🔍 위 · 검색창에 · <b>품목 이름</b> · 입력<br>' +
+      '(예: · 삼겹살 · 등심 · knuckle)<br><br>' +
+      '<span style="font-size:11px;">품목 클릭 · → · 전체 거래처 · 단가 · 표시</span>' +
+      '</div>';
     return;
   }
-  // HTML · 렌더
-  let html = '<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">' + lines.length + '건 · ' + (cutoffStr ? '(' + cutoffStr + ' 이후)' : '(전체)') + '</div>';
+
+  // 검색어 · 있으면 · → · 매칭 · 품목 · 리스트 · + · 자동 · 확장
+  if (search) {
+    const matches = (DB.products || []).filter(function(p) {
+      if (!p || p.active === false) return false;
+      const nm = (p.name || '').toLowerCase();
+      const br = (p.brand || '').toLowerCase();
+      return nm.indexOf(search) >= 0 || br.indexOf(search) >= 0;
+    }).slice(0, 30);
+    if (matches.length === 0) {
+      body.innerHTML = '<div style="color:var(--muted); padding:20px; text-align:center; font-size:13px;">🔍 "' + search + '" · 매칭 · 품목 · 없음</div>';
+      return;
+    }
+    // 매칭 · 1개 · 이면 · 바로 · 상세
+    if (matches.length === 1) {
+      window._pcpSelectedProductId = matches[0].id;
+      _renderPcpProductDetail(body, matches[0], cutoffStr);
+      return;
+    }
+    // 여러 개 · 매칭 · → · 리스트 · (클릭 · 해서 · 상세)
+    let html = '<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">' + matches.length + '개 · 매칭 · (클릭 · 시 · 거래처별 · 단가)</div>';
+    matches.forEach(function(p) {
+      const nm = (p.name || '?').replace(/</g,'&lt;');
+      const br = p.brand ? ' <span style="color:var(--muted); font-size:11px;">(' + p.brand.replace(/</g,'&lt;') + ')</span>' : '';
+      const cat = p.category ? '<div style="font-size:10px; color:var(--muted);">' + p.category.replace(/</g,'&lt;') + '</div>' : '';
+      html += '<div onclick="_pcpSelectProduct(\'' + p.id + '\')" style="padding:8px 10px; border:1px solid var(--line); border-radius:5px; margin-bottom:5px; cursor:pointer; background:#FAFAFA;" onmouseover="this.style.background=\'#FFF7E0\'" onmouseout="this.style.background=\'#FAFAFA\'">' +
+        '<b>' + nm + '</b>' + br + cat +
+        '</div>';
+    });
+    body.innerHTML = html;
+    return;
+  }
+
+  // 선택된 · 품목 · 있으면 · 상세
+  if (window._pcpSelectedProductId) {
+    const p = (DB.products || []).find(function(x) { return x.id === window._pcpSelectedProductId; });
+    if (!p) {
+      window._pcpSelectedProductId = '';
+      body.innerHTML = '<div style="color:var(--muted); padding:20px; text-align:center;">품목 · 정보 · 없음</div>';
+      return;
+    }
+    _renderPcpProductDetail(body, p, cutoffStr);
+  }
+};
+
+function _renderPcpProductDetail(body, product, cutoffStr) {
+  const rows = getCustomerPricesForProduct(product.id);
+  // 기간 필터: lastUsedDate가 · 컷오프 · 이후만
+  const filtered = cutoffStr
+    ? rows.filter(function(r) { return r.lastUsedDate && r.lastUsedDate >= cutoffStr; })
+    : rows;
+  const nm = (product.name || '?').replace(/</g,'&lt;');
+  const br = product.brand ? ' <span style="color:var(--muted); font-size:12px;">(' + product.brand.replace(/</g,'&lt;') + ')</span>' : '';
+  let html = '<div style="padding:8px 10px; background:#FFF7E0; border-radius:6px; margin-bottom:8px; border:1px solid #E8A317;">' +
+    '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:6px;">' +
+    '<div><b style="font-size:14px;">' + nm + '</b>' + br + '</div>' +
+    '<button type="button" onclick="_pcpClearSelection()" style="background:none; border:1px solid var(--line); border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer;">✕ 다른 · 품목</button>' +
+    '</div>' +
+    '</div>';
+  if (filtered.length === 0) {
+    html += '<div style="color:var(--muted); padding:20px; text-align:center; font-size:13px;">' +
+      (cutoffStr ? '기간 내 · ' : '') + '거래처 · 학습 · 단가 · 없음</div>';
+    body.innerHTML = html;
+    return;
+  }
+  const prices = filtered.map(function(r) { return r.price; });
+  const avg = prices.reduce(function(s, x) { return s + x; }, 0) / prices.length;
+  const min = Math.min.apply(null, prices);
+  const max = Math.max.apply(null, prices);
+  html += '<div style="font-size:11px; color:var(--muted); margin-bottom:6px; display:flex; justify-content:space-between;">' +
+    '<span>' + filtered.length + '개 · 거래처</span>' +
+    '<span>평균 <b>$' + fmtMoney(avg) + '</b> · <span style="color:#dc3545;">저 $' + fmtMoney(min) + '</span> · <span style="color:#28a745;">고 $' + fmtMoney(max) + '</span></span>' +
+    '</div>';
   html += '<table style="width:100%; font-size:11px; border-collapse:collapse;">';
   html += '<thead><tr style="border-bottom:2px solid var(--line); color:var(--muted); background:#F8F8F8;">' +
-    '<th style="text-align:left; padding:4px 3px;">날짜</th>' +
-    '<th style="text-align:left; padding:4px 3px;">품목</th>' +
+    '<th style="text-align:left; padding:4px 3px;">거래처</th>' +
     '<th style="text-align:right; padding:4px 3px;">단가</th>' +
+    '<th style="text-align:right; padding:4px 3px;">최근</th>' +
     '</tr></thead><tbody>';
-  lines.forEach(function(l) {
-    const notesLine = l.notes ? '<div style="font-size:10px; color:var(--muted);">' + l.notes.replace(/</g,'&lt;') + '</div>' : '';
-    html += '<tr style="border-bottom:1px dashed var(--line); cursor:pointer;" onclick="applyPriceFromPanel(\'' + l.productId + '\',' + l.price + ',\'' + (l.notes||'').replace(/'/g,'&#39;').replace(/"/g,'&quot;') + '\')" title="클릭하면 · 인보이스 · 단가에 · 적용">' +
-      '<td style="padding:4px 3px; color:var(--muted); font-size:10px; white-space:nowrap;">' + (l.date || '-').slice(5) + '</td>' +
-      '<td style="padding:4px 3px;"><b>' + l.productName.replace(/</g,'&lt;') + '</b>' + notesLine + '</td>' +
-      '<td style="padding:4px 3px; text-align:right; font-weight:700; color:var(--brand-dark); white-space:nowrap;">$' + fmtMoney(l.price) + '</td>' +
+  filtered.forEach(function(r) {
+    const notesLine = r.notes ? '<div style="font-size:10px; color:var(--muted);">' + (r.notes || '').replace(/</g,'&lt;') + '</div>' : '';
+    html += '<tr style="border-bottom:1px dashed var(--line); cursor:pointer;" onclick="applyPriceFromPanel(\'' + product.id + '\',' + r.price + ',\'' + (r.notes||'').replace(/'/g,'&#39;').replace(/"/g,'&quot;') + '\')" title="현재 · 인보이스 · 단가로 · 적용">' +
+      '<td style="padding:4px 3px;"><b>' + (r.custName || '?').replace(/</g,'&lt;') + '</b>' + notesLine + '</td>' +
+      '<td style="padding:4px 3px; text-align:right; font-weight:700; color:var(--brand-dark); white-space:nowrap;">$' + fmtMoney(r.price) + '</td>' +
+      '<td style="padding:4px 3px; text-align:right; color:var(--muted); font-size:10px; white-space:nowrap;">' + (r.lastUsedDate ? r.lastUsedDate.slice(5) : '—') + '</td>' +
       '</tr>';
   });
   html += '</tbody></table>';
   body.innerHTML = html;
+}
+
+window._pcpSelectProduct = function(productId) {
+  window._pcpSelectedProductId = productId;
+  const searchEl = document.getElementById('pcpSearch');
+  if (searchEl) searchEl.value = ''; // 검색어 · 클리어 · → · 상세 · 표시
+  renderPriceComparePanelBody();
+};
+
+window._pcpClearSelection = function() {
+  window._pcpSelectedProductId = '';
+  const searchEl = document.getElementById('pcpSearch');
+  if (searchEl) { searchEl.value = ''; searchEl.focus(); }
+  renderPriceComparePanelBody();
 };
 
 window.applyPriceFromPanel = function(productId, price, notes) {
