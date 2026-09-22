@@ -1017,9 +1017,24 @@ window._atmTabLock = { isSecondary: false, tabId: '', primary: null };
 (function _initTabLock(){
   const HEARTBEAT_KEY = 'atm_primary_tab_heartbeat';
   const TAB_ID_KEY = 'atm_primary_tab_id';
+  const SESSION_TAB_ID_KEY = 'atm_session_tab_id';
   const HEARTBEAT_INTERVAL_MS = 3000;
   const STALE_MS = 10000; // 10초 이상 · 하트비트 · 없으면 · 주 탭 없음
-  const tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  // ⭐ (2026-09-22 오탐 2차 · 재수정) sessionStorage · 활용 · 진짜 · 새로고침 · vs · 진짜 · 새 탭 · 구분
+  //   원리: sessionStorage · 는 · 같은 · 탭 · 새로고침에는 · 유지 · 새 탭에서는 · 없음
+  //   이 · 탭이 · 이전에 · 주 탭이었으면 · sessionStorage에 · 표시 · → · 새로고침 · 시 · 배너 · 안 뜨게 · 즉시 · 주 탭
+  let tabId;
+  try {
+    const existing = sessionStorage.getItem(SESSION_TAB_ID_KEY);
+    if (existing) {
+      tabId = existing; // 새로고침 · 같은 · 탭 · 유지
+    } else {
+      tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+      sessionStorage.setItem(SESSION_TAB_ID_KEY, tabId);
+    }
+  } catch(_) {
+    tabId = 'tab_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8);
+  }
   window._atmTabLock.tabId = tabId;
   function _now() { return Date.now(); }
   function _readPrimary() {
