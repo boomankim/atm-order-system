@@ -571,6 +571,71 @@ if (FIREBASE_READY) {
 // =========== 상태 ===========
 let store = null;   // 위 구조
 
+// ============================================================================
+// ⭐ (2026-09-23 밤작업#353) 보스 권한 · 과거 항목 삭제 허용 (옵션 B)
+// ----------------------------------------------------------------------------
+// 배경: 날짜 오입력(전날 날짜로 매입 등록) 시 당일 이전 완전 잠금(#190)으로 정정 불가.
+//       기존 대안은 "오늘 날짜 마이너스 등록"뿐이라 장부에 취소·재등록 3줄이 남음.
+// 대책: 보스 비밀번호 입력 시에만 과거 항목 삭제 허용 + 감사로그 영구 기록.
+//       비번은 메인 앱(atm_db/settings/bossPasswordHash)과 공유 — 같은 Firebase 프로젝트.
+//       감사로그도 메인 앱 atm_db/auditLog 로 기록 → 관리자 · 감사 로그 화면에서 조회 가능.
+// ============================================================================
+const MAIN_DB_REF = FIREBASE_READY ? firebase.database().ref('atm_db') : null;
+
+async function hashPw(pw) {
+  try {
+    const buf = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(pw));
+    return Array.from(new Uint8Array(buf)).map(function(b){ return b.toString(16).padStart(2,'0'); }).join('');
+  } catch(e) {
+    let h = 5381;
+    for (let i = 0; i < pw.length; i++) h = ((h << 5) + h) + pw.charCodeAt(i);
+    return 'fallback_' + (h >>> 0).toString(16);
+  }
+}
+
+async function verifyBossPassword(actionLabel) {
+  if (!MAIN_DB_REF) {
+    alert('⚠️ Firebase 연결이 없어 보스 인증을 할 수 없습니다.\n\n인터넷 연결을 확인하고 새로고침 후 다시 시도하세요.');
+    return false;
+  }
+  let storedHash = '';
+  try {
+    const snap = await MAIN_DB_REF.child('settings/bossPasswordHash').once('value');
+    storedHash = snap.val() || '';
+  } catch(e) {
+    alert('⚠️ 보스 비밀번호 조회 실패: ' + (e && e.message || '알 수 없음'));
+    return false;
+  }
+  if (!storedHash) {
+    alert('🔐 보스 비밀번호가 아직 설정되지 않았습니다.\n\n먼저 주문 시스템(ATM Order System)에서\n보스 권한이 필요한 작업을 한 번 실행해 비밀번호를 설정하세요.');
+    return false;
+  }
+  const input = prompt('🔐 보스 비밀번호 입력 — ' + (actionLabel || '보호된 작업'), '');
+  if (!input) return false;
+  const h = await hashPw(input);
+  if (h !== storedHash) {
+    alert('❌ 보스 비밀번호가 틀렸습니다.');
+    return false;
+  }
+  return true;
+}
+
+// 메인 앱 감사로그에 기록 (관리자 · 감사 로그 화면에서 조회)
+function mainAuditLogAdd(text) {
+  if (!MAIN_DB_REF) return;
+  const entry = { ts: new Date().toISOString(), text: '[매입일보] ' + String(text || '').slice(0, 480) };
+  try {
+    MAIN_DB_REF.child('auditLog').transaction(function(currentList) {
+      if (!Array.isArray(currentList)) currentList = [];
+      currentList.push(entry);
+      if (currentList.length > 5000) currentList = currentList.slice(-5000);
+      return currentList;
+    }, function(error) {
+      if (error) console.warn('감사 로그 저장 실패:', error);
+    });
+  } catch(e) { console.warn('감사 로그 예외:', e); }
+}
+
 // =========== 유틸 ===========
 function uid() {
   return 'p_' + Date.now().toString(36) + Math.random().toString(36).slice(2,8);
@@ -950,8 +1015,9 @@ window.renderPurchaseHistoryList = function(vendorId){
     + '<thead><tr><th>날짜</th><th>인보이스 #</th><th class="num">금액</th><th>비고</th><th class="act"></th></tr></thead><tbody>';
   list.forEach(function(p){
     const isPast = p.date < today;
+    // ⭐ (2026-09-23 밤작업#353) 과거 항목도 보스 비번 입력 시 삭제 가능 · 자물쇠 클릭형으로 변경
     const actCell = isPast
-      ? '<span title="당일 이전 항목은 잠금 · 조정은 오늘 날짜로 마이너스 등록" style="color:#9ca3af; font-size:14px;">🔒</span>'
+      ? '<button class="sm" title="과거 항목 · 보스 비밀번호 입력 시 삭제 가능 (감사로그 기록)" style="padding:2px 8px; font-size:12px; background:#f1f5f9; color:#64748b; border:1px solid #cbd5e1;" onclick="handleDeletePurchase(\'' + p.id + '\')">🔒</button>'
       : '<button class="danger sm" style="padding:2px 8px; font-size:11px;" onclick="handleDeletePurchase(\'' + p.id + '\')">🗑</button>';
     html += '<tr style="border-bottom:1px solid #f1f5f9;' + (isPast ? 'background:#fafafa;' : '') + '">'
       + '<td>' + escapeHtml(p.date) + '</td>'
@@ -965,19 +1031,35 @@ window.renderPurchaseHistoryList = function(vendorId){
   box.innerHTML = html;
 };
 
-window.handleDeletePurchase = function(id){
+window.handleDeletePurchase = async function(id){
   const p = (store.purchases || []).find(function(x){ return x.id === id; });
   if (!p) { alert('해당 매입을 찾을 수 없습니다.'); return; }
-  // ⭐ (2026-08-06) 당일 이전 완전 잠금 — 회계 무결성. UI 우회(콘솔) 방어.
-  if (p.date < todayLocalISO()) {
-    alert('🔒 당일 이전 항목은 잠금 상태입니다.\n\n조정이 필요하면 오늘 날짜로 마이너스 매입 항목을 새로 등록하세요.\n예: 인보이스 ' + (p.invoiceNo || '-') + ' 취소 → 금액 -$' + fmtMoney(p.amount));
-    return;
-  }
   const v = findVendorById(p.vendorId);
   const vn = v ? v.name : '(업체 미상)';
-  if (!confirm('매입 삭제:\n\n' + vn + '\n' + p.date + ' · 인보이스 ' + (p.invoiceNo || '-') + ' · $' + fmtMoney(p.amount) + '\n\n되돌릴 수 없습니다. 계속?')) return;
+  const label = vn + ' · ' + p.date + ' · 인보이스 ' + (p.invoiceNo || '-') + ' · $' + fmtMoney(p.amount);
+  const isPast = p.date < todayLocalISO();
+  // ⭐ (2026-09-23 밤작업#353) 과거 항목 · 보스 비밀번호 확인 후 삭제 허용 (옵션 B)
+  //   기존(#190): 당일 이전 완전 잠금 · 마이너스 등록만 허용
+  //   변경: 보스 권한 인증 + 감사로그 영구 기록 시에만 삭제 허용 (날짜 오입력 즉시 정정용)
+  if (isPast) {
+    if (!confirm('🔒 과거 항목 삭제 — 보스 권한 필요\n\n' + label +
+                 '\n\n⚠️ 회계 무결성 주의\n' +
+                 '· 이미 회계사에게 제출한 기간이면 삭제하지 마세요\n' +
+                 '· 대신 오늘 날짜로 마이너스 등록을 권장합니다\n' +
+                 '· 삭제 기록은 감사 로그에 영구 남습니다\n\n' +
+                 '계속하려면 [확인] → 보스 비밀번호 입력')) return;
+    const ok = await verifyBossPassword('매입일보 · 과거 매입 삭제');
+    if (!ok) return;
+  } else {
+    if (!confirm('매입 삭제:\n\n' + vn + '\n' + p.date + ' · 인보이스 ' + (p.invoiceNo || '-') + ' · $' + fmtMoney(p.amount) + '\n\n되돌릴 수 없습니다. 계속?')) return;
+  }
   if (deletePurchase(id)) {
-    showToast('🗑 매입 삭제됨');
+    if (isPast) {
+      mainAuditLogAdd('🔓 보스 권한 · 과거 매입 삭제: ' + label);
+      showToast('🗑 과거 매입 삭제됨 · 감사로그 기록');
+    } else {
+      showToast('🗑 매입 삭제됨');
+    }
     renderPurchaseHistoryList(p.vendorId);
     renderMainTable();
   }
@@ -1153,7 +1235,7 @@ window.renderPaymentHistoryList = function(vendorId){
     const refNote = [p.ref, p.note].filter(Boolean).map(escapeHtml).join(' · ');
     const isPast = p.date < today;
     const actCell = isPast
-      ? '<span title="당일 이전 항목은 잠금 · 조정은 오늘 날짜로 마이너스 등록" style="color:#9ca3af; font-size:14px;">🔒</span>'
+      ? '<button class="sm" title="과거 항목 · 보스 비밀번호 입력 시 삭제 가능 (감사로그 기록)" style="padding:2px 8px; font-size:12px; background:#f1f5f9; color:#64748b; border:1px solid #cbd5e1;" onclick="handleDeletePayment(\'' + p.id + '\')">🔒</button>'
       : '<button class="danger sm" style="padding:2px 8px; font-size:11px;" onclick="handleDeletePayment(\'' + p.id + '\')">🗑</button>';
     html += '<tr style="border-bottom:1px solid #f1f5f9;' + (isPast ? 'background:#fafafa;' : '') + '">'
       + '<td>' + escapeHtml(p.date) + '</td>'
@@ -1168,19 +1250,33 @@ window.renderPaymentHistoryList = function(vendorId){
   box.innerHTML = html;
 };
 
-window.handleDeletePayment = function(id){
+window.handleDeletePayment = async function(id){
   const p = (store.payments || []).find(function(x){ return x.id === id; });
   if (!p) { alert('해당 지급을 찾을 수 없습니다.'); return; }
-  // ⭐ (2026-08-06) 당일 이전 완전 잠금
-  if (p.date < todayLocalISO()) {
-    alert('🔒 당일 이전 항목은 잠금 상태입니다.\n\n조정이 필요하면 오늘 날짜로 마이너스 지급 항목을 새로 등록하세요.\n예: 지급 취소 → 금액 -$' + fmtMoney(p.amount));
-    return;
-  }
   const v = findVendorById(p.vendorId);
   const vn = v ? v.name : '(업체 미상)';
-  if (!confirm('지급 삭제:\n\n' + vn + '\n' + p.date + ' · $' + fmtMoney(p.amount) + '\n\n되돌릴 수 없습니다. 계속?')) return;
+  const label = vn + ' · ' + p.date + ' · $' + fmtMoney(p.amount) + (p.method ? ' · ' + p.method : '');
+  const isPast = p.date < todayLocalISO();
+  // ⭐ (2026-09-23 밤작업#353) 과거 항목 · 보스 비밀번호 확인 후 삭제 허용 (옵션 B)
+  if (isPast) {
+    if (!confirm('🔒 과거 항목 삭제 — 보스 권한 필요\n\n' + label +
+                 '\n\n⚠️ 회계 무결성 주의\n' +
+                 '· 이미 회계사에게 제출한 기간이면 삭제하지 마세요\n' +
+                 '· 대신 오늘 날짜로 마이너스 등록을 권장합니다\n' +
+                 '· 삭제 기록은 감사 로그에 영구 남습니다\n\n' +
+                 '계속하려면 [확인] → 보스 비밀번호 입력')) return;
+    const ok = await verifyBossPassword('매입일보 · 과거 지급 삭제');
+    if (!ok) return;
+  } else {
+    if (!confirm('지급 삭제:\n\n' + vn + '\n' + p.date + ' · $' + fmtMoney(p.amount) + '\n\n되돌릴 수 없습니다. 계속?')) return;
+  }
   if (deletePayment(id)) {
-    showToast('🗑 지급 삭제됨');
+    if (isPast) {
+      mainAuditLogAdd('🔓 보스 권한 · 과거 지급 삭제: ' + label);
+      showToast('🗑 과거 지급 삭제됨 · 감사로그 기록');
+    } else {
+      showToast('🗑 지급 삭제됨');
+    }
     renderPaymentHistoryList(p.vendorId);
     renderMainTable();
   }
