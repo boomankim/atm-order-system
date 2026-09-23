@@ -686,6 +686,26 @@ function dedupFavoritePairs(cust) {
   if (removed > 0) cust.favoritePairs = out;
   return removed;
 }
+// ⭐ (2026-09-23 밤작업#352) 거래처 목록 · 가나다/알파벳 정렬 공통 헬퍼
+// ----------------------------------------------------------------------------
+// 증상: 거래처 이름 변경 (HANSANG CHINA TOWN → HAN SANG HAYMARKET) 후
+//       드롭다운에서 알파벳 위치가 아닌 원래 배열 자리에 남아 직원이 못 찾음.
+// 원인: saveCustomer() 수정 분기는 DB.customers[i] = obj (제자리 덮어쓰기) · 재정렬 없음.
+//       그리고 여러 렌더 지점이 DB.customers 원본 배열 순서를 그대로 사용.
+// 대책: 배열 자체는 건드리지 않고 (Firebase 인덱스 저장과 충돌 방지)
+//       ✅ "렌더 시점"에 정렬된 복사본을 쓰도록 공통 헬퍼로 통일.
+//       → 이름을 언제 바꿔도 항상 올바른 위치에 표시됨. Firebase 순서와 무관.
+// 정렬: ko-KR · sensitivity base (대소문자/악센트 무시 · 한글+영문 혼용 안전)
+function sortedCustomers(includeInactive) {
+  const list = (DB.customers || []).filter(function(c) {
+    return c && (includeInactive || c.active !== false);
+  });
+  return list.slice().sort(function(a, b) {
+    return (a.name || '').localeCompare(b.name || '', 'ko-KR', { sensitivity: 'base' });
+  });
+}
+window.sortedCustomers = sortedCustomers;
+
 // 앱 시작 시 전체 거래처 자동 정리 (일회성 · Firebase 저장)
 // ⭐ (2026-08-12) saveEntityField 사용 — 로컬 idx 로 Firebase 쓰면 동시성 사고 재발.
 //   과거 "거래처 뒤바뀜" 사고 방지: 반드시 cust.id 기반 안전 저장.
@@ -3141,6 +3161,13 @@ window.showPriceCompareTooltip = function(evt, productId) {
 // - localStorage · 크기 · 필터 · 기억
 // ============================================================================
 window.togglePriceComparePanel = function(customerId) {
+  // ⭐ (2026-09-23 밤작업#351) 별도 창이 이미 열려 있으면 · 그 창 포커스 (중복 방지)
+  try {
+    if (window._pcpWin && !window._pcpWin.closed) {
+      window._pcpWin.focus();
+      return;
+    }
+  } catch(_){}
   let panel = document.getElementById('priceComparePanel');
   if (panel) {
     // 이미 열려있으면 닫기
@@ -3172,8 +3199,9 @@ window.togglePriceComparePanel = function(customerId) {
   const cust = customerId ? DB.customers.find(c => c.id === customerId) : null;
   const custName = cust ? cust.name : '(거래처 없음)';
   panel.innerHTML =
-    '<div style="padding:10px 12px; background:var(--brand); color:#fff; display:flex; align-items:center; gap:8px; cursor:move;" id="pcpHeader">' +
+    '<div style="padding:10px 12px; background:var(--brand); color:#fff; display:flex; align-items:center; gap:6px; cursor:move;" id="pcpHeader">' +
       '<span style="font-weight:700; font-size:14px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="' + custName.replace(/"/g,'&quot;') + '">💰 단가 비교 <span style="font-weight:400; opacity:0.9;">· ' + custName + '</span></span>' +
+      '<button type="button" onclick="openPriceCompareWindow()" style="background:rgba(255,255,255,0.2); border:none; color:#fff; font-size:12px; cursor:pointer; padding:4px 8px; border-radius:4px; white-space:nowrap;" title="별도 창으로 열기 · 듀얼 모니터에서 옆 화면으로 이동 가능">↗ 새 창</button>' +
       '<button type="button" onclick="togglePriceComparePanel()" style="background:none; border:none; color:#fff; font-size:20px; cursor:pointer; padding:0 4px; line-height:1;" title="닫기">×</button>' +
     '</div>' +
     '<div style="padding:8px 10px; background:#F8F8F8; border-bottom:1px solid var(--line); display:flex; gap:6px; align-items:center; flex-wrap:wrap;">' +
@@ -3361,6 +3389,209 @@ window._pcpClearSelection = function() {
   const searchEl = document.getElementById('pcpSearch');
   if (searchEl) { searchEl.value = ''; searchEl.focus(); }
   renderPriceComparePanelBody();
+};
+
+// ============================================================================
+// ⭐ (2026-09-23 밤작업#351) 단가 비교 · 별도 창 모드 (듀얼 모니터 지원)
+// ----------------------------------------------------------------------------
+// 문제: 플로팅 패널은 브라우저 창 내부 div → 옆 모니터로 이동 불가.
+// 대책: window.open() 팝업 창 · 브라우저 창 밖으로 자유 이동.
+// 통신: 같은 출처(same-origin)이므로 팝업에서 window.opener 로 부모 DB/함수 직접 접근.
+// Tab Lock 영향 없음: 팝업은 앱 HTML 을 로드하지 않고 about:blank 에 직접 주입 → 하트비트 X.
+// 창 크기·위치는 localStorage 에 저장 · 다음에 같은 자리에서 열림.
+// ============================================================================
+window.openPriceCompareWindow = function() {
+  // 현재 인라인 패널이 열려 있으면 · 거래처 정보 가져오고 · 패널은 닫기 (중복 방지)
+  let custId = '';
+  const panel = document.getElementById('priceComparePanel');
+  if (panel) {
+    custId = panel.dataset.custId || '';
+    panel.remove();
+  }
+  if (!custId) {
+    // 패널 없이 직접 호출된 경우 · 현재 인보이스 준비 화면 거래처 추정
+    const o = (DB.orders || []).find(function(x) { return x && x.id === window._prepOid; });
+    if (o) custId = o.customerId || '';
+  }
+  // 이전 창 위치·크기 복원
+  let geo = { w: 380, h: 760, x: 100, y: 60 };
+  try {
+    const saved = JSON.parse(localStorage.getItem('priceCompareWinGeo') || '{}');
+    if (saved && saved.w) geo = saved;
+  } catch(_){}
+  const feat = 'width=' + Math.round(geo.w) + ',height=' + Math.round(geo.h) +
+               ',left=' + Math.round(geo.x) + ',top=' + Math.round(geo.y) +
+               ',menubar=no,toolbar=no,location=no,status=no,resizable=yes,scrollbars=yes';
+  const win = window.open('', 'atmPriceCompare', feat);
+  if (!win) {
+    alert('⚠️ 팝업이 차단되었습니다.\n\n주소창 오른쪽 · 팝업 차단 아이콘 클릭 → 이 사이트 팝업 허용 → 다시 시도하세요.');
+    return;
+  }
+  window._pcpWin = win;
+  const cust = custId ? (DB.customers || []).find(function(c) { return c.id === custId; }) : null;
+  const custName = cust ? cust.name : '(거래처 없음)';
+  const savedFilter = localStorage.getItem('priceComparePanelFilter') || '2m';
+  const doc = win.document;
+  doc.open();
+  doc.write(
+    '<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">' +
+    '<title>💰 단가 비교 · ' + custName.replace(/</g,'&lt;') + '</title>' +
+    '<style>' +
+      '*{box-sizing:border-box;}' +
+      'body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Malgun Gothic",sans-serif;background:#fff;display:flex;flex-direction:column;height:100vh;overflow:hidden;}' +
+      '#hdr{padding:10px 12px;background:#7B1F1F;color:#fff;font-weight:700;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex-shrink:0;}' +
+      '#hdr span{font-weight:400;opacity:0.9;}' +
+      '#bar{padding:8px 10px;background:#F8F8F8;border-bottom:1px solid #E0E0E0;display:flex;gap:6px;align-items:center;flex-wrap:wrap;flex-shrink:0;}' +
+      '#bar select,#bar input{padding:5px 8px;font-size:12px;border:1px solid #D0D0D0;border-radius:4px;}' +
+      '#bar input{flex:1;min-width:100px;}' +
+      '#body{flex:1;overflow-y:auto;padding:8px 10px;}' +
+      'table{width:100%;font-size:11px;border-collapse:collapse;}' +
+      'th{text-align:left;padding:4px 3px;color:#888;background:#F8F8F8;border-bottom:2px solid #E0E0E0;}' +
+      'tr.pick{border-bottom:1px dashed #E0E0E0;cursor:pointer;}' +
+      'tr.pick:hover{background:#FFF7E0;}' +
+      'td{padding:4px 3px;}' +
+      '.num{text-align:right;font-weight:700;color:#5A1717;white-space:nowrap;}' +
+      '.dt{text-align:right;color:#888;font-size:10px;white-space:nowrap;}' +
+      '.sub{font-size:10px;color:#888;}' +
+      '.hint{color:#888;padding:20px 8px;text-align:center;font-size:13px;line-height:1.6;}' +
+      '.pitem{padding:8px 10px;border:1px solid #E0E0E0;border-radius:5px;margin-bottom:5px;cursor:pointer;background:#FAFAFA;}' +
+      '.pitem:hover{background:#FFF7E0;}' +
+      '.phdr{padding:8px 10px;background:#FFF7E0;border:1px solid #E8A317;border-radius:6px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:flex-start;gap:6px;}' +
+      '.phdr button{background:none;border:1px solid #D0D0D0;border-radius:4px;padding:2px 8px;font-size:11px;cursor:pointer;}' +
+      '.stat{font-size:11px;color:#888;margin-bottom:6px;display:flex;justify-content:space-between;}' +
+    '</style></head><body>' +
+    '<div id="hdr">💰 단가 비교 <span>· ' + custName.replace(/</g,'&lt;') + '</span></div>' +
+    '<div id="bar">' +
+      '<select id="per">' +
+        '<option value="1m">최근 1개월</option>' +
+        '<option value="2m">최근 2개월</option>' +
+        '<option value="3m">최근 3개월</option>' +
+        '<option value="6m">최근 6개월</option>' +
+        '<option value="all">전체</option>' +
+      '</select>' +
+      '<input type="text" id="q" placeholder="🔍 품목 검색" autocomplete="off">' +
+    '</div>' +
+    '<div id="body"></div>' +
+    '</body></html>'
+  );
+  doc.close();
+  // 필터 초기값
+  try { doc.getElementById('per').value = savedFilter; } catch(_){}
+  // 팝업 내부 로직 — opener(부모 창)의 DB·함수를 직접 사용
+  win._custId = custId;
+  win._sel = '';
+  win.renderBody = function() {
+    const P = window; // 부모 창 (openPriceCompareWindow 클로저)
+    const b = doc.getElementById('body');
+    const period = doc.getElementById('per').value;
+    const search = (doc.getElementById('q').value || '').trim().toLowerCase();
+    try { localStorage.setItem('priceComparePanelFilter', period); } catch(_){}
+    const now = new Date();
+    let cd = null;
+    if (period === '1m') { cd = new Date(now); cd.setMonth(cd.getMonth() - 1); }
+    else if (period === '2m') { cd = new Date(now); cd.setMonth(cd.getMonth() - 2); }
+    else if (period === '3m') { cd = new Date(now); cd.setMonth(cd.getMonth() - 3); }
+    else if (period === '6m') { cd = new Date(now); cd.setMonth(cd.getMonth() - 6); }
+    const cutoff = cd ? cd.toISOString().slice(0, 10) : '';
+    // 검색 없음 + 선택 없음 → 안내
+    if (!search && !win._sel) {
+      b.innerHTML = '<div class="hint">🔍 위 검색창에 <b>품목 이름</b> 입력<br>(예: 삼겹살 · 등심 · knuckle)<br><br>' +
+        '<span style="font-size:11px;">품목 클릭 → 전체 거래처 단가 표시<br>단가 클릭 → 인보이스에 자동 적용</span></div>';
+      return;
+    }
+    // 검색 → 매칭 품목
+    if (search) {
+      const ms = (P.DB.products || []).filter(function(p) {
+        if (!p || p.active === false) return false;
+        return ((p.name||'').toLowerCase().indexOf(search) >= 0) || ((p.brand||'').toLowerCase().indexOf(search) >= 0);
+      }).slice(0, 30);
+      if (ms.length === 0) { b.innerHTML = '<div class="hint">🔍 "' + search + '" 매칭 품목 없음</div>'; return; }
+      if (ms.length === 1) { win._sel = ms[0].id; win.renderDetail(ms[0], cutoff); return; }
+      let h = '<div class="stat"><span>' + ms.length + '개 매칭 (클릭 → 거래처별 단가)</span></div>';
+      ms.forEach(function(p) {
+        h += '<div class="pitem" data-pid="' + p.id + '"><b>' + (p.name||'?').replace(/</g,'&lt;') + '</b>' +
+             (p.brand ? ' <span class="sub">(' + p.brand.replace(/</g,'&lt;') + ')</span>' : '') +
+             (p.category ? '<div class="sub">' + p.category.replace(/</g,'&lt;') + '</div>' : '') + '</div>';
+      });
+      b.innerHTML = h;
+      Array.prototype.forEach.call(b.querySelectorAll('.pitem'), function(el) {
+        el.onclick = function() {
+          win._sel = el.dataset.pid;
+          doc.getElementById('q').value = '';
+          win.renderBody();
+        };
+      });
+      return;
+    }
+    // 선택된 품목 상세
+    if (win._sel) {
+      const p = (P.DB.products || []).find(function(x) { return x.id === win._sel; });
+      if (!p) { win._sel = ''; win.renderBody(); return; }
+      win.renderDetail(p, cutoff);
+    }
+  };
+  win.renderDetail = function(product, cutoff) {
+    const P = window;
+    const b = doc.getElementById('body');
+    const rows = P.getCustomerPricesForProduct(product.id);
+    const fil = cutoff ? rows.filter(function(r) { return r.lastUsedDate && r.lastUsedDate >= cutoff; }) : rows;
+    let h = '<div class="phdr"><div><b style="font-size:14px;">' + (product.name||'?').replace(/</g,'&lt;') + '</b>' +
+            (product.brand ? ' <span class="sub">(' + product.brand.replace(/</g,'&lt;') + ')</span>' : '') + '</div>' +
+            '<button id="clr">✕ 다른 품목</button></div>';
+    if (fil.length === 0) {
+      h += '<div class="hint">' + (cutoff ? '기간 내 ' : '') + '거래처 학습 단가 없음</div>';
+      b.innerHTML = h;
+      doc.getElementById('clr').onclick = function() { win._sel=''; doc.getElementById('q').value=''; win.renderBody(); doc.getElementById('q').focus(); };
+      return;
+    }
+    const pr = fil.map(function(r) { return r.price; });
+    const avg = pr.reduce(function(s,x){return s+x;},0) / pr.length;
+    h += '<div class="stat"><span>' + fil.length + '개 거래처</span>' +
+         '<span>평균 <b>$' + P.fmtMoney(avg) + '</b> · <span style="color:#dc3545;">저 $' + P.fmtMoney(Math.min.apply(null,pr)) + '</span> · <span style="color:#28a745;">고 $' + P.fmtMoney(Math.max.apply(null,pr)) + '</span></span></div>';
+    h += '<table><thead><tr><th>거래처</th><th style="text-align:right;">단가</th><th style="text-align:right;">최근</th></tr></thead><tbody>';
+    fil.forEach(function(r, i) {
+      h += '<tr class="pick" data-i="' + i + '" title="클릭 → 인보이스 단가에 적용">' +
+           '<td><b>' + (r.custName||'?').replace(/</g,'&lt;') + '</b>' +
+           (r.notes ? '<div class="sub">' + r.notes.replace(/</g,'&lt;') + '</div>' : '') + '</td>' +
+           '<td class="num">$' + P.fmtMoney(r.price) + '</td>' +
+           '<td class="dt">' + (r.lastUsedDate ? r.lastUsedDate.slice(5) : '—') + '</td></tr>';
+    });
+    h += '</tbody></table>';
+    b.innerHTML = h;
+    doc.getElementById('clr').onclick = function() { win._sel=''; doc.getElementById('q').value=''; win.renderBody(); doc.getElementById('q').focus(); };
+    Array.prototype.forEach.call(b.querySelectorAll('tr.pick'), function(tr) {
+      tr.onclick = function() {
+        const r = fil[Number(tr.dataset.i)];
+        if (!r) return;
+        // 부모 창의 인보이스 준비 화면에 단가 적용
+        P.applyPriceFromPanel(product.id, r.price, r.notes || '');
+        // 적용 피드백
+        tr.style.background = '#C8E6C9';
+        setTimeout(function(){ tr.style.background = ''; }, 700);
+      };
+    });
+  };
+  // 이벤트 연결
+  try {
+    doc.getElementById('per').onchange = win.renderBody;
+    doc.getElementById('q').oninput = win.renderBody;
+    doc.getElementById('q').focus();
+  } catch(_){}
+  // 창 크기·위치 저장 (닫힐 때 + 주기적)
+  const saveGeo = function() {
+    try {
+      if (win.closed) return;
+      localStorage.setItem('priceCompareWinGeo', JSON.stringify({
+        w: win.outerWidth, h: win.outerHeight, x: win.screenX, y: win.screenY
+      }));
+    } catch(_){}
+  };
+  const geoTimer = setInterval(function() {
+    if (win.closed) { clearInterval(geoTimer); return; }
+    saveGeo();
+  }, 2000);
+  try { win.onbeforeunload = saveGeo; } catch(_){}
+  win.renderBody();
 };
 
 window.applyPriceFromPanel = function(productId, price, notes) {
@@ -5046,7 +5277,7 @@ function isSmsTarget(c) {
 //   이미 smsPhone 이 있는 거래처는 건드리지 않는다 (덮어쓰기 금지).
 function smsBulkScan() {
   const auto = [], landline = [], none = [], already = [];
-  DB.customers.filter(c => c.active !== false).forEach(c => {
+  sortedCustomers(false).forEach(c => {   // ⭐ (2026-09-23 밤작업#352) 가나다 정렬
     if (c.smsPhone) { already.push(c); return; }
     const raw = (c.phone || '').trim();
     if (!raw) { none.push(c); return; }
@@ -5801,7 +6032,7 @@ function renderFavImportList() {
               return `<option value="${c.id}" ${c.id===cust.selectedCustId?'selected':''}>${c.name} (${c.code})${c.score>=100?' ★':''}</option>`;
             }).join('')}
             <optgroup label="── 전체 거래처 ──">
-              ${DB.customers.map(function(c){
+              ${sortedCustomers(true).map(function(c){
                 if (cust.candidates.some(function(x){return x.id===c.id;})) return '';
                 return `<option value="${c.id}" ${c.id===cust.selectedCustId?'selected':''}>${c.name} (${c.code})</option>`;
               }).join('')}
@@ -6080,7 +6311,7 @@ function renderCustomerMappingList() {
                   return `<option value="${c.id}" ${c.id===e.selectedId?'selected':''}>${c.name} (${c.code})${star}</option>`;
                 }).join('')}
                 <optgroup label="── 전체 거래처 ──">
-                  ${DB.customers.map(function(c){
+                  ${sortedCustomers(true).map(function(c){
                     if (e.candidates.some(function(x){return x.id===c.id;})) return '';
                     return `<option value="${c.id}" ${c.id===e.selectedId?'selected':''}>${c.name} (${c.code})</option>`;
                   }).join('')}
@@ -9802,7 +10033,7 @@ function formatDateShort(iso) {
 }
 
 function dailyReportComputeRows(dateISO) {
-  const custs = DB.customers.filter(c => c.active !== false);
+  const custs = sortedCustomers(false);   // ⭐ (2026-09-23 밤작업#352) 가나다 정렬
   const todayCutoff = new Date(dateISO + 'T00:00:00');
   let rows = custs.map(c => {
     const days = termsDays(c.terms);
@@ -10515,7 +10746,7 @@ window.renderPaymentMatches = function(inputVal) {
   const partialMatches = []; // 부분납 후보 (미결제 > 입금액)
   const sumMatches = [];     // { cid, custName, invoices: [{invNo, unpaid}], total }
 
-  DB.customers.filter(c => c.active !== false).forEach(c => {
+  sortedCustomers(false).forEach(c => {   // ⭐ (2026-09-23 밤작업#352) 가나다 정렬
     const list = _computeUnpaidByInvoice(c.id);
     if (list.length === 0) return;
 
@@ -11255,9 +11486,8 @@ window.bankCsvRenderPreview = function() {
     wrap.innerHTML = '<div style="text-align:center; padding:40px; color:var(--muted);">입금 항목이 없습니다. 날짜 범위 · 은행 선택을 확인해 주세요.</div>';
     return;
   }
-  // 거래처 옵션 (수동 지정용)
-  const custOptions = (DB.customers || []).filter(c => c.active !== false)
-    .sort((a,b) => (a.name || '').localeCompare(b.name || ''))
+  // 거래처 옵션 (수동 지정용) — ⭐ (2026-09-23 밤작업#352) 공통 정렬 헬퍼 (ko-KR)
+  const custOptions = sortedCustomers(false)
     .map(c => '<option value="' + c.id + '">' + escapeHtmlSimple(c.name) + '</option>')
     .join('');
 
@@ -11654,7 +11884,8 @@ function renderCustomerSearchSelect(opts) {
   const includeInactive = !!opts.includeInactive;
   const placeholder = opts.placeholder || '— 선택하세요 —';
   const onChange = opts.onChange || '';
-  const list = DB.customers.filter(c => includeInactive || c.active !== false);
+  // ⭐ (2026-09-23 밤작업#352) 정렬된 목록 사용 · 이름 변경 후에도 알파벳 위치 유지
+  const list = sortedCustomers(includeInactive);
   const selected = opts.selectedId || '';
   const selectedCust = selected ? list.find(c => c.id === selected) : null;
   const initialText = selectedCust ? (selectedCust.name + ' (' + (selectedCust.code || '') + ')') : '';
@@ -11690,10 +11921,11 @@ function renderCustomerSearchSelect(opts) {
 // 검색어 → 후보 배열 (스코어 정렬)
 function custAcSearch(query, includeInactive) {
   const q = (query || '').toLowerCase().trim().replace(/\s+/g,'');
-  const list = DB.customers.filter(c => includeInactive || c.active !== false);
+  // ⭐ (2026-09-23 밤작업#352) 공통 정렬 헬퍼 사용 (ko-KR · 한글+영문 혼용 안전)
+  const list = sortedCustomers(includeInactive);
   if (!q) {
     // 빈 검색 → 이름 알파벳 순 상위 8개
-    return list.slice().sort((a,b) => (a.name||'').localeCompare(b.name||'', 'en')).slice(0, 8);
+    return list.slice(0, 8);
   }
   const scored = [];
   list.forEach(c => {
