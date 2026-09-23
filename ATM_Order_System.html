@@ -9970,6 +9970,30 @@ function todayLocalISO() {
   const d = new Date();
   return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0');
 }
+
+// ⭐ (2026-09-23 밤작업#356) 기기 시간대 가드
+//   모든 날짜(인보이스 발행일·PDF 파일명·매출일보·백업 폴더)는 이 기기의 로컬 시간을 따른다.
+//   기기 시간대가 시드니가 아니면 날짜가 하루 어긋나 같은 인보이스가 두 파일로 갈라진다.
+//   앱 시작 시 1회만 검사하고, 어긋날 때만 경고한다. (정상이면 아무것도 표시하지 않음)
+function checkDeviceTimezone() {
+  try {
+    const now = new Date();
+    // 이 기기의 로컬 날짜 vs 시드니 기준 날짜 비교
+    const sydney = now.toLocaleString('sv-SE', { timeZone: 'Australia/Sydney' }).slice(0, 10);
+    const local  = todayLocalISO();
+    if (sydney === local) return true;   // 정상
+    const tzName = (Intl.DateTimeFormat().resolvedOptions().timeZone) || '알 수 없음';
+    const msg = '⚠️ 이 기기의 시간대가 시드니와 다릅니다 (' + tzName + ')\n\n'
+      + '기기 날짜: ' + local + '   /   시드니 날짜: ' + sydney + '\n\n'
+      + '이대로 사용하면 인보이스 발행일·PDF 파일명·매출일보 날짜가 하루 어긋납니다.\n'
+      + 'Windows 설정 → 시간 및 언어 → 날짜 및 시간 에서\n'
+      + '표준 시간대를 (UTC+10:00) 캔버라, 멜버른, 시드니 로 변경한 뒤 새로고침하세요.';
+    console.error('[시간대 가드] ' + tzName + ' · 기기 ' + local + ' vs 시드니 ' + sydney);
+    setTimeout(function(){ try { alert(msg); } catch(_){} }, 1500);
+    return false;
+  } catch(_) { return true; }
+}
+try { checkDeviceTimezone(); } catch(_){}
 function toLocalISODate(input) {
   if (!input) return '';
   const s = String(input);
@@ -10114,7 +10138,10 @@ function dailyReportComputeRows(dateISO) {
           const dueDate = new Date(invDate.getTime());
           dueDate.setDate(dueDate.getDate() + days);   // 결제 기한
           const delayMs = todayCutoff.getTime() - dueDate.getTime();
-          const delayDays = Math.floor(delayMs / (86400000));
+          // ⭐ (2026-09-23 밤작업#356) 서머타임 대응 — 10/4 DST 전환을 사이에 두면
+          //   자정~자정 간격이 23시간(또는 25시간)이 되어 floor() 가 하루를 깎아먹음.
+          //   round() 로 바꾸면 ±1시간 오차가 흡수되어 연체일수가 항상 정확해짐.
+          const delayDays = Math.round(delayMs / 86400000);
           if (delayDays >= SEVERE_GRACE) {
             overdueSevere += unpaid;
             overdue += unpaid;
@@ -16396,9 +16423,10 @@ function viewStatement(params) {
       _payPool -= applied;
     });
     function _dateDiffDaysStmt(fromISO, toISO) {
+      // ⭐ (2026-09-23 밤작업#356) 서머타임 대응 — floor → round
       const df = new Date(fromISO + 'T00:00:00');
       const dt = new Date(toISO + 'T00:00:00');
-      return Math.floor((dt.getTime() - df.getTime()) / 86400000);
+      return Math.round((dt.getTime() - df.getTime()) / 86400000);
     }
     // 경고/심각 합계
     let _overdueMildTotal = 0, _overdueSevereTotal = 0;
@@ -16577,7 +16605,8 @@ function viewStatement(params) {
           const dueDate = new Date(invDate.getTime());
           dueDate.setDate(dueDate.getDate() + daysT);
           const delayMs = overdueCutoff.getTime() - dueDate.getTime();
-          const delayDays = Math.floor(delayMs / 86400000);
+          // ⭐ (2026-09-23 밤작업#356) 서머타임 대응 — floor → round
+          const delayDays = Math.round(delayMs / 86400000);
           if (delayDays >= SEVERE_GRACE) { overdueSevereAsOf += unpaid; overdue += unpaid; }
           else if (delayDays >= WARN_GRACE) { overdueMildAsOf += unpaid; overdue += unpaid; }
         }
@@ -16967,7 +16996,8 @@ window.shareStatementKakao = function(cid, dateFrom, dateTo) {
         const invDate = new Date(inv.dateISO + 'T00:00:00');
         const dueDate = new Date(invDate.getTime());
         dueDate.setDate(dueDate.getDate() + daysT);
-        const delayDays = Math.floor((cutoff.getTime() - dueDate.getTime()) / 86400000);
+        // ⭐ (2026-09-23 밤작업#356) 서머타임 대응 — floor → round
+        const delayDays = Math.round((cutoff.getTime() - dueDate.getTime()) / 86400000);
         if (delayDays >= SEVERE_GRACE) { overdueSevere += unpaid; overdue += unpaid; }
         else if (delayDays >= WARN_GRACE) { overdueMild += unpaid; overdue += unpaid; }
       }
