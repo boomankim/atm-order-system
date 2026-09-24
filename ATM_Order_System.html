@@ -549,6 +549,14 @@ const CUT_DISPLAY = {
 };
 let DB = null;
 
+// ⭐ (2026-09-24 밤작업#357) DB 접근자 — 별도 창(팝업)용
+//   DB 는 let 으로 선언돼 있어 window.DB 로는 접근이 안 된다.
+//   (함수 선언과 달리 let/const 는 window 속성이 되지 않음)
+//   팝업 창은 opener(부모 창)를 통해 데이터를 읽어야 하므로 접근자를 노출한다.
+//   DB 는 Firebase 동기화 때마다 통째로 교체되므로 · 복사본이 아니라
+//   호출 시점의 최신 참조를 돌려주는 함수여야 한다.
+window.getLiveDB = function() { return DB; };
+
 // =====================================================================
 //  🔥 FIREBASE CONFIG — 아래 값을 Firebase 콘솔에서 복사해서 붙여넣으세요
 // =====================================================================
@@ -3481,7 +3489,21 @@ window.openPriceCompareWindow = function() {
   // 팝업 내부 로직 — opener(부모 창)의 DB·함수를 직접 사용
   win._custId = custId;
   win._sel = '';
+  // ⭐ (2026-09-24 밤작업#357) 오류 가드 — 팝업 안에서 예외가 나면 화면이 조용히 먹통이 된다.
+  //   (검색창에 입력해도 아무 반응 없음) 예외를 화면에 표시해 즉시 알 수 있게 한다.
   win.renderBody = function() {
+    try { win._renderBodyInner(); }
+    catch(e) {
+      console.error('[단가비교 별도창] renderBody 오류:', e);
+      try {
+        doc.getElementById('body').innerHTML =
+          '<div class="hint" style="color:#C62828;">⚠️ 표시 오류<br><span style="font-size:11px;">' +
+          String(e && e.message || e).replace(/</g,'&lt;') +
+          '<br><br>창을 닫고 다시 열어보세요. 계속되면 사장님께 알려주세요.</span></div>';
+      } catch(_){}
+    }
+  };
+  win._renderBodyInner = function() {
     const P = window; // 부모 창 (openPriceCompareWindow 클로저)
     const b = doc.getElementById('body');
     const period = doc.getElementById('per').value;
@@ -3503,7 +3525,7 @@ window.openPriceCompareWindow = function() {
     }
     // 검색 → 매칭 품목
     if (search) {
-      const ms = (P.DB.products || []).filter(function(p) {
+      const ms = ((P.getLiveDB() || {}).products || []).filter(function(p) {
         if (!p || p.active === false) return false;
         return ((p.name||'').toLowerCase().indexOf(search) >= 0) || ((p.brand||'').toLowerCase().indexOf(search) >= 0);
       }).slice(0, 30);
@@ -3527,7 +3549,7 @@ window.openPriceCompareWindow = function() {
     }
     // 선택된 품목 상세
     if (win._sel) {
-      const p = (P.DB.products || []).find(function(x) { return x.id === win._sel; });
+      const p = ((P.getLiveDB() || {}).products || []).find(function(x) { return x.id === win._sel; });
       if (!p) { win._sel = ''; win.renderBody(); return; }
       win.renderDetail(p, cutoff);
     }
@@ -13524,7 +13546,31 @@ async function updateIssuedInvoice(orderId) {
 }
 window.updateIssuedInvoice = updateIssuedInvoice;
 
+// ⭐ (2026-09-24 밤작업#358) 발행 진행 중 플래그 래퍼
+//   발행은 [번호 채번(transaction) → Firebase 저장 → PDF 자동 저장] 순서로 진행된다.
+//   이 도중에 새 버전 자동 새로고침이 걸리면 번호만 쓰이고 저장이 끊겨 결번이 난다.
+//   래퍼에서 플래그를 세우고 finally 로 반드시 내려서, 중간에 어떤 경로로 빠져나가도 남지 않게 한다.
+//   만약의 경우(예외·무한대기)를 대비해 90초 후 자동 해제 타이머도 둔다.
 async function issueInvoice(orderId) {
+  window._atmIssuingInvoice = true;
+  if (window._atmIssuingTimer) clearTimeout(window._atmIssuingTimer);
+  window._atmIssuingTimer = setTimeout(function() {
+    if (window._atmIssuingInvoice) {
+      console.warn('[발행 플래그] 90초 경과 · 자동 해제');
+      window._atmIssuingInvoice = false;
+    }
+  }, 90000);
+  try {
+    return await _issueInvoiceInner(orderId);
+  } finally {
+    window._atmIssuingInvoice = false;
+    if (window._atmIssuingTimer) { clearTimeout(window._atmIssuingTimer); window._atmIssuingTimer = null; }
+    // 발행이 끝났으니 · 보류 중이던 업데이트 배너를 다시 판정 (이제 카운트다운 허용 가능)
+    try { if (typeof window._atmRefreshUpdateBanner === 'function') window._atmRefreshUpdateBanner(); } catch(_){}
+  }
+}
+
+async function _issueInvoiceInner(orderId) {
   const o = DB.orders.find(x => x.id === orderId);
   if (!o) { alert('주문을 찾을 수 없습니다.'); return; }
   // ⭐ (2026-07-28) 방어 2/3: customerId/orderNo 없으면 발행 차단 (orphan 인보이스 원천 봉쇄)
@@ -20799,11 +20845,78 @@ if (FIREBASE_READY && DB_REF) {
     return (location.hash || '').startsWith('#admin');
   }
 
-  function showUpdateBanner() {
-    if (document.getElementById('atmUpdateBanner')) return;
-    if (_isAdminRoute()) return;  // admin 작업 중에는 배너 숨김
+  // ⭐ (2026-09-24 밤작업#358) 작업 중 자동 새로고침 보호
+  //   기존: #admin 화면에서만 배너를 숨겼다 → 다른 화면은 15초 후 강제 리로드.
+  //   문제: 계근·인보이스 준비 화면의 단가·중량 입력칸은 onchange(칸을 벗어날 때) 저장이라
+  //         커서가 칸 안에 있는 값은 아직 저장 전 → 강제 리로드되면 조용히 사라진다.
+  //         발행 도중이면 번호만 채번되고 저장이 끊겨 결번까지 난다.
+  //   대책: 아래 화면·상태에서는 카운트다운 없이 · 수동 버튼 배너만 표시.
+  const _BUSY_ROUTES = ['admin', 'weigh', 'invoicePrep', 'office', 'creditIssue'];
+  function _currentRouteName() {
+    return (location.hash || '').replace(/^#/, '').split('?')[0] || 'home';
+  }
+  function _isBusyNow() {
+    if (window._atmIssuingInvoice) return true;   // 인보이스 발행 진행 중
+    if (window._backupInProgress) return true;    // 전체 백업 진행 중 (#349)
+    return _BUSY_ROUTES.indexOf(_currentRouteName()) >= 0;
+  }
+
+  // ⭐ (2026-09-24 밤작업#358) 작업 중 전용 배너 — 카운트다운 없음 · 직원이 직접 눌러야 새로고침
+  function showUpdateBannerBusy() {
+    const existing = document.getElementById('atmUpdateBanner');
+    if (existing) {
+      if (existing.dataset.mode === 'busy') return;   // 이미 작업중 배너
+      // 카운트다운 배너가 떠 있는 상태에서 작업 화면으로 들어왔다 → 타이머 즉시 중단 후 교체
+      if (window._atmUpdateTimer) { clearInterval(window._atmUpdateTimer); window._atmUpdateTimer = null; }
+      existing.remove();
+    }
     const bar = document.createElement('div');
     bar.id = 'atmUpdateBanner';
+    bar.dataset.mode = 'busy';
+    bar.style.cssText =
+      'position:fixed; top:0; left:0; right:0; z-index:99999;' +
+      'background:linear-gradient(90deg,#B71C1C,#E53935); color:#fff; padding:12px 18px;' +
+      'font-size:14px; font-weight:700; text-align:center;' +
+      'box-shadow:0 4px 12px rgba(0,0,0,0.25); font-family:inherit;' +
+      'display:flex; align-items:center; justify-content:center; gap:14px;';
+    bar.innerHTML =
+      '<span style="flex:1;">🔴 <b>새 버전 있음</b> — 작업 중이라 자동 새로고침을 막았습니다. ' +
+      '<span style="font-weight:400; opacity:0.95;">지금 하던 건 마치고 눌러주세요.</span></span>' +
+      '<button id="atmUpdateNowBusy" style="background:#fff; color:#B71C1C; border:none; border-radius:5px;' +
+      'padding:7px 16px; font-size:13px; font-weight:700; cursor:pointer;">🔄 지금 새로고침</button>' +
+      '<button id="atmUpdateDismissBusy" style="background:rgba(255,255,255,0.22); color:#fff;' +
+      'border:none; border-radius:4px; padding:7px 12px; font-size:12px; cursor:pointer;">나중에</button>';
+    const doReload = () => {
+      navigator.serviceWorker.getRegistration().then(reg => {
+        if (reg && reg.waiting) reg.waiting.postMessage('SKIP_WAITING');
+        setTimeout(() => location.reload(), 500);
+      }).catch(() => location.reload());
+    };
+    bar.querySelector('#atmUpdateNowBusy').addEventListener('click', doReload);
+    bar.querySelector('#atmUpdateDismissBusy').addEventListener('click', e => {
+      e.stopPropagation();
+      bar.remove();
+    });
+    document.body.appendChild(bar);
+  }
+
+  // 현재 상태에 맞는 배너를 다시 판정 — 작업이 끝나면 카운트다운 배너로 승격
+  window._atmRefreshUpdateBanner = function() {
+    if (!_atmPendingUpdate) return;
+    const existing = document.getElementById('atmUpdateBanner');
+    if (_isBusyNow()) { showUpdateBannerBusy(); return; }
+    // 작업 종료 → 작업중(빨강) 배너였다면 제거하고 정상 카운트다운 배너로 교체
+    if (existing && existing.dataset.mode === 'busy') existing.remove();
+    showUpdateBanner();
+  };
+
+  function showUpdateBanner() {
+    // ⭐ (2026-09-24 밤작업#358) 작업 중이면 카운트다운 배너 대신 수동 배너
+    if (_isBusyNow()) { showUpdateBannerBusy(); return; }
+    if (document.getElementById('atmUpdateBanner')) return;
+    const bar = document.createElement('div');
+    bar.id = 'atmUpdateBanner';
+    bar.dataset.mode = 'auto';
     // ⭐ (2026-07-22) 배너 더 크고 강조 + 자동 카운트다운 (15초 후 자동 리로드)
     bar.style.cssText =
       'position:fixed; top:0; left:0; right:0; z-index:99999;' +
@@ -20844,11 +20957,22 @@ if (FIREBASE_READY && DB_REF) {
     });
     // 카운트다운 타이머 — 15초 후 자동 리로드
     window._atmUpdateTimer = setInterval(() => {
+      // ⭐ (2026-09-24 밤작업#358) 카운트다운 중에 작업이 시작되면 즉시 중단
+      //   (예: 카운트다운 도중 직원이 계근·인보이스 준비 화면으로 이동 · 발행 버튼 클릭)
+      if (_isBusyNow()) {
+        clearInterval(window._atmUpdateTimer);
+        window._atmUpdateTimer = null;
+        console.info('[PWA] 작업 시작 감지 — 자동 새로고침 취소 · 수동 배너로 전환');
+        bar.remove();
+        showUpdateBannerBusy();
+        return;
+      }
       secondsLeft--;
       const cd = document.getElementById('atmUpdateCountdown');
       if (cd) cd.textContent = secondsLeft;
       if (secondsLeft <= 0) {
         clearInterval(window._atmUpdateTimer);
+        window._atmUpdateTimer = null;
         doReload();
       }
     }, 1000);
@@ -20864,9 +20988,11 @@ if (FIREBASE_READY && DB_REF) {
     window.location.reload();
   });
 
-  // 해시 변경 시: admin 벗어났고 업데이트 대기 중이면 배너 재시도
+  // ⭐ (2026-09-24 밤작업#358) 화면 이동마다 배너 모드 재판정
+  //   작업 화면 진입 → 빨간 수동 배너 (카운드다운 취소)
+  //   작업 화면 이탈 → 파란 카운트다운 배너로 승격
   window.addEventListener('hashchange', () => {
-    if (_atmPendingUpdate && !_isAdminRoute()) showUpdateBanner();
+    if (_atmPendingUpdate) window._atmRefreshUpdateBanner();
   });
 
   // artifact preview(claudeusercontent.com) / file:// 등 비-production 환경에서는 SW 등록을 스킵
