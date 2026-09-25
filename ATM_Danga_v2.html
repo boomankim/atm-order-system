@@ -1288,17 +1288,44 @@ function renderPrices(){
   // 최근 매입일이 최신인 품목부터 (같은 날짜면 품목 이름순)
   pids.sort((a,b)=>((book[b][0].date||'').localeCompare(book[a][0].date||''))
     || productName(a).localeCompare(productName(b),'ko'));
-  box.innerHTML='<table class="simple"><tr><th>품목</th><th>최근 매입</th><th class="right">$/kg</th><th class="right">직전 대비</th></tr>'
+  box.innerHTML='<div class="muted small" style="margin-bottom:6px;">품목을 누르면 매입처별 최근 단가(1개월 이내)가 펼쳐집니다.</div>'
+    +'<table class="simple"><tr><th>품목</th><th>최근 매입</th><th class="right">$/kg</th><th class="right">직전 대비</th></tr>'
     + pids.map(pid=>{
       const h=book[pid]; const last=h[0]; const prev=h[1];
       let diff='';
       if(prev && prev.price){ const d=last.price-prev.price;
         diff = d===0?'—':('<span class="'+(d>0?'up':'down')+'">'+(d>0?'▲':'▼')+' '+fmt(Math.abs(d))+'</span>'); }
-      return '<tr><td>'+esc(productName(pid))+'</td><td class="small">'+esc(last.date||'')+'<br><span class="muted">'+esc(last.sup||'')+'</span></td>'
+      return '<tr data-pid="'+esc(pid)+'" style="cursor:pointer;"><td>'+esc(productName(pid))+'</td><td class="small">'+esc(last.date||'')+'<br><span class="muted">'+esc(last.sup||'')+'</span></td>'
         +'<td class="right pricechip">'+fmt(last.price)+'</td><td class="right small">'+diff+'</td></tr>';
     }).join('')+'</table>';
 }
 $('#priceSearch').addEventListener('input', renderPrices);
+// 품목 행 클릭 → 매입 이력 펼치기/접기
+$('#priceList').addEventListener('click', e=>{
+  const tr=e.target.closest('tr[data-pid]'); if(!tr) return;
+  const next=tr.nextElementSibling;
+  if(next && next.classList.contains('pricedetail')){ next.remove(); return; }
+  // 다른 열린 상세는 닫기
+  $('#priceList').querySelectorAll('.pricedetail').forEach(x=>x.remove());
+  // 최근 1개월 이내 기록에서 매입처별 최신 1건씩
+  const all=buildPriceBook()[tr.dataset.pid]||[];   // 이미 날짜 내림차순
+  const cd=new Date(); cd.setDate(cd.getDate()-30);
+  const cutoff=cd.getFullYear()+'-'+String(cd.getMonth()+1).padStart(2,'0')+'-'+String(cd.getDate()).padStart(2,'0');
+  const bySup={};
+  all.forEach(x=>{ const s=x.sup||'?';
+    if((x.date||'')>=cutoff && !bySup[s]) bySup[s]=x; });
+  const h=Object.values(bySup).sort((a,b)=>(a.price||0)-(b.price||0)); // 싼 곳부터
+  const det=document.createElement('tr');
+  det.className='pricedetail';
+  det.innerHTML='<td colspan="4" style="background:var(--bg);border-radius:10px;padding:10px 12px;">'
+    + (h.length ? h.map(x=>'<div style="display:flex;gap:10px;font-size:12.5px;padding:3px 0;">'
+      +'<span style="color:var(--muted);">'+esc(x.date||'')+'</span>'
+      +'<span style="flex:1;">'+esc(x.sup||'')+'</span>'
+      +'<b>'+fmt(x.price)+'</b></div>').join('')
+      : '<div class="muted small">최근 1개월 이내 매입 기록이 없습니다.</div>')
+    +'</td>';
+  tr.after(det);
+});
 
 function renderLearn(){
   const arr=invArr();
