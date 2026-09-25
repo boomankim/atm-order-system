@@ -1283,10 +1283,12 @@ function renderPrices(){
   // 2단계 방식: 검색 → 품목마스터 목록 → 품목 클릭 → 매입처별 최근 단가 펼침
   const q=normText($('#priceSearch').value||'');
   const box=$('#priceList');
-  const list=MASTER.filter(p=>p && p.name && (!q || normText(p.name).indexOf(q)>=0))
+  const list=MASTER.filter(p=>p && p.name
+      && p.cut!=='작업육' && p.cut!=='가공육'          // 매입 대상이 아닌 분류는 제외
+      && (!q || normText(p.name).indexOf(q)>=0))
     .sort((a,b)=>a.name.localeCompare(b.name,'ko'));
   if(!list.length){ box.innerHTML='<span class="muted">검색 결과 없음</span>'; return; }
-  box.innerHTML='<div class="muted small" style="margin-bottom:6px;">품목을 누르면 매입처별 최근 단가(1개월 이내)가 펼쳐집니다.</div>'
+  box.innerHTML='<div class="muted small" style="margin-bottom:6px;">품목을 누르면 매입처별 최근 단가(2개월 이내, 매입처당 최대 3건)가 펼쳐집니다.</div>'
     +'<table class="simple">'
     + list.map(p=>'<tr data-pid="'+esc(p.id)+'" style="cursor:pointer;">'
       +'<td style="padding:11px 6px;">'+esc(p.name)+'</td>'
@@ -1301,22 +1303,26 @@ $('#priceList').addEventListener('click', e=>{
   if(next && next.classList.contains('pricedetail')){ next.remove(); return; }
   // 다른 열린 상세는 닫기
   $('#priceList').querySelectorAll('.pricedetail').forEach(x=>x.remove());
-  // 최근 1개월 이내 기록에서 매입처별 최신 1건씩
+  // 최근 2개월 이내 모든 매입 기록 — 같은 매입처는 최근 3건까지
   const all=buildPriceBook()[tr.dataset.pid]||[];   // 이미 날짜 내림차순
-  const cd=new Date(); cd.setDate(cd.getDate()-30);
+  const cd=new Date(); cd.setDate(cd.getDate()-60);
   const cutoff=cd.getFullYear()+'-'+String(cd.getMonth()+1).padStart(2,'0')+'-'+String(cd.getDate()).padStart(2,'0');
   const bySup={};
   all.forEach(x=>{ const s=x.sup||'?';
-    if((x.date||'')>=cutoff && !bySup[s]) bySup[s]=x; });
-  const h=Object.values(bySup).sort((a,b)=>(a.price||0)-(b.price||0)); // 싼 곳부터
+    if((x.date||'')>=cutoff){ (bySup[s]=bySup[s]||[]); if(bySup[s].length<3) bySup[s].push(x); } });
+  // 매입처 그룹을 최신 단가가 싼 곳부터
+  const groups=Object.entries(bySup).sort((a,b)=>(a[1][0].price||0)-(b[1][0].price||0));
   const det=document.createElement('tr');
   det.className='pricedetail';
   det.innerHTML='<td colspan="2" style="background:var(--bg);border-radius:10px;padding:10px 12px;">'
-    + (h.length ? h.map(x=>'<div style="display:flex;gap:10px;font-size:12.5px;padding:3px 0;">'
-      +'<span style="color:var(--muted);">'+esc(x.date||'')+'</span>'
-      +'<span style="flex:1;">'+esc(x.sup||'')+'</span>'
-      +'<b>'+fmt(x.price)+'</b></div>').join('')
-      : '<div class="muted small">최근 1개월 이내 매입 기록이 없습니다.</div>')
+    + (groups.length ? groups.map(([s,arr],gi)=>
+        '<div style="'+(gi>0?'border-top:1px solid var(--line);margin-top:6px;padding-top:6px;':'')+'">'
+        + arr.map((x,i)=>'<div style="display:flex;gap:10px;font-size:12.5px;padding:3px 0;">'
+          +'<span style="flex:1;'+(i>0?'color:var(--muted);':'font-weight:700;')+'">'+(i===0?esc(s):'')+'</span>'
+          +'<span style="color:var(--muted);">'+esc(x.date||'')+'</span>'
+          +'<b style="width:52px;text-align:right;'+(i>0?'font-weight:500;color:var(--ink2);':'')+'">'+fmt(x.price)+'</b></div>').join('')
+        +'</div>').join('')
+      : '<div class="muted small">최근 2개월 이내 매입 기록이 없습니다.</div>')
     +'</td>';
   tr.after(det);
 });
