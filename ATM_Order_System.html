@@ -11957,6 +11957,9 @@ function renderCustomerSearchSelect(opts) {
   //      칸에 "MEAT4U (MU0085)" 같은 '이름 (코드)' 형태가 들어있는데 그 문자열 전체로 검색하면
   //      매칭이 0건이 되어 "일치하는 거래처 없음" 이 잘못 떠 버린다.
   //      클릭 시점엔 전체 선택 상태(=곧 덮어쓸 예정)이므로 기본 후보 목록을 보여주는 게 맞다.
+  //   ⭐ (2026-09-25 밤작업#360) onfocus 만으로는 부족 → mousedown/mouseup 조합 필수
+  html += ' onmousedown="acSelDown(this)"';
+  html += ' onmouseup="return acSelUp(this)"';
   html += ' onfocus="this.select(); custAcInput(\'' + selId + '\', \'\')"';
   html += ' onblur="setTimeout(function(){custAcClose(\'' + selId + '\');}, 180)">';
   // 자동완성 리스트박스 (검색창 바로 밑, absolute positioning)
@@ -12008,6 +12011,25 @@ function custAcSearch(query, includeInactive) {
 }
 
 // 입력 이벤트 → 리스트 갱신·표시
+// ⭐ (2026-09-25 밤작업#360) 클릭 시 전체선택 · 확실하게
+//   #359 에서 onfocus="this.select()" 만 넣었더니 실제로는 일부만 선택되는 문제가 있었다.
+//   원인: 클릭 한 번은 [mousedown → focus → mouseup] 순서로 일어난다.
+//        onfocus 에서 전체 선택을 해도 · 그 뒤 mouseup 이 커서 위치를 다시 잡으면서
+//        선택이 풀리거나(커서만 남음) 마우스가 1~2px 움직이면 그만큼만 선택된다.
+//   대책: mousedown 시점에 "원래 포커스가 있었는지" 기록해 두고,
+//        포커스가 없던 상태에서의 클릭이면 mouseup 에서 전체선택을 다시 걸고 기본동작을 막는다.
+//        이미 포커스가 있던 칸이면 그냥 둔다 → 드래그로 일부만 고르는 것도 정상 동작.
+window.acSelDown = function(el) {
+  try { el.dataset.hadFocus = (document.activeElement === el) ? '1' : '0'; } catch(_){}
+};
+window.acSelUp = function(el) {
+  try {
+    if (el.dataset.hadFocus === '1') return true;   // 이미 포커스 → 드래그 선택 허용
+    el.select();
+    return false;                                   // 기본동작(커서 재배치) 차단
+  } catch(_) { return true; }
+};
+
 window.custAcInput = function(selId, query) {
   const sel = document.getElementById(selId);
   const listBox = document.getElementById(selId + '_ac');
