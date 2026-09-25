@@ -11947,7 +11947,17 @@ function renderCustomerSearchSelect(opts) {
   html += ' style="width:100%;padding:6px 9px;border:1px solid var(--line);border-radius:4px;font-size:13px;margin-bottom:5px;box-sizing:border-box;"';
   html += ' oninput="custAcInput(\'' + selId + '\', this.value)"';
   html += ' onkeydown="custAcKey(event, \'' + selId + '\')"';
-  html += ' onfocus="custAcInput(\'' + selId + '\', this.value)"';
+  // ⭐ (2026-09-25 밤작업#359) 클릭 시 전체선택 — 품목 검색창(prodAc)과 동일 동작으로 통일
+  //   기존: 거래처를 바꾸려면 기존 이름을 백스페이스로 일일이 지워야 했음
+  //         (긴 상호는 40번 이상 눌러야 함 → 입금 여러 건 연속 등록 시 매우 불편)
+  //   변경: 칸을 클릭하면 기존 내용 전체 선택 → 바로 타이핑하면 덮어쓰이고 후보 리스트 표시
+  //   hover(마우스 올리기)가 아니라 click 기준인 이유: 마우스가 지나가기만 해도 선택되면
+  //         [등록] 버튼으로 이동하다 실수로 내용이 날아갈 수 있고 · 태블릿에는 hover 자체가 없음
+  //   ⚠️ 두 번째 인자를 this.value 가 아니라 '' 로 넘기는 이유:
+  //      칸에 "MEAT4U (MU0085)" 같은 '이름 (코드)' 형태가 들어있는데 그 문자열 전체로 검색하면
+  //      매칭이 0건이 되어 "일치하는 거래처 없음" 이 잘못 떠 버린다.
+  //      클릭 시점엔 전체 선택 상태(=곧 덮어쓸 예정)이므로 기본 후보 목록을 보여주는 게 맞다.
+  html += ' onfocus="this.select(); custAcInput(\'' + selId + '\', \'\')"';
   html += ' onblur="setTimeout(function(){custAcClose(\'' + selId + '\');}, 180)">';
   // 자동완성 리스트박스 (검색창 바로 밑, absolute positioning)
   html += '<div id="' + listId + '" data-ac-active="-1"';
