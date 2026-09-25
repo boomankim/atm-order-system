@@ -345,6 +345,8 @@
 
   @media print {
     .nav, .summary-bar, .btn, .btn-row, .search-bar, .no-print { display: none !important; }
+    /* ⭐ (2026-09-26 밤작업#361) 내부 전용(우리만 보는) 요소 — 인쇄에 절대 나오면 안 됨 */
+    .internal-only { display: none !important; }
     /* ⭐ (2026-08-06) 동기화·업데이트 배너·pill — 인쇄에 절대 나오면 안 됨 */
     #sync-banner, #atmUpdateBanner, #atmUpdateAnim, #sync-pill-anim, .atm-info-banner { display: none !important; }
     body { background: #fff; }
@@ -16805,7 +16807,13 @@ function viewStatement(params) {
       '</div>' +
       '<div style="margin-top:10px;"><button class="btn sm" onclick="refreshStatement()">조회</button></div>' +
     '</div>' +
+    // ⭐ (2026-09-26 밤작업#361) 내부 메모 카드 — 스테이트먼트 위 · print area 바깥
+    //   internal-only : 인쇄 숨김 + PDF 캡처 직전 DOM 제거 대상 표식
+    '<div class="card internal-only no-print" id="stmtNotesBox" style="display:none; margin-bottom:12px; background:#FAF7F2; border-left:4px solid #6D4C41;"></div>' +
     '<div class="card" id="stmtBody">' + (preCid ? buildStatement(preCid, firstDate, today) : '<p style="color:var(--muted); padding:8px;">거래처와 기간을 선택하고 [조회]를 누르세요.</p>') + '</div>';
+
+  // 진입 시 거래처가 이미 선택돼 있으면 메모 즉시 표시
+  if (preCid) { try { renderStmtNotes(preCid); } catch(_){} }
 
   // ⭐ (2026-08-24 v3) 스테이트먼트 진입 · body 에 마커 클래스 · 인쇄 CSS 적용
   try { document.body.classList.add('stmt-print-mode'); } catch(_){}
@@ -16829,8 +16837,133 @@ function viewStatement(params) {
     const to = document.getElementById('stmtTo').value || today;
     if (!cid) { alert('거래처를 선택하세요.'); return; }
     document.getElementById('stmtBody').innerHTML = buildStatement(cid, from, to);
+    // ⭐ (2026-09-26 밤작업#361) 조회한 거래처의 내부 메모 갱신
+    try { renderStmtNotes(cid); } catch(_){}
   };
 }
+
+// =========================================================================
+//  ⭐ (2026-09-26 밤작업#361) 거래내역서 · 거래처 내부 메모 (우리만 보는 참고용)
+//    저장: DB.customers[].internalNotes = [{ id, text, createdAt, pinned }]
+//          거래처에 붙여 두므로 거래처 삭제 시 함께 사라지고 · 부분 저장이 가능하다.
+//    노출 차단 3중 — 거래처에게 절대 안 보여야 하므로 한 겹으로는 부족하다:
+//      ① 위치   : #statementPrintArea 바깥에 별도 카드 → PDF 캡처 대상에서 원천 제외
+//      ② 인쇄   : .internal-only / .no-print → @media print 에서 숨김
+//      ③ PDF    : sendStatementPDF 에서 캡처 직전 .internal-only 를 DOM 에서 제거
+//    ③이 핵심 보험이다. .no-print 는 @media print 전용이라 html2canvas(화면 렌더)
+//    에서는 그대로 찍힌다 → 인쇄엔 안 나오는데 PDF엔 찍히는 최악의 사고를 막는다.
+// =========================================================================
+function _stmtNotesOf(cust) {
+  if (!cust) return [];
+  if (!Array.isArray(cust.internalNotes)) cust.internalNotes = [];
+  return cust.internalNotes;
+}
+function _stmtNotesSave(cid) {
+  saveLocalDB();
+  try { saveEntityField('customers', cid, 'internalNotes'); } catch(e) { console.warn('내부메모 저장 실패:', e); }
+}
+
+window.renderStmtNotes = function(cid) {
+  const box = document.getElementById('stmtNotesBox');
+  if (!box) return;
+  const cust = (DB.customers || []).find(function(c){ return c && c.id === cid; });
+  if (!cust) { box.style.display = 'none'; box.innerHTML = ''; return; }
+  box.style.display = '';
+  const notes = _stmtNotesOf(cust).slice().sort(function(a, b) {
+    if (!!b.pinned !== !!a.pinned) return b.pinned ? 1 : -1;   // 고정 먼저
+    return (b.createdAt || '').localeCompare(a.createdAt || '');  // 최신순
+  });
+  let h = '';
+  h += '<div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap; margin-bottom:8px;">'
+     +   '<span style="font-size:13px; font-weight:700; color:#5C4033;">🔒 내부 메모</span>'
+     +   '<span style="font-size:11px; color:#8D6E63; background:#FFF3E0; border:1px solid #FFCC80; border-radius:10px; padding:1px 8px;">거래처에게 안 보임 · 인쇄·PDF 제외</span>'
+     +   '<span style="flex:1;"></span>'
+     +   '<span style="font-size:11px; color:var(--muted);">' + notes.length + '건</span>'
+     + '</div>';
+  h += '<div style="display:flex; gap:6px; margin-bottom:' + (notes.length ? '10px' : '0') + ';">'
+     +   '<input type="text" id="stmtNoteInput" placeholder="메모 입력 후 Enter (예: 결제 항상 늦음 · 사장 바뀜)" '
+     +     'onkeydown="if(event.key===\'Enter\'){event.preventDefault(); addStmtNote(\'' + cid + '\');}" '
+     +     'style="flex:1; padding:6px 9px; border:1px solid #D7CCC8; border-radius:4px; font-size:13px;">'
+     +   '<button class="btn sm" style="background:#6D4C41; color:#fff; white-space:nowrap;" onclick="addStmtNote(\'' + cid + '\')">+ 추가</button>'
+     + '</div>';
+  if (notes.length) {
+    h += '<div style="display:flex; flex-direction:column; gap:4px;">';
+    notes.forEach(function(n) {
+      const d = toLocalISODate(n.createdAt);
+      h += '<div style="display:flex; align-items:flex-start; gap:8px; padding:6px 9px; background:'
+         + (n.pinned ? '#FFF8E1' : '#fff') + '; border:1px solid ' + (n.pinned ? '#FFD54F' : '#E0E0E0')
+         + '; border-radius:4px; font-size:13px;">'
+         +   '<span style="flex:1; line-height:1.5; word-break:break-word;">'
+         +     (n.pinned ? '<span title="고정">📌 </span>' : '')
+         +     escapeHtmlSimple(n.text)
+         +   '</span>'
+         +   '<span style="font-size:11px; color:var(--muted); white-space:nowrap;">' + (d ? d.slice(5) : '') + '</span>'
+         +   '<button title="고정/해제" onclick="pinStmtNote(\'' + cid + '\',\'' + n.id + '\')" '
+         +     'style="background:none; border:none; cursor:pointer; font-size:13px; padding:0 2px;">' + (n.pinned ? '📌' : '📍') + '</button>'
+         +   '<button title="수정" onclick="editStmtNote(\'' + cid + '\',\'' + n.id + '\')" '
+         +     'style="background:none; border:none; cursor:pointer; font-size:13px; padding:0 2px;">✏️</button>'
+         +   '<button title="삭제" onclick="deleteStmtNote(\'' + cid + '\',\'' + n.id + '\')" '
+         +     'style="background:none; border:none; cursor:pointer; font-size:13px; padding:0 2px;">🗑</button>'
+         + '</div>';
+    });
+    h += '</div>';
+  }
+  box.innerHTML = h;
+};
+
+window.addStmtNote = function(cid) {
+  const input = document.getElementById('stmtNoteInput');
+  if (!input) return;
+  const text = (input.value || '').trim();
+  if (!text) { input.focus(); return; }
+  const cust = (DB.customers || []).find(function(c){ return c && c.id === cid; });
+  if (!cust) return;
+  _stmtNotesOf(cust).push({ id: uid('cnote'), text: text, createdAt: new Date().toISOString(), pinned: false });
+  _stmtNotesSave(cid);
+  try { auditLogAdd('내부메모 추가 · ' + cust.name + ' · "' + text.slice(0, 40) + (text.length > 40 ? '…' : '') + '"'); } catch(_){}
+  input.value = '';
+  renderStmtNotes(cid);
+  const again = document.getElementById('stmtNoteInput');
+  if (again) again.focus();
+};
+
+window.editStmtNote = function(cid, noteId) {
+  const cust = (DB.customers || []).find(function(c){ return c && c.id === cid; });
+  if (!cust) return;
+  const n = _stmtNotesOf(cust).find(function(x){ return x.id === noteId; });
+  if (!n) return;
+  const v = prompt('메모 수정:', n.text);
+  if (v === null) return;
+  const t = String(v).trim();
+  if (!t) return;
+  n.text = t;
+  _stmtNotesSave(cid);
+  try { auditLogAdd('내부메모 수정 · ' + cust.name + ' · "' + t.slice(0, 40) + '"'); } catch(_){}
+  renderStmtNotes(cid);
+};
+
+window.pinStmtNote = function(cid, noteId) {
+  const cust = (DB.customers || []).find(function(c){ return c && c.id === cid; });
+  if (!cust) return;
+  const n = _stmtNotesOf(cust).find(function(x){ return x.id === noteId; });
+  if (!n) return;
+  n.pinned = !n.pinned;
+  _stmtNotesSave(cid);
+  renderStmtNotes(cid);
+};
+
+window.deleteStmtNote = function(cid, noteId) {
+  const cust = (DB.customers || []).find(function(c){ return c && c.id === cid; });
+  if (!cust) return;
+  const arr = _stmtNotesOf(cust);
+  const n = arr.find(function(x){ return x.id === noteId; });
+  if (!n) return;
+  if (!confirm('메모를 삭제합니다.\n\n"' + n.text.slice(0, 60) + '"\n\n계속할까요?')) return;
+  cust.internalNotes = arr.filter(function(x){ return x.id !== noteId; });
+  _stmtNotesSave(cid);
+  try { auditLogAdd('내부메모 삭제 · ' + cust.name + ' · "' + n.text.slice(0, 40) + '"'); } catch(_){}
+  renderStmtNotes(cid);
+};
 
 // ⭐ (2026-08-17) 스테이트먼트 PDF 이메일/카톡 발송 · 하이브리드 (모바일 Web Share · 데스크톱 다운로드 + mailto)
 window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
@@ -16848,6 +16981,13 @@ window.sendStatementPDF = async function(cid, dateFrom, dateTo) {
   const container = document.createElement('div');
   container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;padding:20px;font-family:-apple-system,BlinkMacSystemFont,"맑은 고딕",sans-serif;';
   container.innerHTML = src.outerHTML;
+  // ⭐ (2026-09-26 밤작업#361) 내부 전용 요소는 PDF 에서 완전 제거 — 2중 안전장치
+  //   .no-print 는 @media print 전용이라 html2canvas(화면 렌더)에는 그대로 찍힌다.
+  //   메모 카드는 애초에 print area 바깥이라 여기 안 들어오지만,
+  //   누군가 나중에 print area 안으로 옮겨도 거래처에게 새어나가지 않게 막는다.
+  try {
+    container.querySelectorAll('.internal-only').forEach(function(el){ el.remove(); });
+  } catch(_){}
   document.body.appendChild(container);
   try {
     await new Promise(function(r){ setTimeout(r, 120); });
