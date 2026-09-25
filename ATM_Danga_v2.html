@@ -1280,24 +1280,18 @@ function buildPriceBook(){
   return book;
 }
 function renderPrices(){
+  // 2단계 방식: 검색 → 품목마스터 목록 → 품목 클릭 → 매입처별 최근 단가 펼침
   const q=normText($('#priceSearch').value||'');
-  const book=buildPriceBook();
-  const pids=Object.keys(book).filter(pid=>!q || normText(productName(pid)).indexOf(q)>=0);
   const box=$('#priceList');
-  if(!pids.length){ box.innerHTML='<span class="muted">'+(q?'검색 결과 없음':'매입 기록이 쌓이면 여기에 표시됩니다.')+'</span>'; return; }
-  // 최근 매입일이 최신인 품목부터 (같은 날짜면 품목 이름순)
-  pids.sort((a,b)=>((book[b][0].date||'').localeCompare(book[a][0].date||''))
-    || productName(a).localeCompare(productName(b),'ko'));
+  const list=MASTER.filter(p=>p && p.name && (!q || normText(p.name).indexOf(q)>=0))
+    .sort((a,b)=>a.name.localeCompare(b.name,'ko'));
+  if(!list.length){ box.innerHTML='<span class="muted">검색 결과 없음</span>'; return; }
   box.innerHTML='<div class="muted small" style="margin-bottom:6px;">품목을 누르면 매입처별 최근 단가(1개월 이내)가 펼쳐집니다.</div>'
-    +'<table class="simple"><tr><th>품목</th><th>최근 매입</th><th class="right">$/kg</th><th class="right">직전 대비</th></tr>'
-    + pids.map(pid=>{
-      const h=book[pid]; const last=h[0]; const prev=h[1];
-      let diff='';
-      if(prev && prev.price){ const d=last.price-prev.price;
-        diff = d===0?'—':('<span class="'+(d>0?'up':'down')+'">'+(d>0?'▲':'▼')+' '+fmt(Math.abs(d))+'</span>'); }
-      return '<tr data-pid="'+esc(pid)+'" style="cursor:pointer;"><td>'+esc(productName(pid))+'</td><td class="small">'+esc(last.date||'')+'<br><span class="muted">'+esc(last.sup||'')+'</span></td>'
-        +'<td class="right pricechip">'+fmt(last.price)+'</td><td class="right small">'+diff+'</td></tr>';
-    }).join('')+'</table>';
+    +'<table class="simple">'
+    + list.map(p=>'<tr data-pid="'+esc(p.id)+'" style="cursor:pointer;">'
+      +'<td style="padding:11px 6px;">'+esc(p.name)+'</td>'
+      +'<td class="right"><span class="cut" style="font-size:10.5px;background:var(--bg);border-radius:6px;padding:2px 7px;color:var(--ink2);">'+esc(p.cut||'')+'</span></td></tr>'
+    ).join('')+'</table>';
 }
 $('#priceSearch').addEventListener('input', renderPrices);
 // 품목 행 클릭 → 매입 이력 펼치기/접기
@@ -1317,7 +1311,7 @@ $('#priceList').addEventListener('click', e=>{
   const h=Object.values(bySup).sort((a,b)=>(a.price||0)-(b.price||0)); // 싼 곳부터
   const det=document.createElement('tr');
   det.className='pricedetail';
-  det.innerHTML='<td colspan="4" style="background:var(--bg);border-radius:10px;padding:10px 12px;">'
+  det.innerHTML='<td colspan="2" style="background:var(--bg);border-radius:10px;padding:10px 12px;">'
     + (h.length ? h.map(x=>'<div style="display:flex;gap:10px;font-size:12.5px;padding:3px 0;">'
       +'<span style="color:var(--muted);">'+esc(x.date||'')+'</span>'
       +'<span style="flex:1;">'+esc(x.sup||'')+'</span>'
