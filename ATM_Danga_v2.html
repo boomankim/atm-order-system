@@ -1284,7 +1284,7 @@ function renderPrices(){
   const q=normText($('#priceSearch').value||'');
   const box=$('#priceList');
   const list=MASTER.filter(p=>p && p.name
-      && p.cut!=='작업육' && p.cut!=='가공육'          // 매입 대상이 아닌 분류는 제외
+      && p.cut!=='작업육' && p.cut!=='가공육' && p.cut!=='공산품'   // 매입 대상이 아닌 분류는 제외
       && (!q || normText(p.name).indexOf(q)>=0))
     .sort((a,b)=>a.name.localeCompare(b.name,'ko'));
   if(!list.length){ box.innerHTML='<span class="muted">검색 결과 없음</span>'; return; }
@@ -1300,9 +1300,11 @@ $('#priceSearch').addEventListener('input', renderPrices);
 $('#priceList').addEventListener('click', e=>{
   const tr=e.target.closest('tr[data-pid]'); if(!tr) return;
   const next=tr.nextElementSibling;
-  if(next && next.classList.contains('pricedetail')){ next.remove(); return; }
-  // 다른 열린 상세는 닫기
+  if(next && next.classList.contains('pricedetail')){ next.remove(); tr.style.background=''; return; }
+  // 다른 열린 상세는 닫기 + 강조 해제
   $('#priceList').querySelectorAll('.pricedetail').forEach(x=>x.remove());
+  $('#priceList').querySelectorAll('tr[data-pid]').forEach(x=>x.style.background='');
+  tr.style.background='#EAF2FE';  // 선택한 품목 행 강조
   // 최근 2개월 이내 모든 매입 기록 — 같은 매입처는 최근 3건까지
   const all=buildPriceBook()[tr.dataset.pid]||[];   // 이미 날짜 내림차순
   const cd=new Date(); cd.setDate(cd.getDate()-60);
@@ -1314,14 +1316,17 @@ $('#priceList').addEventListener('click', e=>{
   const groups=Object.entries(bySup).sort((a,b)=>(a[1][0].price||0)-(b[1][0].price||0));
   const det=document.createElement('tr');
   det.className='pricedetail';
-  det.innerHTML='<td colspan="2" style="background:var(--bg);border-radius:10px;padding:10px 12px;">'
-    + (groups.length ? groups.map(([s,arr],gi)=>
-        '<div style="'+(gi>0?'border-top:1px solid var(--line);margin-top:6px;padding-top:6px;':'')+'">'
-        + arr.map((x,i)=>'<div style="display:flex;gap:10px;font-size:12.5px;padding:3px 0;">'
-          +'<span style="flex:1;'+(i>0?'color:var(--muted);':'font-weight:700;')+'">'+(i===0?esc(s):'')+'</span>'
-          +'<span style="color:var(--muted);">'+esc(x.date||'')+'</span>'
-          +'<b style="width:52px;text-align:right;'+(i>0?'font-weight:500;color:var(--ink2);':'')+'">'+fmt(x.price)+'</b></div>').join('')
-        +'</div>').join('')
+  det.innerHTML='<td colspan="2" style="background:#EAF2FE;border-left:4px solid var(--accent);border-radius:0 10px 10px 0;padding:12px 14px;">'
+    + (groups.length ? groups.map(([s,arr],gi)=>{
+        const cheap = gi===0 && groups.length>1;   // 제일 싼 매입처 그룹
+        return '<div style="'+(gi>0?'border-top:1px solid #CBDDF5;margin-top:7px;padding-top:7px;':'')+'">'
+        + arr.map((x,i)=>'<div style="display:flex;gap:10px;font-size:13px;padding:3px 0;align-items:baseline;">'
+          +'<span style="flex:1;'+(i>0?'color:var(--muted);':'font-weight:800;color:var(--accent);')+'">'
+            +(i===0?esc(s)+(cheap?' <span style="font-size:10.5px;background:var(--green);color:#fff;border-radius:99px;padding:1px 7px;font-weight:700;vertical-align:1px;">최저</span>':''):'')+'</span>'
+          +'<span style="color:var(--muted);font-size:12px;">'+esc(x.date||'')+'</span>'
+          +'<b style="width:56px;text-align:right;font-size:14px;'
+            +(i>0?'font-weight:500;color:var(--ink2);':(cheap?'color:var(--green);':'color:var(--ink);'))+'">'+fmt(x.price)+'</b></div>').join('')
+        +'</div>'; }).join('')
       : '<div class="muted small">최근 2개월 이내 매입 기록이 없습니다.</div>')
     +'</td>';
   tr.after(det);
