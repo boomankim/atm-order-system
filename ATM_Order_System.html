@@ -3111,247 +3111,15 @@ window.showPriceCompareTooltip = function(evt, productId) {
     document.addEventListener('click', closer);
   }, 100);
 };
-
 // ============================================================================
-// ⭐ (2026-09-22 밤작업#347) 단가 비교 · 플로팅 · 사이드 패널
+// ⭐ (2026-09-28 밤작업#366) 단가 비교 플로팅 사이드 패널(#347) 제거
 // ----------------------------------------------------------------------------
-// 인보이스 발행 화면 상단 [💰 단가 비교] 버튼 · 클릭 · 토글
-// - 세로 길고 · 가로 좁은 · 우측 · 고정 · 리사이즈 · 가능
-// - 현재 거래처의 · 최근 2개월(기본) 인보이스 이력 · 자동 표시
-// - 품목 검색 · 기간 필터 · 라인 클릭 → 인보이스 화면 · 강조
-// - localStorage · 크기 · 필터 · 기억
+//   인보이스 준비 화면의 [💰 단가 비교] 버튼과 함께 폐지했다.
+//   · 줄별 단가 조회 → [💡] 툴팁 (검색 없이 그 줄 품목 단가 즉시 · 조회 전용)
+//   · 전체 조회     → 사무실 메인 [💰 단가 비교] 별도 창 (품목별/거래처별 탭)
+//   패널은 브라우저 창 내부 div 라 옆 모니터로 못 옮기는 한계도 있었고,
+//   별도 창이 그 역할을 완전히 대체한다.
 // ============================================================================
-window.togglePriceComparePanel = function(customerId) {
-  // ⭐ (2026-09-23 밤작업#351) 별도 창이 이미 열려 있으면 · 그 창 포커스 (중복 방지)
-  try {
-    if (window._pcpWin && !window._pcpWin.closed) {
-      window._pcpWin.focus();
-      return;
-    }
-  } catch(_){}
-  let panel = document.getElementById('priceComparePanel');
-  if (panel) {
-    // 이미 열려있으면 닫기
-    panel.remove();
-    return;
-  }
-  // 새로 · 열 때 · 선택 · 초기화 · (검색 · 상태로 · 시작)
-  window._pcpSelectedProductId = '';
-  // localStorage에서 마지막 크기/필터 · 복원
-  const savedSize = (function(){
-    try { return JSON.parse(localStorage.getItem('priceComparePanelSize') || '{}'); }
-    catch(_) { return {}; }
-  })();
-  const savedFilter = localStorage.getItem('priceComparePanelFilter') || '2m';
-  const width = savedSize.width || 340;
-  const height = savedSize.height || (window.innerHeight - 40);
-  panel = document.createElement('div');
-  panel.id = 'priceComparePanel';
-  panel.dataset.custId = customerId || '';
-  panel.style.cssText =
-    'position:fixed; top:20px; right:20px; z-index:9998; ' +
-    'width:' + width + 'px; height:' + height + 'px; ' +
-    'background:#fff; border:2px solid var(--brand); border-radius:10px; ' +
-    'box-shadow:0 8px 32px rgba(0,0,0,0.25); ' +
-    'display:flex; flex-direction:column; overflow:hidden; ' +
-    'min-width:260px; min-height:300px; max-width:90vw; max-height:95vh; ' +
-    'resize:both;';
-  // 헤더 · 검색·필터·닫기
-  const cust = customerId ? DB.customers.find(c => c.id === customerId) : null;
-  const custName = cust ? cust.name : '(거래처 없음)';
-  panel.innerHTML =
-    '<div style="padding:10px 12px; background:var(--brand); color:#fff; display:flex; align-items:center; gap:6px; cursor:move;" id="pcpHeader">' +
-      '<span style="font-weight:700; font-size:14px; flex:1; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;" title="' + custName.replace(/"/g,'&quot;') + '">💰 단가 비교 <span style="font-weight:400; opacity:0.9;">· ' + custName + '</span></span>' +
-      '<button type="button" onclick="openPriceCompareWindow()" style="background:rgba(255,255,255,0.2); border:none; color:#fff; font-size:12px; cursor:pointer; padding:4px 8px; border-radius:4px; white-space:nowrap;" title="별도 창으로 열기 · 듀얼 모니터에서 옆 화면으로 이동 가능">↗ 새 창</button>' +
-      '<button type="button" onclick="togglePriceComparePanel()" style="background:none; border:none; color:#fff; font-size:20px; cursor:pointer; padding:0 4px; line-height:1;" title="닫기">×</button>' +
-    '</div>' +
-    '<div style="padding:8px 10px; background:#F8F8F8; border-bottom:1px solid var(--line); display:flex; gap:6px; align-items:center; flex-wrap:wrap;">' +
-      '<select id="pcpPeriod" onchange="renderPriceComparePanelBody()" style="padding:4px 6px; font-size:12px; border:1px solid var(--line); border-radius:4px;">' +
-        '<option value="1m"' + (savedFilter==='1m'?' selected':'') + '>최근 1개월</option>' +
-        '<option value="2m"' + (savedFilter==='2m'?' selected':'') + '>최근 2개월</option>' +
-        '<option value="3m"' + (savedFilter==='3m'?' selected':'') + '>최근 3개월</option>' +
-        '<option value="6m"' + (savedFilter==='6m'?' selected':'') + '>최근 6개월</option>' +
-        '<option value="all"' + (savedFilter==='all'?' selected':'') + '>전체</option>' +
-      '</select>' +
-      '<input type="text" id="pcpSearch" placeholder="🔍 품목 검색" oninput="renderPriceComparePanelBody()" style="flex:1; padding:4px 8px; font-size:12px; border:1px solid var(--line); border-radius:4px; min-width:100px;">' +
-    '</div>' +
-    '<div id="pcpBody" style="flex:1; overflow-y:auto; padding:8px 10px;"></div>';
-  document.body.appendChild(panel);
-  // 크기 변경 · 저장 (ResizeObserver)
-  try {
-    const ro = new ResizeObserver(function(entries) {
-      const rect = panel.getBoundingClientRect();
-      const size = { width: rect.width, height: rect.height };
-      try { localStorage.setItem('priceComparePanelSize', JSON.stringify(size)); } catch(_){}
-    });
-    ro.observe(panel);
-    panel._ro = ro;
-  } catch(_){}
-  // 드래그 · 이동 (헤더 잡고 이동)
-  (function _makeDraggable() {
-    const hdr = document.getElementById('pcpHeader');
-    if (!hdr) return;
-    let sx = 0, sy = 0, sl = 0, st = 0, dragging = false;
-    hdr.addEventListener('mousedown', function(e) {
-      if (e.target.tagName === 'BUTTON') return;
-      dragging = true;
-      sx = e.clientX; sy = e.clientY;
-      const rect = panel.getBoundingClientRect();
-      sl = rect.left; st = rect.top;
-      panel.style.right = 'auto';
-      panel.style.left = sl + 'px';
-      panel.style.top = st + 'px';
-      e.preventDefault();
-    });
-    document.addEventListener('mousemove', function(e) {
-      if (!dragging) return;
-      panel.style.left = (sl + e.clientX - sx) + 'px';
-      panel.style.top = Math.max(0, st + e.clientY - sy) + 'px';
-    });
-    document.addEventListener('mouseup', function() { dragging = false; });
-  })();
-  renderPriceComparePanelBody();
-};
-
-// ⭐ (2026-09-22 수정) 관리자 · 단가 · 비교 · 처럼 · 품목 · 찾으면 · 거래처별 · 단가 · 리스트 · 표시
-//   흐름:
-//   1) 검색창 · 비어있음 · → · 상단 · 안내 문구
-//   2) 검색어 · 입력 · → · 매칭 · 품목 · 리스트 · (클릭 · 대상)
-//   3) 품목 · 클릭 · → · 해당 품목 · 거래처별 · 단가 · + · 최근 사용 인보이스 · 표시
-//   4) 기간 필터: · 최근 X개월 · 이내 · 사용된 것만 · 표시
-window._pcpSelectedProductId = '';
-window.renderPriceComparePanelBody = function() {
-  const panel = document.getElementById('priceComparePanel');
-  if (!panel) return;
-  const body = document.getElementById('pcpBody');
-  const period = document.getElementById('pcpPeriod').value;
-  const search = (document.getElementById('pcpSearch').value || '').trim().toLowerCase();
-  // 필터 저장
-  try { localStorage.setItem('priceComparePanelFilter', period); } catch(_){}
-  // 기간 · 컷오프 · 날짜 계산
-  const now = new Date();
-  let cutoffDate = null;
-  if (period === '1m') { cutoffDate = new Date(now); cutoffDate.setMonth(cutoffDate.getMonth() - 1); }
-  else if (period === '2m') { cutoffDate = new Date(now); cutoffDate.setMonth(cutoffDate.getMonth() - 2); }
-  else if (period === '3m') { cutoffDate = new Date(now); cutoffDate.setMonth(cutoffDate.getMonth() - 3); }
-  else if (period === '6m') { cutoffDate = new Date(now); cutoffDate.setMonth(cutoffDate.getMonth() - 6); }
-  // ⭐ (2026-09-23 밤작업#354) 비교 대상 lastUsedDate 가 로컬 날짜라 cutoff 도 로컬로 맞춤 (UTC 쓰면 경계 1일 오차)
-  const cutoffStr = cutoffDate ? toLocalISODate(cutoffDate.toISOString()) : '';
-
-  // 검색 · 비어있음: · 안내 · 상태 (선택 · 품목 · 있으면 · 그것 · 자동 · 표시)
-  if (!search && !window._pcpSelectedProductId) {
-    body.innerHTML =
-      '<div style="color:var(--muted); padding:20px 8px; text-align:center; font-size:13px; line-height:1.6;">' +
-      '🔍 위 · 검색창에 · <b>품목 이름</b> · 입력<br>' +
-      '(예: · 삼겹살 · 등심 · knuckle)<br><br>' +
-      '<span style="font-size:11px;">품목 클릭 · → · 전체 거래처 · 단가 · 표시</span>' +
-      '</div>';
-    return;
-  }
-
-  // 검색어 · 있으면 · → · 매칭 · 품목 · 리스트 · + · 자동 · 확장
-  if (search) {
-    const matches = (DB.products || []).filter(function(p) {
-      if (!p || p.active === false) return false;
-      const nm = (p.name || '').toLowerCase();
-      const br = (p.brand || '').toLowerCase();
-      return nm.indexOf(search) >= 0 || br.indexOf(search) >= 0;
-    }).slice(0, 30);
-    if (matches.length === 0) {
-      body.innerHTML = '<div style="color:var(--muted); padding:20px; text-align:center; font-size:13px;">🔍 "' + search + '" · 매칭 · 품목 · 없음</div>';
-      return;
-    }
-    // 매칭 · 1개 · 이면 · 바로 · 상세
-    if (matches.length === 1) {
-      window._pcpSelectedProductId = matches[0].id;
-      _renderPcpProductDetail(body, matches[0], cutoffStr);
-      return;
-    }
-    // 여러 개 · 매칭 · → · 리스트 · (클릭 · 해서 · 상세)
-    let html = '<div style="font-size:11px; color:var(--muted); margin-bottom:6px;">' + matches.length + '개 · 매칭 · (클릭 · 시 · 거래처별 · 단가)</div>';
-    matches.forEach(function(p) {
-      const nm = (p.name || '?').replace(/</g,'&lt;');
-      const br = p.brand ? ' <span style="color:var(--muted); font-size:11px;">(' + p.brand.replace(/</g,'&lt;') + ')</span>' : '';
-      const cat = p.category ? '<div style="font-size:10px; color:var(--muted);">' + p.category.replace(/</g,'&lt;') + '</div>' : '';
-      html += '<div onclick="_pcpSelectProduct(\'' + p.id + '\')" style="padding:8px 10px; border:1px solid var(--line); border-radius:5px; margin-bottom:5px; cursor:pointer; background:#FAFAFA;" onmouseover="this.style.background=\'#FFF7E0\'" onmouseout="this.style.background=\'#FAFAFA\'">' +
-        '<b>' + nm + '</b>' + br + cat +
-        '</div>';
-    });
-    body.innerHTML = html;
-    return;
-  }
-
-  // 선택된 · 품목 · 있으면 · 상세
-  if (window._pcpSelectedProductId) {
-    const p = (DB.products || []).find(function(x) { return x.id === window._pcpSelectedProductId; });
-    if (!p) {
-      window._pcpSelectedProductId = '';
-      body.innerHTML = '<div style="color:var(--muted); padding:20px; text-align:center;">품목 · 정보 · 없음</div>';
-      return;
-    }
-    _renderPcpProductDetail(body, p, cutoffStr);
-  }
-};
-
-function _renderPcpProductDetail(body, product, cutoffStr) {
-  const rows = getCustomerPricesForProduct(product.id);
-  // 기간 필터: lastUsedDate가 · 컷오프 · 이후만
-  const filtered = cutoffStr
-    ? rows.filter(function(r) { return r.lastUsedDate && r.lastUsedDate >= cutoffStr; })
-    : rows;
-  const nm = (product.name || '?').replace(/</g,'&lt;');
-  const br = product.brand ? ' <span style="color:var(--muted); font-size:12px;">(' + product.brand.replace(/</g,'&lt;') + ')</span>' : '';
-  let html = '<div style="padding:8px 10px; background:#FFF7E0; border-radius:6px; margin-bottom:8px; border:1px solid #E8A317;">' +
-    '<div style="display:flex; justify-content:space-between; align-items:flex-start; gap:6px;">' +
-    '<div><b style="font-size:14px;">' + nm + '</b>' + br + '</div>' +
-    '<button type="button" onclick="_pcpClearSelection()" style="background:none; border:1px solid var(--line); border-radius:4px; padding:2px 8px; font-size:11px; cursor:pointer;">✕ 다른 · 품목</button>' +
-    '</div>' +
-    '</div>';
-  if (filtered.length === 0) {
-    html += '<div style="color:var(--muted); padding:20px; text-align:center; font-size:13px;">' +
-      (cutoffStr ? '기간 내 · ' : '') + '거래처 · 학습 · 단가 · 없음</div>';
-    body.innerHTML = html;
-    return;
-  }
-  const prices = filtered.map(function(r) { return r.price; });
-  const avg = prices.reduce(function(s, x) { return s + x; }, 0) / prices.length;
-  const min = Math.min.apply(null, prices);
-  const max = Math.max.apply(null, prices);
-  html += '<div style="font-size:11px; color:var(--muted); margin-bottom:6px; display:flex; justify-content:space-between;">' +
-    '<span>' + filtered.length + '개 · 거래처</span>' +
-    '<span>평균 <b>$' + fmtMoney(avg) + '</b> · <span style="color:#dc3545;">저 $' + fmtMoney(min) + '</span> · <span style="color:#28a745;">고 $' + fmtMoney(max) + '</span></span>' +
-    '</div>';
-  html += '<table style="width:100%; font-size:11px; border-collapse:collapse;">';
-  html += '<thead><tr style="border-bottom:2px solid var(--line); color:var(--muted); background:#F8F8F8;">' +
-    '<th style="text-align:left; padding:4px 3px;">거래처</th>' +
-    '<th style="text-align:right; padding:4px 3px;">단가</th>' +
-    '<th style="text-align:right; padding:4px 3px;">최근</th>' +
-    '</tr></thead><tbody>';
-  filtered.forEach(function(r) {
-    const notesLine = r.notes ? '<div style="font-size:10px; color:var(--muted);">' + (r.notes || '').replace(/</g,'&lt;') + '</div>' : '';
-    html += '<tr style="border-bottom:1px dashed var(--line); cursor:pointer;" onclick="applyPriceFromPanel(\'' + product.id + '\',' + r.price + ',\'' + (r.notes||'').replace(/'/g,'&#39;').replace(/"/g,'&quot;') + '\')" title="현재 · 인보이스 · 단가로 · 적용">' +
-      '<td style="padding:4px 3px;"><b>' + (r.custName || '?').replace(/</g,'&lt;') + '</b>' + notesLine + '</td>' +
-      '<td style="padding:4px 3px; text-align:right; font-weight:700; color:var(--brand-dark); white-space:nowrap;">$' + fmtMoney(r.price) + '</td>' +
-      '<td style="padding:4px 3px; text-align:right; color:var(--muted); font-size:10px; white-space:nowrap;">' + (r.lastUsedDate ? r.lastUsedDate.slice(5) : '—') + '</td>' +
-      '</tr>';
-  });
-  html += '</tbody></table>';
-  body.innerHTML = html;
-}
-
-window._pcpSelectProduct = function(productId) {
-  window._pcpSelectedProductId = productId;
-  const searchEl = document.getElementById('pcpSearch');
-  if (searchEl) searchEl.value = ''; // 검색어 · 클리어 · → · 상세 · 표시
-  renderPriceComparePanelBody();
-};
-
-window._pcpClearSelection = function() {
-  window._pcpSelectedProductId = '';
-  const searchEl = document.getElementById('pcpSearch');
-  if (searchEl) { searchEl.value = ''; searchEl.focus(); }
-  renderPriceComparePanelBody();
-};
 
 // ============================================================================
 // ⭐ (2026-09-23 밤작업#351) 단가 비교 · 별도 창 모드 (듀얼 모니터 지원)
@@ -3363,24 +3131,17 @@ window._pcpClearSelection = function() {
 // 창 크기·위치는 localStorage 에 저장 · 다음에 같은 자리에서 열림.
 // ============================================================================
 // ⭐ (2026-09-28 밤작업#362·#363) 단가 비교 별도 창 · 탭 2개 + 조회 전용 모드
-//   opts.readOnly = true  → 사무실 메인에서 열었을 때. 단가 클릭 불가 (적용할 인보이스가 없음)
-//   탭: [품목별] 품목 검색 → 거래처별 단가 (기존)
-//       [거래처별] 거래처 검색 → 품목별 최근 단가 (신설)
+//   탭: [품목별]   품목 검색   → 거래처별 단가
+//       [거래처별] 거래처 검색 → 품목별 최근 단가
+//   ⭐ (2026-09-28 밤작업#366) 항상 조회 전용. 단가 클릭 적용은 폐지됐다.
+//   호출처: 사무실 메인 [💰 단가 비교] 한 곳. (인보이스 준비의 버튼·플로팅 패널은 제거됨)
+//   readOnly 파라미터는 남겨 두지만 동작상 차이는 '거래처별 탭으로 시작' 여부뿐이다.
 window.openPriceCompareWindow = function(opts) {
   opts = opts || {};
   const READONLY = !!opts.readOnly;
-  // 현재 인라인 패널이 열려 있으면 · 거래처 정보 가져오고 · 패널은 닫기 (중복 방지)
+  // 거래처 사전 선택 없음 — 창 안에서 검색해 고른다.
+  //   (예전엔 인라인 패널에서 거래처를 물려받았지만 패널 자체가 제거됐다)
   let custId = '';
-  const panel = document.getElementById('priceComparePanel');
-  if (panel) {
-    custId = panel.dataset.custId || '';
-    panel.remove();
-  }
-  if (!custId && !READONLY) {
-    // 패널 없이 직접 호출된 경우 · 현재 인보이스 준비 화면 거래처 추정
-    const o = (DB.orders || []).find(function(x) { return x && x.id === window._prepOid; });
-    if (o) custId = o.customerId || '';
-  }
   // ⭐ (2026-09-28 밤작업#362) 기본 크기 620×800 · 화면 우측 자동 배치
   //   거래처별 탭은 [품목명(브랜드) · 단가 · 최근주문 · 횟수] 4열이라 380px 로는 너무 좁다.
   //   저장 키를 v2 로 새로 쓴다 — 기존 키에 380px 가 저장돼 있으면 새 기본값이 안 먹기 때문.
@@ -3418,7 +3179,7 @@ window.openPriceCompareWindow = function(opts) {
   doc.open();
   doc.write(
     '<!DOCTYPE html><html lang="ko"><head><meta charset="utf-8">' +
-    '<title>💰 단가 비교 · ' + custName.replace(/</g,'&lt;') + '</title>' +
+    '<title>💰 ATM 단가 비교</title>' +
     '<style>' +
       '*{box-sizing:border-box;}' +
       'body{margin:0;font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,"Malgun Gothic",sans-serif;background:#fff;display:flex;flex-direction:column;height:100vh;overflow:hidden;}' +
@@ -3459,7 +3220,9 @@ window.openPriceCompareWindow = function(opts) {
       '.vrow .nt{flex:1;color:#6D4C41;}' +
       '.cnt{width:38px;text-align:right;color:#999;font-size:10px;white-space:nowrap;}' +
     '</style></head><body>' +
-    '<div id="hdr">💰 단가 비교' + (READONLY ? ' <span>· 조회 전용</span>' : ' <span>· ' + custName.replace(/</g,'&lt;') + '</span>') + '</div>' +
+    // ⭐ (2026-09-28 밤작업#366) 거래처를 미리 받지 않으므로 헤더는 고정 문구.
+    //   (창 안에서 검색해 고르고, 고른 거래처명은 결과 영역 상단에 표시된다)
+    '<div id="hdr">💰 단가 비교 <span>· 조회 전용 · 창 안에서 검색</span></div>' +
     '<div id="tabs">' +
       '<button id="tabProd" class="on">📦 품목별</button>' +
       '<button id="tabCust">👥 거래처별</button>' +
@@ -3784,23 +3547,13 @@ window.openPriceCompareWindow = function(opts) {
     h += '</tbody></table>';
     b.innerHTML = h;
     doc.getElementById('clr').onclick = function() { win._sel=''; doc.getElementById('q').value=''; win.renderBody(); doc.getElementById('q').focus(); };
+    // ⭐ (2026-09-28 밤작업#366) 단가 클릭 적용 폐지 — 이 창은 항상 조회 전용.
+    //   예전엔 단가를 클릭하면 인보이스에 자동 입력됐지만,
+    //   ① 목록은 '다른 거래처' 단가라 대개 틀린 값이 들어가고
+    //   ② 그 값이 거래처 학습 단가로 저장돼 다음 주문까지 오염됐다.
+    //   단가는 인보이스 준비 화면에서 직접 입력한다.
     Array.prototype.forEach.call(b.querySelectorAll('tr.pick'), function(tr) {
-      // ⭐ (2026-09-28 밤작업#363) 조회 전용(사무실에서 연 창)은 단가 클릭 불가.
-      //   적용할 인보이스 준비 화면이 없어 눌러도 아무 일이 없다 → 헷갈리지 않게 커서부터 막는다.
-      if (win._readOnly) {
-        tr.style.cursor = 'default';
-        tr.title = '조회 전용 — 인보이스 준비 화면에서 열면 단가를 클릭해 적용할 수 있습니다';
-        return;
-      }
-      tr.onclick = function() {
-        const r = fil[Number(tr.dataset.i)];
-        if (!r) return;
-        // 부모 창의 인보이스 준비 화면에 단가 적용
-        P.applyPriceFromPanel(product.id, r.price, r.notes || '');
-        // 적용 피드백
-        tr.style.background = '#C8E6C9';
-        setTimeout(function(){ tr.style.background = ''; }, 700);
-      };
+      tr.style.cursor = 'default';
     });
   };
   // 이벤트 연결
@@ -3832,30 +3585,14 @@ window.openPriceCompareWindow = function(opts) {
   win.renderBody();
 };
 
-window.applyPriceFromPanel = function(productId, price, notes) {
-  // 인보이스 준비 화면에 · 같은 productId + notes 라인이 있으면 · 그 라인 단가 · 자동 채움
-  const oid = window._prepOid;
-  if (!oid) return;
-  const o = (DB.orders || []).find(function(x) { return x.id === oid; });
-  if (!o) return;
-  const items = getInvoiceItems(o);
-  if (!items) return;
-  // 매칭: productId + (notes 정확히 일치 · 없으면 · 첫 번째 productId)
-  let hitIdx = items.findIndex(function(it) { return it && it.productId === productId && (it.notes || '') === (notes || ''); });
-  if (hitIdx < 0) hitIdx = items.findIndex(function(it) { return it && it.productId === productId; });
-  if (hitIdx < 0) {
-    alert('이 · 품목이 · 현재 · 주문에 · 없습니다.');
-    return;
-  }
-  if (typeof updatePrepPrice === 'function') updatePrepPrice(oid, hitIdx, price);
-  // 시각적 · 피드백
-  const row = document.querySelectorAll('#prepTbody tr')[hitIdx];
-  if (row) {
-    row.style.transition = 'background 0.3s';
-    row.style.background = '#FFF9C4';
-    setTimeout(function() { row.style.background = ''; }, 800);
-  }
-};
+// ⭐ (2026-09-28 밤작업#366) applyPriceFromPanel 제거 — 단가 클릭 적용 폐지.
+//   이유1: 단가 비교 목록은 '다른 거래처가 내는 단가'다. 클릭해서 지금 인보이스에
+//          넣는 동작은 대부분 잘못된 값을 넣는 것이고 확인 팝업도 없었다.
+//   이유2(더 심각): updatePrepPrice 가 setCustomerCustomPrice 로 그 값을 '학습'해
+//          다음 주문의 기본 단가까지 오염시켰다 → 한 번의 오클릭이 계속 따라다님.
+//   이유3: 요청사항이 안 맞으면 그 품목의 '첫 번째 줄'에 들어가 엉뚱한 줄이 될 수 있었다.
+//   얻는 것은 숫자 몇 글자 타이핑 절약뿐 → 제거. 단가는 직접 입력한다.
+//   조회는 줄별 [💡] 툴팁(showPriceCompareTooltip) + 사무실 [💰 단가 비교] 별도 창.
 
 // ============================================================================
 // ⭐ (2026-07-08) 공통 유틸 — 특정 품목에 대한 거래처별 단가 목록
@@ -13159,7 +12896,10 @@ function viewInvoicePrep(params) {
   app.innerHTML = `
     <h2 class="page-title">📋 ${_isEditMode ? '인보이스 수정' : '인보이스 준비'} — ${o.orderNo}
       <span style="display:inline-block; font-size:22px; font-weight:800; color:var(--brand-dark); margin-left:14px; padding:2px 12px; background:#FFF5D6; border-radius:6px; border:2px solid #E8A317;">🏪 ${cust?cust.name:'-'}</span>
-      <button type="button" onclick="togglePriceComparePanel('${cust?cust.id:''}')" style="margin-left:14px; padding:6px 14px; background:var(--info); color:#fff; border:none; border-radius:6px; font-size:14px; font-weight:600; cursor:pointer;" title="단가 비교 · 최근 2개월 이력">💰 단가 비교</button>
+      <!-- ⭐ (2026-09-28 밤작업#366) [💰 단가 비교] 버튼 제거
+           단가 클릭 적용을 폐지하니 줄별 [💡] 툴팁과 기능이 겹치면서 더 불편한 쪽이 됐다.
+           · 줄별 단가 확인 → 각 줄의 [💡] (검색 불필요 · 그 줄 품목 단가 즉시)
+           · 전체 조회     → 사무실 메인 [💰 단가 비교] 별도 창 (한 번 열면 계속 유지) -->
     </h2>
     ${_editBanner}
 
