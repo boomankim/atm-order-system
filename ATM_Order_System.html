@@ -16160,6 +16160,10 @@ async function exportAllFull() {
   }
   _backupInProgress = true;
   window._backupInProgress = true;
+  // ⭐ (2026-09-28 밤작업#367) 백업 성공 여부 — finally 에서 배너 제거 판단용.
+  //   이 함수엔 catch 가 없어 중간에 예외가 나도 finally 는 실행되므로,
+  //   플래그 없이 배너를 지우면 "실패했는데 배너가 사라지는" 더 나쁜 상태가 된다.
+  let _backupSucceeded = false;
   await _requestBackupWakeLock();
   try {
   showBackupProgress();
@@ -16182,6 +16186,10 @@ async function exportAllFull() {
       DB_REF.child('settings/lastFullBackupAt').set(DB.settings.lastFullBackupAt).catch(function(e){ console.warn('lastFullBackupAt save failed:', e); });
     }
     saveLocalDB();
+    // ⭐ (2026-09-28 밤작업#367) 여기까지 왔으면 백업 성공 · 시각 기록됨.
+    //   finally 에서 배너를 지울지 판단하는 근거. (이 함수는 catch 가 없어서
+    //   중간에 예외가 나도 finally 는 실행된다 → 실패한 백업에 배너를 지우면 안 됨)
+    _backupSucceeded = true;
   } catch(e) { console.warn('lastFullBackupAt update failed:', e); }
   let msg = '✅ 전체 백업 완료!\n\n';
   if (jsonResult.folder) {
@@ -16211,6 +16219,23 @@ async function exportAllFull() {
     _backupInProgress = false;
     window._backupInProgress = false;
     await _releaseBackupWakeLock();
+    // ⭐ (2026-09-28 밤작업#367) 백업 완료 후 [전체 백업 권장] 배너 즉시 정리
+    //   문제: lastFullBackupAt 은 위에서 갱신되는데 화면을 다시 그리지 않아
+    //         조건상 이미 "숨김" 인 배너가 화면에만 남아 있었다.
+    //         직원이 "백업이 안 된 건가?" 하고 무거운 전체 백업을 또 돌릴 수 있다.
+    //   대책: 배너 DOM 을 직접 제거. (조건 재판정은 다음 화면 진입/새로고침 때 정상 수행)
+    //         _backupInProgress 를 내린 뒤에 실행하므로 #349 자동 새로고침 봉쇄와 충돌 없음.
+    //         재렌더(route) 대신 DOM 제거만 하는 이유: 백업 직후 화면을 통째로 다시 그리면
+    //         직원이 입력 중이던 칸·스크롤 위치가 날아갈 수 있다 (#92 자동 재렌더 비활성 정책과 동일).
+    //   ⚠️ 성공했을 때만 지운다. 실패 시엔 배너를 남겨 다시 백업하도록 유도.
+    if (_backupSucceeded) {
+      try {
+        const _bb = document.getElementById('atmBackupBanner');
+        if (_bb) _bb.remove();
+        const _bbAnim = document.getElementById('atmBackupBannerAnim');
+        if (_bbAnim) _bbAnim.remove();
+      } catch(_){}
+    }
   }
 }
 
