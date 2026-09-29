@@ -3735,7 +3735,7 @@ function renderOrdersAdmin(params) {
     const cid = (o.customerId && validCustIds.has(o.customerId)) ? o.customerId : '__none__';
     if (!byCust[cid]) byCust[cid] = { orders: [], total: 0 };
     byCust[cid].orders.push(o);
-    byCust[cid].total += computeTotals(o).grand;
+    byCust[cid].total += computeTotalsWithCredits(o).net;   // ⭐ #369 net
   });
   const orphanCount = (byCust['__none__']?.orders.length) || 0;
 
@@ -3784,7 +3784,7 @@ function renderOrdersAdminList(cid) {
     })
     .sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
 
-  const totalAmt = orders.reduce((s,o) => s + computeTotals(o).grand, 0);
+  const totalAmt = orders.reduce((s,o) => s + computeTotalsWithCredits(o).net, 0);   // ⭐ #369 net
 
   const list = document.getElementById('ordAdmList');
   if (!list) return;
@@ -3819,7 +3819,7 @@ function renderOrdersAdminList(cid) {
         ${orders.map(o => {
           try {
             if (!o || !o.id) return '';
-            const tot = computeTotals(o);
+            const tot = computeTotalsWithCredits(o);   // ⭐ #369 net
             const _cnt = Array.isArray(o.items) ? o.items.length : 0;
             return `<tr>
               <td><input type="checkbox" class="ordAdmChk" value="${o.id}"></td>
@@ -3828,7 +3828,7 @@ function renderOrdersAdminList(cid) {
               <td>${toLocalISODate(o.orderDate)}</td>
               <td>${_cnt}개</td>
               <td><span class="pill ${o.status||''}">${statusLabel(o.status||'')}</span></td>
-              <td class="num">$${fmtMoney(tot.grand)}</td>
+              <td class="num"${tot.creditSum > 0.001 ? ' title="인보이스 $'+fmtMoney(tot.grand)+' − 토레딧 $'+fmtMoney(tot.creditSum)+'"' : ''}>$${fmtMoney(tot.net)}${tot.creditSum > 0.001 ? ' <span style="color:#C0392B;font-size:10px;">CR</span>' : ''}</td>
               <td class="act">
                 <button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기</button>
                 <button class="btn sm danger" onclick="ordAdmDeleteOne('${o.id}')">🗑️ 삭제</button>
@@ -4128,7 +4128,41 @@ function renderOrphanAdmin() {
   const cntOpening = orphans.filter(x => x._openingSuspect).length;
   const cntNoItems = orphans.filter(x => x._noItems).length;
 
-  body.innerHTML = '<div class="card">'
+  // ⭐ (2026-09-29 밤작업#370) 유령 크레딧 검사
+  //   appliedToOrderId 가 가리키는 인보이스가 삭제된 크레딧.
+  //   → 미사용 목록에도 안 나오고(appliedToOrderId 있음),
+  //      어느 인보이스에서도 차감되지 않는다(대상 없음) = 금액 유실.
+  const _orphanCredits = (DB.creditNotes || []).filter(function(c){
+    if (!c || !c.appliedToOrderId) return false;
+    return !DB.orders.some(function(o){ return o && o.id === c.appliedToOrderId; });
+  });
+  var _ocHtml = '';
+  if (_orphanCredits.length > 0) {
+    _ocHtml = '<div class="card" style="border:2px solid #C0392B;">'
+      + '<h3 style="color:#C0392B;">⚠️ 유령 크레딧 ' + _orphanCredits.length + '건</h3>'
+      + '<div style="padding:10px 14px; background:#FDECEA; border-left:4px solid #C0392B; margin-bottom:12px; font-size:12px; line-height:1.7;">'
+      + '적용된 인보이스가 <b>삭제되어 사라진</b> 크레딧입니다.<br>'
+      + '미사용 목록에도 안 나오고, 어느 인보이스에서도 차감되지 않습니다 — '
+      + '<b style="color:#C0392B;">거래처가 받아야 할 금액이 사라진 상황</b>입니다.<br>'
+      + '💡 [미사용으로 복구] 를 누르면 미사용 크레딧 목록에 되돌아가 다음 인보이스에 자동 적용됩니다.'
+      + '</div>'
+      + '<table class="t"><thead><tr><th>크레딧#</th><th>거래처</th><th class="num">금액</th><th>발행일</th><th>적용일</th><th class="act">조치</th></tr></thead><tbody>'
+      + _orphanCredits.map(function(c){
+          var cu = DB.customers.find(function(x){ return x.id === c.customerId; });
+          var g = 0; try { g = computeCreditNoteTotals(c).grand || 0; } catch(_){}
+          return '<tr>'
+            + '<td><b>' + (c.creditNo || c.id.slice(0,8)) + '</b></td>'
+            + '<td>' + (cu ? cu.name : '<span style="color:#C62828;">(거래처 없음)</span>') + '</td>'
+            + '<td class="num" style="color:#C0392B;"><b>$' + fmtMoney(g) + '</b></td>'
+            + '<td style="font-size:11px;">' + (toLocalISODate(c.issuedAt) || '-') + '</td>'
+            + '<td style="font-size:11px;">' + (toLocalISODate(c.appliedAt) || '-') + '</td>'
+            + '<td class="act"><button class="btn sm" style="background:#C0392B;color:#fff;" onclick="releaseOrphanCredit(\'' + c.id + '\')">↩️ 미사용으로 복구</button></td>'
+            + '</tr>';
+        }).join('')
+      + '</tbody></table></div>';
+  }
+
+  body.innerHTML = _ocHtml + '<div class="card">'
     + '<h3>🔧 Orphan 인보이스 진단 · 정리</h3>'
     + '<div style="padding:12px 14px; background:#FFF7E0; border-left:4px solid #B8860B; margin-bottom:14px; font-size:12px; line-height:1.7;">'
     + '<b>진단 결과 총 ' + cnt + '건</b><br>'
@@ -4150,7 +4184,7 @@ function renderOrphanAdmin() {
         + '<th>문제 유형</th><th>거래처 지정</th><th class="act">액션</th>'
         + '</tr></thead><tbody>'
         + orphans.map(function(o) {
-          const totals = computeTotals(o);
+          const totals = computeTotalsWithCredits(o);   // ⭐ #369 net
           const dateStr = toLocalISODate(o.invoicedAt || o.deliveredAt || o.orderDate || '');
           const flags = [];
           if (o._noCust) flags.push('<span style="color:#C62828;">❌ 거래처</span>');
@@ -4162,7 +4196,7 @@ function renderOrphanAdmin() {
             + '<td><b>' + (o.invoiceNo || '-') + '</b></td>'
             + '<td>' + (o.orderNo || '<span style="color:#C62828;">(없음)</span>') + '</td>'
             + '<td><span class="pill ' + o.status + '">' + statusLabel(o.status) + '</span></td>'
-            + '<td class="num">$' + fmtMoney(totals.grand) + '</td>'
+            + '<td class="num">$' + fmtMoney(totals.net) + '</td>'
             + '<td style="font-size:11px;">' + (dateStr || '-') + '<br><span style="color:#888; font-size:10px;">' + items + '</span></td>'
             + '<td style="font-size:11px;">' + flags.join(' ') + '</td>'
             + '<td style="min-width:220px;">'
@@ -4207,14 +4241,40 @@ function _detectOrphanOrders() {
 }
 
 // 개별 삭제
+// ⭐ (2026-09-29 밤작업#370) 유령 크레딧 → 미사용 상태로 복구
+//   적용 대상 인보이스가 삭제된 크레딧의 appliedToOrderId 를 비워서
+//   미사용 크레딧 풀로 되돌린다. 금액·품목은 그대로 유지.
+window.releaseOrphanCredit = async function(cnId) {
+  const cn = (DB.creditNotes || []).find(function(c){ return c && c.id === cnId; });
+  if (!cn) return alert('크레딧을 찾을 수 없습니다.');
+  const stillThere = DB.orders.some(function(o){ return o && o.id === cn.appliedToOrderId; });
+  if (stillThere) return alert('이 크레딧의 적용 대상 인보이스는 살아있습니다.\n유령 크레딧이 아닙니다. 인보이스 화면에서 [적용 취소]를 사용하세요.');
+  const cu = DB.customers.find(function(x){ return x.id === cn.customerId; });
+  let g = 0; try { g = computeCreditNoteTotals(cn).grand || 0; } catch(_){}
+  const label = (cn.creditNo || cnId.slice(0,8)) + ' / ' + (cu ? cu.name : '거래처 없음') + ' / $' + fmtMoney(g);
+  const ok = await verifyBossPassword('유령 크레딧 복구 (' + label + ')');
+  if (!ok) return;
+  if (!confirm('이 크레딧을 미사용 상태로 되돌립니다.\n\n' + label + '\n\n'
+    + '복구 후 이 거래처의 다음 인보이스 발행 시 자동 적용됩니다.\n계속할까요?')) return;
+  cn.appliedToOrderId = null;
+  cn.appliedAt = null;
+  try {
+    saveEntityField('creditNotes', cn.id, 'appliedToOrderId');
+    saveEntityField('creditNotes', cn.id, 'appliedAt');
+  } catch(e) { console.warn('releaseOrphanCredit 저장 실패:', e); alert('⚠️ 저장 실패 — 인터넷 연결 확인 후 다시 시도하세요.'); return; }
+  try { auditLogAdd('유령 크레딧 복구: ' + label + ' (삭제된 인보이스 ' + (cn._lostOrderId || '') + ' → 미사용)'); } catch(_){}
+  alert('✅ 복구 완료. 미사용 크레딧 목록에 다시 나타납니다.');
+  renderOrphanAdmin();
+};
+
 window.orphanDeleteOne = function(orderId) {
   const o = DB.orders.find(function(x){ return x.id === orderId; });
   if (!o) return alert('인보이스를 찾을 수 없습니다.');
-  const totals = computeTotals(o);
+  const totals = computeTotalsWithCredits(o);   // ⭐ #369 net
   if (!confirm('이 인보이스를 삭제합니다.\n\n' +
     '인보이스#: ' + (o.invoiceNo || '-') + '\n' +
     '주문번호: ' + (o.orderNo || '(없음)') + '\n' +
-    '금액: $' + fmtMoney(totals.grand) + '\n\n' +
+    '금액: $' + fmtMoney(totals.net) + '\n\n' +
     '되돌릴 수 없습니다. 계속?')) return;
   DB.orders = DB.orders.filter(function(x){ return x.id !== orderId; });
   // 관련 크레딧 노트도 삭제
@@ -12549,11 +12609,13 @@ function renderHistoryResults() {
   const byStatus = {};
   const byProduct = {};
   orders.forEach(o => {
-    const t = computeTotals(o);
+    // ⭐ (2026-09-29 밤작업#368) 주문이력 금액은 크레딧 차감 후(net) 기준.
+    //   매출일보·스테이트먼트(#166/#167)와 같은 금액이 나와야 한다.
+    const t = computeTotalsWithCredits(o);
     totalKg += t.totalKg;
-    totalRevenue += t.grand;
+    totalRevenue += t.net;
     totalItems += o.items.length;
-    byCust[o.customerId] = (byCust[o.customerId] || 0) + t.grand;
+    byCust[o.customerId] = (byCust[o.customerId] || 0) + t.net;
     byStatus[o.status] = (byStatus[o.status] || 0) + 1;
     const _cust = DB.customers.find(c => c.id === o.customerId);
     o.items.forEach(it => {
@@ -12634,14 +12696,15 @@ function renderHistoryResults() {
                 try {
                   if (!o || !o.id) return '';
                 const c = DB.customers.find(x => x.id === o.customerId);
-                const t = computeTotals(o);
+                // ⭐ (2026-09-29 밤작업#368) 크레딧 차감 후(net) 금액 표시
+                const t = computeTotalsWithCredits(o);
                 return `<tr>
                   <td>${toLocalISODate(o.orderDate)}</td>
                   <td><b>${o.orderNo||o.id.slice(0,8)}</b></td>
                   <td>${c ? c.name : '-'}</td>
                   <td>${Array.isArray(o.items) ? o.items.length : 0}개</td>
                   <td class="num">${t.totalKg.toFixed(1)}</td>
-                  <td class="num">$${fmtMoney(t.grand)}</td>
+                  <td class="num"${t.creditSum > 0.001 ? ' title="Subtotal+GST $'+fmtMoney(t.grand)+' − 크레딧 $'+fmtMoney(t.creditSum)+'"' : ''}>${t.net < -0.001 ? '-$' + fmtMoney(Math.abs(t.net)) : '$' + fmtMoney(t.net)}${t.creditSum > 0.001 ? ' <span style="color:#C0392B;font-size:10px;">CR</span>' : ''}</td>
                   <td><span class="pill ${o.status||''}">${statusLabel(o.status||'')}</span></td>
                   <td>${o.invoiceNo || '-'}</td>
                   <td class="act">
@@ -12794,10 +12857,11 @@ function exportHistoryCSV(detailed) {
       });
     });
   } else {
-    rows.push(['주문일','주문번호','거래처코드','거래처','품목수','총중량_kg','총금액_GST포함','상태','인보이스번호','희망배송일','배송요청사항']);
+    // ⭐ (2026-09-29 밤작업#368) 크레딧 3열 구조 — 내부 대조용
+    rows.push(['주문일','주문번호','거래처코드','거래처','품목수','총중량_kg','인보이스금액_GST포함','크레딧적용액','청구금액_크레딧차감후','상태','인보이스번호','희망배송일','배송요청사항']);
     orders.forEach(o => {
       const c = DB.customers.find(x => x.id === o.customerId);
-      const t = computeTotals(o);
+      const t = computeTotalsWithCredits(o);
       rows.push([
         toLocalISODate(o.orderDate),
         o.orderNo,
@@ -12806,6 +12870,8 @@ function exportHistoryCSV(detailed) {
         o.items.length,
         t.totalKg.toFixed(2),
         t.grand.toFixed(2),
+        t.creditSum.toFixed(2),
+        t.net.toFixed(2),
         statusLabel(o.status),
         o.invoiceNo || '',
         o.deliveryDate || '',
@@ -14403,7 +14469,8 @@ window.sendInvoicePDF = async function(orderId) {
 function sendInvoice(id) {
   const o = DB.orders.find(x => x.id === id);
   const cust = DB.customers.find(c => c.id === o.customerId);
-  const totals = computeTotals(o);
+  // ⭐ (2026-09-29 밤작업#369) 거래처에 가는 발신 본문 — 항상 net
+  const totals = computeTotalsWithCredits(o);
   let msg = `[ALL THAT MEAT] ${cust.name} 사장님\n\n`;
   msg += `인보이스 ${o.invoiceNo}\n\n`;
   msg += `--- 품목 ---\n`;
@@ -14420,7 +14487,8 @@ function sendInvoice(id) {
     }
   });
   msg += `\n총중량 ${totals.totalKg.toFixed(2)}kg\n`;
-  msg += `합계 $${fmtMoney(totals.grand)} (GST 포함)\n`;
+  if (totals.creditSum > 0.001) msg += `적용된 트레딧 -$${fmtMoney(totals.creditSum)}\n`;
+  msg += `합계 $${fmtMoney(totals.net)} (GST 포함)\n`;
   if (navigator.share) navigator.share({title:'ATM Invoice', text:msg}).catch(()=>{});
   else navigator.clipboard.writeText(msg).then(()=>alert('인보이스 내용이 복사되었습니다. 카톡/이메일에 붙여넣으세요.\n\n'+msg));
 }
@@ -16318,7 +16386,7 @@ function viewPayment(params) {
   function balanceFor(cid) {
     if (!cid) return null;
     const invoiced = DB.orders.filter(o => ['invoiced','delivered'].includes(o.status) && o.customerId === cid)
-      .reduce((s, o) => s + computeTotals(o).grand, 0);
+      .reduce((s, o) => s + computeTotalsWithCredits(o).net, 0);   // ⭐ (2026-09-29 #369) 스테이트먼트와 동일한 net 기준
     const paid = DB.payments.filter(p => p.customerId === cid)
       .reduce((s, p) => s + p.amount, 0);
     return invoiced - paid;
