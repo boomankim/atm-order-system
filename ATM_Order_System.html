@@ -3848,6 +3848,99 @@ function ordAdmToggleAll(checked) {
   if (head) head.checked = !!checked;
 }
 
+// ⭐ (2026-09-30 밤작업#371) 유령 크레딧 → 영구 삭제
+//   이미 다른 방법으로 정산된 크레딧을 기록에서 완전히 없앤다.
+//   [↩️ 미사용으로 복구] 와 정반대 조치 — 실수 방지를 위해 보스 비번 + 상세 확인창.
+window.deleteOrphanCreditForever = async function(cnId) {
+  const cn = (DB.creditNotes || []).find(function(c){ return c && c.id === cnId; });
+  if (!cn) return alert('크레딧을 찾을 수 없습니다.');
+  const stillThere = DB.orders.some(function(o){ return o && o.id === cn.appliedToOrderId; });
+  if (stillThere) return alert('이 크레딧의 적용 대상 인보이스는 살아있습니다.\n유령 크레딧이 아닙니다.\n\n사무실 크레딧 목록에서 삭제하세요.');
+  const cu = DB.customers.find(function(x){ return x.id === cn.customerId; });
+  let g = 0; try { g = computeCreditNoteTotals(cn).grand || 0; } catch(_){}
+  const label = 'CN' + (cn.creditNo || cnId.slice(0,8)) + ' / ' + (cu ? cu.name : '거래처 없음') + ' / $' + fmtMoney(g);
+  const ok = await verifyBossPassword('유령 크레딧 영구 삭제 (' + label + ')');
+  if (!ok) return;
+  if (!confirm('⚠️ 이 크레딧을 영구 삭제합니다. 되돌릴 수 없습니다.\n\n'
+    + '크레딧#: CN' + (cn.creditNo || '-') + '\n'
+    + '거래처: ' + (cu ? cu.name : '(없음)') + '\n'
+    + '금액: $' + fmtMoney(g) + '\n'
+    + '발행일: ' + (toLocalISODate(cn.issuedAt) || '-') + '\n'
+    + '사유: ' + (cn.reason || '-') + '\n\n'
+    + '이미 다른 방법으로 정산된 경우에만 삭제하세요.\n'
+    + '거래처가 아직 받지 못했다면 [↩️ 미사용으로 복구] 를 쓰세요.\n\n'
+    + '계속할까요?')) return;
+  DB.creditNotes = (DB.creditNotes || []).filter(function(x){ return x.id !== cnId; });
+  try { saveLocalDB(); } catch(_){}
+  // ⭐ (2026-09-30 밤작업#371) 전체 배열 덮어쓰기(set) → 트랜잭션 방식으로 변경.
+  //   기존 방식은 다른 컴에서 동시에 크레딧을 발행하면 그 크레딧이 날아갔다.
+  try { removeEntityFromFirebase('creditNotes', cnId); }
+  catch(e) { console.warn('deleteOrphanCreditForever save error:', e); alert('⚠️ 서버 삭제 실패 — 인터넷 확인 후 다시 시도하세요.'); return; }
+  try { auditLogAdd('유령 크레딧 영구 삭제: ' + label + ' · 사유: ' + (cn.reason || '-') + ' · 적용대상(삭제됨) ' + (cn.appliedToOrderId || '-')); } catch(_){}
+  alert('✅ 영구 삭제 완료.');
+  renderOrphanAdmin();
+};
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⭐ (2026-09-30 밤작업#374) 주문 삭제 시 붙은 크레딧 자동 해제
+//   문제: 주문을 지우면 appliedToOrderId 가 그 주문을 가리키는 크레딧이
+//         "적용됨" 상태로 방치된다. 대상이 없으니 어디서도 차감되지 않고,
+//         미사용 목록에도 안 나온다 → 거래처가 받을 금액이 조용히 소멸.
+//   실제 사고: 8/24 CN-201404 ($54 MEAT BOYS), 9/30 동일 재현.
+//   해결: 주문 삭제 6경로 모두에서 이 함수를 먼저 호출 → 미사용으로 복귀.
+//   반환: { count, sum, labels[] } — 삭제 확인창 사전 고지용
+// ═══════════════════════════════════════════════════════════════════════
+
+// 주문 1건(또는 여러 건)에 적용된 크레딧 조회 — 삭제 확인창에 보여줄 정보
+function _creditsAttachedToOrders(orderIds) {
+  const idSet = (orderIds instanceof Set) ? orderIds : new Set([].concat(orderIds));
+  const list = (DB.creditNotes || []).filter(function(cn){
+    return cn && cn.appliedToOrderId && idSet.has(cn.appliedToOrderId);
+  });
+  let sum = 0;
+  const labels = list.map(function(cn){
+    let g = 0;
+    try { g = computeCreditNoteTotals(cn).grand || 0; } catch(_){}
+    sum += g;
+    return 'CN' + (cn.creditNo || cn.id.slice(0,8)) + ' $' + fmtMoney(g);
+  });
+  return { count: list.length, sum: sum, labels: labels, list: list };
+}
+
+// 삭제 확인창에 끼워 넣을 안내 문구 (없으면 빈 문자열)
+function _creditReleaseNotice(orderIds) {
+  const info = _creditsAttachedToOrders(orderIds);
+  if (info.count === 0) return '';
+  return '\n⚠️ 이 주문에 적용된 크레딧 ' + info.count + '건 (총 $' + fmtMoney(info.sum) + ')\n'
+       + '   ' + info.labels.join(', ') + '\n'
+       + '   → 삭제되지 않고 "미사용 크레딧"으로 복귀합니다.\n'
+       + '   → 이 거래처의 다음 인보이스에 다시 적용됩니다.\n';
+}
+
+// 실제 해제 실행 — 주문 삭제 직전에 호출
+function _releaseCreditsForOrders(orderIds, reasonLabel) {
+  const info = _creditsAttachedToOrders(orderIds);
+  if (info.count === 0) return info;
+  info.list.forEach(function(cn){
+    const _lost = cn.appliedToOrderId;
+    cn.appliedToOrderId = null;
+    cn.appliedAt = null;
+    try {
+      saveEntityField('creditNotes', cn.id, 'appliedToOrderId');
+      saveEntityField('creditNotes', cn.id, 'appliedAt');
+    } catch(e) { console.warn('_releaseCreditsForOrders save error:', cn.id, e); }
+    try {
+      auditLogAdd('크레딧 자동 해제(주문 삭제): CN' + (cn.creditNo || cn.id.slice(0,8))
+        + ' · ' + (reasonLabel || '주문 삭제') + ' · 삭제된 주문 ' + _lost + ' → 미사용 복귀');
+    } catch(_){}
+  });
+  try { saveLocalDB(); } catch(_){}
+  return info;
+}
+window._creditsAttachedToOrders = _creditsAttachedToOrders;
+window._creditReleaseNotice = _creditReleaseNotice;
+window._releaseCreditsForOrders = _releaseCreditsForOrders;
+
 async function ordAdmDeleteOne(oid) {
   const o = DB.orders.find(x => x.id === oid);
   if (!o) return;
@@ -3857,7 +3950,9 @@ async function ordAdmDeleteOne(oid) {
   // ⭐ (2026-07-29) 보스 권한 먼저 확인 → 통과 시에만 삭제 안내창 표시
   const ok = await verifyBossPassword('주문 ' + orderNo + ' 삭제');
   if (!ok) return;
-  if (!confirm(`주문 ${orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.`)) return;
+  // ⭐ (2026-09-30 밤작업#374) 붙은 크레딧 사전 고지
+  if (!confirm(`주문 ${orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.\n` + _creditReleaseNotice(oid))) return;
+  _releaseCreditsForOrders(oid, '관리자 개별 삭제 · ' + orderNo);
   DB.orders = DB.orders.filter(x => x.id !== oid);
   // Phase 2 동시성: 트랜잭션으로 안전 삭제
   removeEntityFromFirebase('orders', oid);
@@ -3880,7 +3975,9 @@ async function ordAdmDeleteSelected(cid) {
   // ⭐ (2026-07-29) 보스 권한 먼저 확인 → 통과 시에만 삭제 안내창 표시
   const ok = await verifyBossPassword('선택한 주문 ' + ids.length + '건 삭제');
   if (!ok) return;
-  if (!confirm(`선택한 ${ids.length}건의 주문을 삭제할까요?\n복구할 수 없습니다.`)) return;
+  // ⭐ (2026-09-30 밤작업#374) 붙은 크레딧 사전 고지
+  if (!confirm(`선택한 ${ids.length}건의 주문을 삭제할까요?\n복구할 수 없습니다.\n` + _creditReleaseNotice(ids))) return;
+  _releaseCreditsForOrders(ids, '관리자 선택 삭제 ' + ids.length + '건');
   // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · 삭제 전에 invoiceNo 있는 주문 수집
   const _deletedInvNos = [];
   ids.forEach(function(_id){
@@ -3973,13 +4070,16 @@ async function ordAdmDeleteAll(cid) {
   const typed = prompt(`최종 확인: 거래처명 "${custName}" 을(를) 그대로 입력하세요:`);
   if (typed !== custName) return alert('거래처명이 일치하지 않아 취소되었습니다.');
   const idsToRemove = orders.map(o => o.id);
+  // ⭐ (2026-09-30 밤작업#374) 붙은 크레딧 해제 — 이미 2단 확인을 거쳤으므로 안내만
+  const _relAll = _releaseCreditsForOrders(idsToRemove, '거래처별 전체 삭제 · ' + custName);
   DB.orders = DB.orders.filter(o => (o.customerId || '__none__') !== cid);
   // Phase 2 동시성: 트랜잭션으로 일괄 삭제
   removeEntitiesFromFirebase('orders', idsToRemove);
   saveLocalDB();
   // ⭐ (2026-08-04) 감사 로그
   try { auditLogAdd(`거래내역 전체 삭제: ${custName} (${orders.length}건)`); } catch(_){}
-  alert(`✅ ${custName}의 거래내역 ${orders.length}건이 삭제되었습니다.`);
+  alert(`✅ ${custName}의 거래내역 ${orders.length}건이 삭제되었습니다.`
+    + (_relAll.count > 0 ? `\n\n↩️ 적용된 크레딧 ${_relAll.count}건 (총 $${fmtMoney(_relAll.sum)}) 은 미사용으로 복귀했습니다.` : ''));
   route();
 }
 window.ordAdmDeleteAll = ordAdmDeleteAll;
@@ -4144,7 +4244,9 @@ function renderOrphanAdmin() {
       + '적용된 인보이스가 <b>삭제되어 사라진</b> 크레딧입니다.<br>'
       + '미사용 목록에도 안 나오고, 어느 인보이스에서도 차감되지 않습니다 — '
       + '<b style="color:#C0392B;">거래처가 받아야 할 금액이 사라진 상황</b>입니다.<br>'
-      + '💡 [미사용으로 복구] 를 누르면 미사용 크레딧 목록에 되돌아가 다음 인보이스에 자동 적용됩니다.'
+      + '🗑️ <b>영구 삭제</b> — 이미 현금·다른 방법으로 정산된 경우. 기록에서 완전히 지웁니다.<br>'
+      + '↩️ <b>미사용으로 복구</b> — 거래처가 아직 받지 못한 경우. 다음 인보이스에 자동 적용됩니다.<br>'
+      + '⚠️ 둘 다 보스 번호가 필요하고, 삭제는 되돌릴 수 없습니다.'
       + '</div>'
       + '<table class="t"><thead><tr><th>크레딧#</th><th>거래처</th><th class="num">금액</th><th>발행일</th><th>적용일</th><th class="act">조치</th></tr></thead><tbody>'
       + _orphanCredits.map(function(c){
@@ -4156,7 +4258,10 @@ function renderOrphanAdmin() {
             + '<td class="num" style="color:#C0392B;"><b>$' + fmtMoney(g) + '</b></td>'
             + '<td style="font-size:11px;">' + (toLocalISODate(c.issuedAt) || '-') + '</td>'
             + '<td style="font-size:11px;">' + (toLocalISODate(c.appliedAt) || '-') + '</td>'
-            + '<td class="act"><button class="btn sm" style="background:#C0392B;color:#fff;" onclick="releaseOrphanCredit(\'' + c.id + '\')">↩️ 미사용으로 복구</button></td>'
+            + '<td class="act">'
+            +   '<button class="btn sm" style="background:#C0392B;color:#fff;" onclick="deleteOrphanCreditForever(\'' + c.id + '\')" title="기록에서 완전히 지움 — 이미 정산된 경우">🗑️ 영구 삭제</button>'
+            +   ' <button class="btn sm secondary" onclick="releaseOrphanCredit(\'' + c.id + '\')" title="거래처가 아직 받지 못한 경우">↩️ 미사용으로 복구</button>'
+            + '</td>'
             + '</tr>';
         }).join('')
       + '</tbody></table></div>';
@@ -4275,7 +4380,11 @@ window.orphanDeleteOne = function(orderId) {
     '인보이스#: ' + (o.invoiceNo || '-') + '\n' +
     '주문번호: ' + (o.orderNo || '(없음)') + '\n' +
     '금액: $' + fmtMoney(totals.net) + '\n\n' +
+    _creditReleaseNotice(orderId) +
     '되돌릴 수 없습니다. 계속?')) return;
+  // ⭐ (2026-09-30 밤작업#374) 이 인보이스에 "적용된" 크레딧은 삭제가 아니라 해제 (미사용 복귀).
+  //   아래 orderId 기준 삭제는 "이 인보이스에서 발행된" 크레딧 — 성격이 다르므로 그대로 둔다.
+  const _relOrph = _releaseCreditsForOrders(orderId, '고아 인보이스 개별 삭제 · ' + (o.invoiceNo || orderId));
   DB.orders = DB.orders.filter(function(x){ return x.id !== orderId; });
   // 관련 크레딧 노트도 삭제
   const beforeCN = (DB.creditNotes || []).length;
@@ -4305,16 +4414,21 @@ window.orphanAssignCustomer = function(orderId, newCustId) {
 window.orphanDeleteAll = function() {
   const orphans = _detectOrphanOrders();
   if (orphans.length === 0) return alert('삭제할 orphan이 없습니다.');
-  const typed = prompt('⚠️ orphan 인보이스 ' + orphans.length + '건을 모두 삭제합니다.\n\n되돌릴 수 없습니다. 실행하려면 "삭제" 를 정확히 입력하세요.', '');
+  // ⭐ (2026-09-30 밤작업#374) 붙은 트레딧 사전 고지
+  const _noticeAll = _creditReleaseNotice(new Set(orphans.map(function(o){ return o.id; })));
+  const typed = prompt('⚠️ orphan 인보이스 ' + orphans.length + '건을 모두 삭제합니다.\n' + _noticeAll + '\n되돌릴 수 없습니다. 실행하려면 "삭제" 를 정확히 입력하세요.', '');
   if (typed === null) return;
   if (typed.trim() !== '삭제') return alert('입력이 일치하지 않아 취소되었습니다.');
   const orphanIds = new Set(orphans.map(function(o){ return o.id; }));
+  // ⭐ (2026-09-30 밤작업#374) 적용된 크레딧은 삭제 전에 미사용으로 해제
+  const _relOrphAll = _releaseCreditsForOrders(orphanIds, '고아 인보이스 전체 삭제 ' + orphans.length + '건');
   DB.orders = DB.orders.filter(function(o){ return !orphanIds.has(o.id); });
   const beforeCN = (DB.creditNotes || []).length;
   DB.creditNotes = (DB.creditNotes || []).filter(function(cn){ return !orphanIds.has(cn.orderId); });
   const cnDeleted = beforeCN - (DB.creditNotes || []).length;
   saveDB();
-  alert('✅ 전체 삭제 완료 — ' + orphans.length + '건' + (cnDeleted > 0 ? ' + 관련 크레딧 노트 ' + cnDeleted + '건' : ''));
+  alert('✅ 전체 삭제 완료 — ' + orphans.length + '건' + (cnDeleted > 0 ? ' + 관련 크레딧 노트 ' + cnDeleted + '건' : '')
+    + (_relOrphAll.count > 0 ? '\n\n↩️ 적용된 크레딧 ' + _relOrphAll.count + '건 (총 $' + fmtMoney(_relOrphAll.sum) + ') 은 미사용으로 복귀했습니다.' : ''));
   renderOrphanAdmin();
 };
 
@@ -9796,12 +9910,69 @@ window.renderQuickCreditUnusedList = function() {
       + '<td class="num" style="' + (isApplied ? 'color:#888;' : 'color:#C0392B;') + ' font-weight:600;">-$' + fmtMoney(totals.grand) + '</td>'
       + '<td class="act" style="text-decoration:none;">'
       +   '<button class="btn sm secondary" onclick="location.hash=\'#creditNote?id=' + cn.id + '\'" style="text-decoration:none;">보기</button>'
-      +   (isApplied ? '' : '<button class="btn sm danger" onclick="deleteQuickCredit(\'' + cn.id + '\')" style="text-decoration:none;">✕</button>')
+      +   (isApplied
+            // ⭐ (2026-09-30 밤작업#373) 적용된 트레딧도 지울 수 있게 — 보스 번호 필수.
+            //   기존엔 버튼 자신이 없어서, 잡못 발행한 트레딧을 지울 통로가 아예 없었다(9/30 교착).
+            ? '<button class="btn sm" style="background:#8E24AA;color:#fff;text-decoration:none;" onclick="forceDeleteAppliedCredit(\'' + cn.id + '\')" title="적용 해제 + 삭제 (보스 번호 필요)">🗑️ 강제 삭제</button>'
+            : '<button class="btn sm danger" onclick="deleteQuickCredit(\'' + cn.id + '\')" style="text-decoration:none;">✕</button>')
       + '</td>'
       + '</tr>';
   });
   html += '</tbody></table></div>';
   box.innerHTML = html;
+};
+
+// ⭐ (2026-09-30 밤작업#373) 적용된 크레딧 강제 삭제 — 적용 해제 + 삭제를 한 번에.
+//   배경: 기존엔 적용된 크레딧에 삭제 버튼이 렌더되지 않았고, deleteQuickCredit 도
+//         "인보이스에서 [✕] 로 먼저 해제하세요" 로 막았다. 그런데 그 [✕] 가 자동
+//         재적용 루프 때문에 동작하지 않아(#372), 잡못 발행한 크레딧을 지울 통로가
+//         전혀 없는 교착 상태였다 (2026-09-30 실제 발생).
+//   → 보스 번호 + 적용 인보이스·금액 표시 경고창을 조건으로 한 번에 처리.
+window.forceDeleteAppliedCredit = async function(cnId) {
+  const cn = (DB.creditNotes || []).find(function(c){ return c && c.id === cnId; });
+  if (!cn) return alert('크레딧을 찾을 수 없습니다.');
+  const cu = DB.customers.find(function(x){ return x.id === cn.customerId; });
+  const tgt = DB.orders.find(function(o){ return o && o.id === cn.appliedToOrderId; });
+  let g = 0; try { g = computeCreditNoteTotals(cn).grand || 0; } catch(_){}
+  const cnNo = 'CN' + (cn.creditNo || cnId.slice(0,8));
+  const invLabel = tgt ? ('인보이스 ' + (tgt.invoiceNo || tgt.orderNo || tgt.id)) : '(적용 대상 없음 · 유령)';
+  // 적용 해제 후 그 인보이스 금액이 얼마로 올라가는지 미리 계산해 보여준다
+  let afterTxt = '';
+  if (tgt) {
+    try {
+      const t = computeTotalsWithCredits(tgt);
+      afterTxt = '\n' + invLabel + ' 금액: $' + fmtMoney(t.net) + ' → $' + fmtMoney(t.net + g) + ' (크레딧 차감이 사라짐)';
+    } catch(_){}
+  }
+  const ok = await verifyBossPassword('적용된 크레딧 강제 삭제 (' + cnNo + ' $' + fmtMoney(g) + ')');
+  if (!ok) return;
+  if (!confirm('⚠️ 적용된 크레딧을 삭제합니다. 되돌릴 수 없습니다.\n\n'
+    + '크레딧#: ' + cnNo + '\n'
+    + '거래처: ' + (cu ? cu.name : '(없음)') + '\n'
+    + '금액: $' + fmtMoney(g) + '\n'
+    + '적용 위치: ' + invLabel + '\n'
+    + '사유: ' + (cn.reason || '-') + afterTxt + '\n\n'
+    + '거래처가 아직 이 금액을 받지 못했다면 삭제하지 마세요.\n'
+    + '다음 인보이스에 쓰려면 인보이스 준비 화면의 [✕] 를 쓰세요.\n\n'
+    + '계속할까요?')) return;
+  // 1단계: 적용 해제 (다른 화면들이 곧바로 정상 금액으로 돌아오게)
+  cn.appliedToOrderId = null;
+  cn.appliedAt = null;
+  try {
+    saveEntityField('creditNotes', cn.id, 'appliedToOrderId');
+    saveEntityField('creditNotes', cn.id, 'appliedAt');
+  } catch(_){}
+  // 2단계: 삭제 (트랜잭션 — 동시 발행 크레딧 유실 방지)
+  DB.creditNotes = (DB.creditNotes || []).filter(function(x){ return x.id !== cnId; });
+  try { saveLocalDB(); } catch(_){}
+  try { removeEntityFromFirebase('creditNotes', cnId); }
+  catch(e) { console.warn('forceDeleteAppliedCredit save error:', e); alert('⚠️ 서버 삭제 실패 — 인터넷 확인 후 다시 시도하세요.'); return; }
+  try {
+    auditLogAdd('적용된 크레딧 강제 삭제: ' + cnNo + ' / ' + (cu ? cu.name : '-') + ' / $' + fmtMoney(g)
+      + ' · 적용위치 ' + invLabel + ' · 사유 ' + (cn.reason || '-'));
+  } catch(_){}
+  alert('✅ 삭제 완료.' + (tgt ? '\n\n' + invLabel + ' 금액이 크레딧 차감 전 금액으로 돌아왔습니다.' : ''));
+  if (typeof route === 'function') route();
 };
 
 window.deleteQuickCredit = function(cnId) {
@@ -9811,12 +9982,9 @@ window.deleteQuickCredit = function(cnId) {
   if (!confirm('CN' + (cn.creditNo || '') + ' 크레딧을 삭제할까요?')) return;
   DB.creditNotes = DB.creditNotes.filter(function(x){ return x.id !== cnId; });
   saveLocalDB();
-  try {
-    if (typeof DB_REF !== 'undefined' && DB_REF) {
-      _lastSaveTime = Date.now();
-      DB_REF.child('creditNotes').set(DB.creditNotes);
-    }
-  } catch(_){}
+  // ⭐ (2026-09-30 밤작업#371) 전여 배여 덮어쓰기(set) → 트랜잭션.
+  //   기존: DB_REF.child('creditNotes').set(전여) — 동시에 다른 컴에서 트레딧 발행 시 그것이 유실.
+  try { removeEntityFromFirebase('creditNotes', cnId); } catch(_){}
   try { auditLogAdd('크레딧 삭제: CN' + (cn.creditNo || '')); } catch(_){}
   renderQuickCreditUnusedList();
 };
@@ -13513,12 +13681,27 @@ window.deleteOrderFromPrep = function(orderId) {
     + '주문번호: ' + (o.orderNo || '-') + '\n'
     + '거래처: ' + custName + '\n'
     + '품목 ' + (o.items ? o.items.length : 0) + '개\n\n'
-    + '삭제 후에는 되돌릴 수 없습니다.';
+    + '삭제 후에는 되돌릴 수 없습니다.\n'
+    // ⭐ (2026-09-30 밤작업#374) 붙은 크레딧 사전 고지
+    + _creditReleaseNotice(orderId);
   if (!confirm(msg)) return;
+  // ⭐ (2026-09-30 밤작업#374) 크레딧 자동 해제 — 8/24·9/30 유령 크레딧 사고 근본 봉쇄
+  const _relPrep = _releaseCreditsForOrders(orderId, '인보이스 준비에서 주문 삭제 · ' + (o.orderNo || orderId));
+  // ⭐ (2026-09-30 밤작업#374) 이 경로엔 감사로그가 아예 없었다 (8/24 사고 흔적 부재 원인)
+  try {
+    auditLogAdd('주문 삭제(인보이스 준비): ' + (o.orderNo || orderId) + ' (' + custName + ') · 품목 '
+      + (o.items ? o.items.length : 0) + '개'
+      + (_relPrep.count > 0 ? ' · 크레딧 ' + _relPrep.count + '건 미사용 복귀' : ''));
+    if (o.invoiceNo) {
+      auditLogAdd('[결번원인] 결번 발생 · ' + o.invoiceNo + ' · 원인: 인보이스 준비에서 주문 삭제 · 거래처: '
+        + custName + ' · ' + new Date().toISOString());
+    }
+  } catch(_){}
   DB.orders = DB.orders.filter(x => x.id !== orderId);
   removeEntityFromFirebase('orders', orderId);
   saveLocalDB();
-  if (typeof showToast === 'function') showToast('🗑 주문이 삭제되었습니다.');
+  if (typeof showToast === 'function') showToast('🗑 주문이 삭제되었습니다.'
+    + (_relPrep.count > 0 ? ' 크레딧 ' + _relPrep.count + '건 미사용 복귀' : ''));
   location.hash = '#office';
 };
 function resetPrepPricesToMaster(orderId) {
@@ -13857,6 +14040,7 @@ async function _issueInvoiceInner(orderId) {
     }
   });
   window._prepSelectedCreditIds = [];   // 리셋
+  try { _prepClearSkip(); } catch(_){}   // ⭐ (2026-09-30 #372) 제외 목록 초기화
 
   // 3) 로컬 즉시 저장 — 이후 작업이 실패해도 발행 결과는 유지
   try { saveLocalDB(); } catch(e){ console.warn('saveLocalDB failed:', e); }
@@ -14664,9 +14848,78 @@ function getAppliedCreditNotesForOrder(orderId) {
 // ⭐ (2026-08-17) 자동 반영 · 이 거래처의 미적용 크레딧을 화면 진입 시 모두 자동 적용 (하단 라인으로 이동).
 //   원래 체크박스 방식이었으나, 사장님 요청으로 위치가 바뀌어도 자동 반영되도록 변경.
 //   취소 원하면 하단 크레딧 라인의 [✕] 버튼으로 즉시 해제 가능.
+// ═══════════════════════════════════════════════════════════════════════
+// ⭐ (2026-09-30 밤작업#372) 자동 재적용 루프 차단
+//   증상: 인보이스 준비 화면 크레딧 라인의 [✕] 를 눌러도 즉시 되살아남 (2026-09-30 직원 보고).
+//   원인: unapplyCreditFromPrep → route() → _renderUnusedCreditsPanel 이 다시 자동 적용.
+//         해제 → 재렌더 → 재적용 의 무한 루프. 8/24 감사로그에도 3연속 흔적 있음.
+//   해결: [✕] 로 해제한 크레딧 ID 를 주문별로 기억하고, 자동 적용에서 제외.
+//   ⚠️ 안전장치: 제외된 크레딧이 있으면 화면에 빨간 배너를 무조건 띄운다.
+//      혹시 이 제외 로직이 과하게 걸려도 직원이 눈으로 즉시 확인하고 되돌릴 수 있다.
+//   저장소: 메모리 전용 (window). Firebase·localStorage 에 쓰지 않으므로
+//          새로고침하면 초기화되고, 구버전으로 롤백해도 데이터에 흔적이 없다.
+// ═══════════════════════════════════════════════════════════════════════
+window._prepUnappliedCnIds = window._prepUnappliedCnIds || {};
+
+function _prepSkipSet(orderId) {
+  if (!orderId) return null;
+  if (!window._prepUnappliedCnIds[orderId]) window._prepUnappliedCnIds[orderId] = {};
+  return window._prepUnappliedCnIds[orderId];
+}
+function _prepMarkUnapplied(orderId, cnId) {
+  const set = _prepSkipSet(orderId);
+  if (set) set[cnId] = true;
+}
+function _prepIsSkipped(orderId, cnId) {
+  const set = window._prepUnappliedCnIds[orderId];
+  return !!(set && set[cnId]);
+}
+// 다른 주문의 준비 화면으로 넘어가면 그 주문 것만 남기고 정리 (메모리 누적 방지)
+function _prepResetSkipExcept(orderId) {
+  Object.keys(window._prepUnappliedCnIds).forEach(function(k){
+    if (k !== orderId) delete window._prepUnappliedCnIds[k];
+  });
+}
+function _prepClearSkip(orderId) {
+  if (orderId) delete window._prepUnappliedCnIds[orderId];
+  else window._prepUnappliedCnIds = {};
+}
+window._prepMarkUnapplied = _prepMarkUnapplied;
+window._prepIsSkipped = _prepIsSkipped;
+window._prepClearSkip = _prepClearSkip;
+
 function _renderUnusedCreditsPanel(o, cust) {
   if (!o || !cust) return '';
-  const unused = getUnusedCreditNotesForCustomer(cust.id).filter(cn => cn.appliedToOrderId !== o.id);
+  // ⭐ (2026-09-30 밤작업#372) 이 주문 것만 유지
+  _prepResetSkipExcept(o.id);
+  const allUnused = getUnusedCreditNotesForCustomer(cust.id).filter(cn => cn.appliedToOrderId !== o.id);
+  // [✕] 로 직원이 명시적으로 뺀 크레딧은 자동 적용에서 제외
+  const skipped = allUnused.filter(cn => _prepIsSkipped(o.id, cn.id));
+  const unused  = allUnused.filter(cn => !_prepIsSkipped(o.id, cn.id));
+  // ⚠️ 안전 배너 — 이 인보이스에 안 들어간 크레딧이 있으면 무조건 빨간색으로 알린다.
+  //    (자동 적용을 건너뛴 경우 = 직원이 빼놓은 경우. 절대 조용히 넘어가지 않게.)
+  let _skipBanner = '';
+  if (skipped.length > 0) {
+    const _sum = skipped.reduce(function(s,cn){ return s + (computeCreditNoteTotals(cn).grand || 0); }, 0);
+    _skipBanner = '<div class="card" id="prepSkippedCreditBanner" style="border:2px solid #C0392B; background:#FDECEA;">'
+      + '<h3 style="margin:0 0 6px 0; color:#C0392B;">⚠️ 이 거래처에 안 쓴 크레딧 ' + skipped.length + '건 ($' + fmtMoney(_sum) + ') 이 있습니다</h3>'
+      + '<div style="font-size:12px; color:#7A1F16; line-height:1.7; margin-bottom:8px;">'
+      + '<b>이번 인보이스에서 제외</b>되었습니다. 이대로 발행하면 크레딧이 차감되지 않습니다.<br>'
+      + '거래처에 돌려줘야 할 금액이면 아래 버튼을 눌러 이번 인보이스에 넣으세요.'
+      + '</div>'
+      + skipped.map(function(cn){
+          const g = computeCreditNoteTotals(cn).grand || 0;
+          const cnNo = cn.creditNo || cn.id.slice(0,8);
+          return '<div style="display:flex; align-items:center; gap:10px; padding:8px 12px; background:#fff; border:1px solid #C0392B; border-radius:6px; margin-bottom:6px;">'
+            + '<span style="flex:1;"><b>CN-' + cnNo + '</b> <span style="color:var(--muted); font-size:12px;">(' + (toLocalISODate(cn.issuedAt) || '-') + ')</span>'
+            + (cn.reason ? ' · <span style="color:var(--brand-dark);">' + escapeHtmlSimple(cn.reason) + '</span>' : '') + '</span>'
+            + '<b style="color:#C0392B; font-size:14px; white-space:nowrap;">-$' + fmtMoney(g) + '</b>'
+            + '<button class="btn sm" style="background:#C0392B; color:#fff; white-space:nowrap;" '
+            +   'onclick="applyCreditToPrepNow(\'' + cn.id + '\',\'' + o.id + '\')">이번 인보이스에 넣기</button>'
+            + '</div>';
+        }).join('')
+      + '</div>';
+  }
   // ✨ 자동 적용
   let autoAppliedCount = 0;
   if (unused.length > 0) {
@@ -14723,12 +14976,12 @@ function _renderUnusedCreditsPanel(o, cust) {
   window._prepSelectedCreditIds = alreadyApplied.map(cn => cn.id);
   // 방금 자동 적용된 것이 있으면 알림 배너
   if (autoAppliedCount > 0) {
-    return '<div class="card" id="prepCreditsSection" style="border-left:4px solid #2E7D32; background:#E8F5E9;">'
+    return _skipBanner + '<div class="card" id="prepCreditsSection" style="border-left:4px solid #2E7D32; background:#E8F5E9;">'
       + '<h3 style="margin:0 0 4px 0; color:#1B5E20;">✅ 미적용 크레딧 ' + autoAppliedCount + '건 자동 반영됨</h3>'
       + '<div style="font-size:12px; color:#2E7D32;">하단 품목 리스트에 크레딧 라인이 추가되었습니다. 취소하려면 라인의 <b>[✕]</b> 버튼을 클릭하세요.</div>'
       + '</div>';
   }
-  return '';
+  return _skipBanner;   // ⭐ (2026-09-30 #372) 제외된 크레딧이 있으면 빨간 배너만 표시
   // (이하 코드는 unused.length === 0 일 때 도달하지 않으므로 유지 불필요 — 배너만 반환)
   const rows = unused.map(function(cn){
     const grand = (computeCreditNoteTotals(cn).grand || 0);
@@ -14753,6 +15006,8 @@ window.applyCreditToPrepNow = function(cnId, orderId) {
   const cn = (DB.creditNotes || []).find(function(x){ return x.id === cnId; });
   const o = DB.orders.find(function(x){ return x.id === orderId; });
   if (!cn || !o) return;
+  // ⭐ (2026-09-30 밤작업#372) 다시 넣으면 제외 해제
+  try { const _st = window._prepUnappliedCnIds[orderId]; if (_st) delete _st[cnId]; } catch(_){}
   cn.appliedToOrderId = orderId;
   cn.appliedAt = new Date().toISOString();
   try {
@@ -14767,6 +15022,9 @@ window.applyCreditToPrepNow = function(cnId, orderId) {
 window.unapplyCreditFromPrep = function(cnId, orderId) {
   const cn = (DB.creditNotes || []).find(function(x){ return x.id === cnId; });
   if (!cn) return;
+  // ⭐ (2026-09-30 밤작업#372) 이 주문의 자동 적용 대상에서 제외 → 되살아나지 않게.
+  //   빨간 배너가 대신 표시되므로 조용히 빠지는 일은 없다.
+  _prepMarkUnapplied(orderId || cn.appliedToOrderId, cnId);
   cn.appliedToOrderId = null;
   cn.appliedAt = null;
   try {
