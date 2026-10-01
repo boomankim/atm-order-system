@@ -17980,6 +17980,162 @@ const INVENTORY_STEP_TABLE = {
     { min: 19, max: Infinity, box: 1.0 },
   ],
 };
+// =========================================================================
+// ⭐ (2026-10-02 밤작업#383 1단계) 품목별 박스 중량 학습
+// -------------------------------------------------------------------------
+// 왜 필요한가:
+//   기존에는 박스 중량을 "소·와규 19kg / 나머지 15kg" 두 숫자로만 썼다.
+//   실제 주문이력(195품목)을 보면
+//     소고기 10.0~27.2  와규 3.7~19.4  돼지 10.0~25.0  가공육 11.4~100.0 kg
+//   튀김용 돈까스는 실제 100kg/박스인데 15kg 으로 나눠서 한 번에 17박스가 틀어졌다.
+//   → 품목마다 자기 박스 중량을 갖게 하고, 계근 이력에서 스스로 배운다.
+//
+// 저장 정책:
+//   · 학습값은 Firebase 에 쓰지 않는다 (메모리 캐시) — 기기마다 매일 쓰기 폭주 방지
+//   · 사장님이 직접 고친 값만 DB.inventory.boxKgManual 에 저장 (작은 데이터)
+//   우선순위: 수동 지정 > 학습값 > 카테고리 기본값
+// =========================================================================
+const BOXKG_MIN_SAMPLES = 3;        // 이보다 적으면 아예 무시
+const BOXKG_SANE_MIN = 0.2;         // 샘플 허용 하한 (kg/박스)
+const BOXKG_SANE_MAX = 400;         // 샘플 허용 상한
+// ⭐ 자동 적용 기준 — 이걸 넘지 못하면 "제안"으로만 보여주고 실제 환산에는 쓰지 않는다.
+//   와규 데클이 샘플 3건으로 3.7kg 을 학습해 50kg 출고가 13.2박스로 튀는 사고를 막기 위함.
+//   실데이터 검증: 이 기준이면 195개 중 127개 자동 적용 (돈까스 100kg·삼겹살 13.6kg·사골국 20kg 포함),
+//   와규 데클(n=3)·특양구이(일관성 0%)는 보류 → 사장님 확인 후 [적용].
+const BOXKG_AUTO_MIN_SAMPLES = 5;   // 자동 적용 최소 샘플 수
+const BOXKG_AUTO_CONSISTENCY = 0.6; // 중앙값 ±25% 안에 들어오는 샘플 비율 하한
+
+// 환산 안내 문구용 — 어떤 박스 중량을 썼는지 사람이 읽게
+function _boxKgLabel(pid, cut) {
+  const i = inventoryBoxKgInfo(pid, cut);
+  if (i.src === 'manual')  return '1박스 ' + i.kg + 'kg · 직접 지정';
+  if (i.src === 'learned') return '1박스 ' + i.kg + 'kg · 주문이력 ' + i.n + '건 학습';
+  if (i.src === 'suggest') return '1박스 ' + i.kg + 'kg · ' + cut + ' 기본값 (제안 ' + i.suggest + 'kg · 확인 필요)';
+  return '1박스 ' + i.kg + 'kg · ' + cut + ' 기본값';
+}
+window._boxKgLabel = _boxKgLabel;
+
+function inventoryBoxKgDefault(cut) {
+  return (cut === '소고기' || cut === '와규') ? 19 : 15;
+}
+window.inventoryBoxKgDefault = inventoryBoxKgDefault;
+
+function _median(arr) {
+  if (!arr || !arr.length) return 0;
+  const s = arr.slice().sort(function(a,b){ return a - b; });
+  const m = Math.floor(s.length / 2);
+  return s.length % 2 ? s[m] : (s[m-1] + s[m]) / 2;
+}
+
+// 주문이력 전수 스캔 → 품목별 kg/박스 샘플 수집 후 중앙값
+//   force=true 면 캐시 무시하고 다시 계산
+function inventoryRelearnBoxKg(force) {
+  const key = 'o' + ((DB.orders || []).length);
+  if (!force && window._boxKgCache && window._boxKgCache.key === key) {
+    return window._boxKgCache.map;
+  }
+  const per = {};
+  (DB.orders || []).forEach(function(o) {
+    if (!o) return;
+    const src = (o.invoiceItems && o.invoiceItems.length) ? o.invoiceItems : (o.items || []);
+    if (!Array.isArray(src)) return;
+    src.forEach(function(it) {
+      if (!it || !it.productId) return;
+      if (String(it.unit || '') !== '박스') return;          // 박스로 주문한 건만
+      const bx = +(it.quantity || 0);
+      const kg = +(it.actualWeightKg || 0);                   // 계근 실측값
+      if (!(bx > 0) || !(kg > 0)) return;
+      const per1 = kg / bx;
+      if (per1 < BOXKG_SANE_MIN || per1 > BOXKG_SANE_MAX) return;
+      (per[it.productId] = per[it.productId] || []).push(per1);
+    });
+  });
+  const map = {};
+  Object.keys(per).forEach(function(pid) {
+    const a = per[pid];
+    if (a.length < BOXKG_MIN_SAMPLES) return;
+    const m = _median(a);
+    if (!(m > 0)) return;
+    //   일관성 = 중앙값 ±25% 안에 들어오는 샘플 비율
+    const near = a.filter(function(v){ return Math.abs(v - m) <= m * 0.25; }).length;
+    const consistency = near / a.length;
+    const auto = (a.length >= BOXKG_AUTO_MIN_SAMPLES && consistency >= BOXKG_AUTO_CONSISTENCY);
+    map[pid] = {
+      kg: +(m.toFixed(2)), n: a.length,
+      lo: Math.floor(Math.min.apply(null, a) * 10) / 10,
+      hi: Math.ceil(Math.max.apply(null, a) * 10) / 10,
+      consistency: +(consistency.toFixed(2)),
+      auto: auto                      // false = 제안만 · 환산에는 미사용
+    };
+  });
+  window._boxKgCache = { key: key, map: map, at: Date.now() };
+  return map;
+}
+window.inventoryRelearnBoxKg = inventoryRelearnBoxKg;
+
+// 이 품목의 박스 중량 + 출처
+function inventoryBoxKgInfo(pid, cut) {
+  const def = inventoryBoxKgDefault(cut);
+  const manual = ((DB.inventory || {}).boxKgManual || {})[pid];
+  if (pid && manual !== undefined && manual !== null && +manual > 0) {
+    return { kg: +manual, src: 'manual', n: 0, lo: 0, hi: 0, def: def };
+  }
+  if (pid) {
+    const l = inventoryRelearnBoxKg()[pid];
+    if (l && l.kg > 0) {
+      if (l.auto) {
+        return { kg: l.kg, src: 'learned', n: l.n, lo: l.lo, hi: l.hi,
+                 consistency: l.consistency, def: def };
+      }
+      //   신뢰도 미달 — 환산은 기본값으로 하고, 제안값만 화면에 보여준다.
+      return { kg: def, src: 'suggest', n: l.n, lo: l.lo, hi: l.hi,
+               consistency: l.consistency, suggest: l.kg, def: def };
+    }
+  }
+  return { kg: def, src: 'default', n: 0, lo: 0, hi: 0, def: def };
+}
+window.inventoryBoxKgInfo = inventoryBoxKgInfo;
+
+function inventoryBoxKgFor(pid, cut) { return inventoryBoxKgInfo(pid, cut).kg; }
+window.inventoryBoxKgFor = inventoryBoxKgFor;
+
+// 박스 중량에 비례하는 0/0.2/0.4/0.6/0.8/1.0 구간표 생성
+//   boxKg=15 를 넣으면 기존 small 테이블(3·6·9·12·15)과 정확히 같다.
+function _wmBandsForBoxKg(boxKg) {
+  const b = [];
+  for (let i = 0; i < 5; i++) {
+    b.push({ min: boxKg * i * 0.2, max: boxKg * (i + 1) * 0.2, box: +(i * 0.2).toFixed(1) });
+  }
+  b.push({ min: boxKg, max: Infinity, box: 1.0 });
+  return b;
+}
+
+// 사장님이 직접 박스 중량을 고칠 때
+window.inventorySetBoxKgManual = function(pid, kgOrNull) {
+  if (!DB.inventory) DB.inventory = {};
+  if (!DB.inventory.boxKgManual) DB.inventory.boxKgManual = {};
+  const p = (DB.products || []).find(function(x){ return x && x.id === pid; });
+  const nm = p ? p.name : pid;
+  if (kgOrNull === null || kgOrNull === '' || kgOrNull === undefined) {
+    delete DB.inventory.boxKgManual[pid];
+    try { auditLogAdd('⚖️ 박스중량 수동값 해제: ' + nm + ' → 자동(학습값) 사용'); } catch(_){}
+  } else {
+    const v = +kgOrNull;
+    if (!(v > 0) || v > BOXKG_SANE_MAX) { alert('박스 중량은 0 보다 크고 ' + BOXKG_SANE_MAX + 'kg 이하여야 합니다.'); return false; }
+    const before = DB.inventory.boxKgManual[pid];
+    DB.inventory.boxKgManual[pid] = v;
+    try { auditLogAdd('⚖️ 박스중량 수동 지정: ' + nm + ' → ' + v + 'kg' + (before ? ' (이전 ' + before + 'kg)' : '')); } catch(_){}
+  }
+  saveDB();
+  if (typeof DB_REF !== 'undefined' && DB_REF) {
+    try {
+      _lastSaveTime = Date.now();
+      DB_REF.child('inventory/boxKgManual').update({ [pid]: (DB.inventory.boxKgManual[pid] === undefined ? null : DB.inventory.boxKgManual[pid]) });
+    } catch(_){}
+  }
+  return true;
+};
+
 function _wmStepTableFor(cut) {
   if (cut === '소고기' || cut === '와규') return INVENTORY_STEP_TABLE.large;
   return INVENTORY_STEP_TABLE.small;   // 돼지고기·오리·양고기 등
@@ -17990,12 +18146,15 @@ function _wmStepTableFor(cut) {
 //   표준 박스 중량: 돼지·오리·양 = 15kg · 소·와규 = 19kg
 //   0-표준박스kg 구간은 기존 단계표 (0/0.2/0.4/0.6/0.8/1.0) 그대로
 //   표준박스kg 초과분은 정수 박스로 환산 후 나머지 분수 더함
-function inventoryBoxConvert(kgTotal, cut) {
+//   ⭐ (2026-10-02 밤작업#383) 3번째 인자 pid 추가 — 품목별 박스 중량 적용.
+//   pid 를 안 넘기거나 학습·수동값이 없으면 기존과 100% 동일하게 동작한다.
+function inventoryBoxConvert(kgTotal, cut, pid) {
   if (!kgTotal || kgTotal <= 0) return 0;
-  const table = _wmStepTableFor(cut);
-  // 표준 1박스 중량 (테이블 마지막 구간의 min)
-  const isLarge = (cut === '소고기' || cut === '와규');
-  const standardBoxKg = isLarge ? 19 : 15;
+  const info = inventoryBoxKgInfo(pid, cut);
+  const standardBoxKg = info.kg;
+  //   기본값(19/15)일 때는 기존 하드코딩 구간표를 그대로 써서 결과가 바뀌지 않게 한다.
+  //   품목별 값이 있을 때만 그 중량에 비례하는 구간표를 만든다.
+  const table = (info.src === 'default') ? _wmStepTableFor(cut) : _wmBandsForBoxKg(standardBoxKg);
   // 전체 박스 + 나머지 kg 분리
   let wholeBoxes = 0;
   let remainderKg = kgTotal;
@@ -18906,7 +19065,9 @@ function viewInventory(params) {
           <button class="btn sm" style="background:#5E35B1; color:#fff; min-width:170px; width:100%; padding:6px 12px;" onclick="inventoryToggleStocktakeHistoryDropdown()" title="지난 실사의 오차 리스트 다시 조회">📊 지난 실사 이력</button>
           <div id="invStocktakeHistoryDropdown" style="display:none; position:absolute; top:calc(100% + 4px); right:0; background:#fff; border:1px solid var(--line); border-radius:6px; box-shadow:0 4px 12px rgba(0,0,0,0.15); min-width:280px; max-width:360px; z-index:100;"></div>
         </div>
+        <button class="btn sm" style="background:#00695C; color:#fff; min-width:170px; padding:6px 12px;" onclick="inventoryToggleBoxKgPanel()" title="품목별 1박스 중량 조회·수정 — kg 출고를 박스로 환산할 때 쓰는 기준">⚖️ 박스 중량 관리</button>
       </div>
+      <div id="invBoxKgWrap" style="display:none; margin-top:12px;"></div>
       <div id="invStocktakeWrap" style="display:none;"></div>
     </div>
   `;
@@ -19085,8 +19246,8 @@ window.inventoryReceiveFromReturn = function(orderId, itemIdx, pid, absQty, unit
   let boxToAdd = 0;
   let display = '';
   if (unit === '작업중량') {
-    boxToAdd = inventoryBoxConvert(+absWeightKg || 0, p.cut);
-    display = (+absWeightKg).toFixed(2) + ' kg → ' + boxToAdd.toFixed(1) + ' 박스 (' + p.cut + ' 카테고리 환산)';
+    boxToAdd = inventoryBoxConvert(+absWeightKg || 0, p.cut, p.id);
+    display = (+absWeightKg).toFixed(2) + ' kg → ' + boxToAdd.toFixed(1) + ' 박스 (' + _boxKgLabel(p.id, p.cut) + ')';
   } else if (unit === '팩') {
     if (typeof inventoryPackToBox === 'function') {
       boxToAdd = inventoryPackToBox(+absQty || 0, p.cut);
@@ -19155,8 +19316,8 @@ window.inventoryReceiveFromReturnKey = function(returnKey, pid, absQty, unit, ab
   if (!p) { alert('품목 정보를 찾을 수 없습니다.'); return; }
   let boxToAdd = 0, display = '';
   if (unit === '작업중량') {
-    boxToAdd = inventoryBoxConvert(+absWeightKg || 0, p.cut);
-    display = (+absWeightKg).toFixed(2) + ' kg → ' + boxToAdd.toFixed(1) + ' 박스 (' + p.cut + ' 카테고리 환산)';
+    boxToAdd = inventoryBoxConvert(+absWeightKg || 0, p.cut, p.id);
+    display = (+absWeightKg).toFixed(2) + ' kg → ' + boxToAdd.toFixed(1) + ' 박스 (' + _boxKgLabel(p.id, p.cut) + ')';
   } else if (unit === '팩') {
     boxToAdd = (typeof inventoryPackToBox === 'function') ? inventoryPackToBox(+absQty || 0, p.cut) : (+absQty || 0);
     display = absQty + ' 팩 → ' + boxToAdd.toFixed(1) + ' 박스';
@@ -19536,6 +19697,189 @@ function _invFindGhostRecords() {
   }).sort(function(a,b){ return Math.abs(b.stock) - Math.abs(a.stock); });
 }
 window._invFindGhostRecords = _invFindGhostRecords;
+
+// ⭐ (2026-10-02 밤작업#383 1단계) 박스 중량 관리 패널
+window.inventoryToggleBoxKgPanel = function() {
+  const wrap = document.getElementById('invBoxKgWrap');
+  if (!wrap) return;
+  if (wrap.style.display === 'none' || !wrap.style.display) {
+    wrap.style.display = 'block';
+    inventoryRenderBoxKgPanel();
+    try { wrap.scrollIntoView({ behavior: 'smooth', block: 'nearest' }); } catch(_){}
+  } else {
+    wrap.style.display = 'none';
+    wrap.innerHTML = '';
+  }
+};
+
+window._boxKgFilter = window._boxKgFilter || { q: '', sort: 'gap', onlyLearned: false };
+
+window.inventoryRenderBoxKgPanel = function() {
+  const wrap = document.getElementById('invBoxKgWrap');
+  if (!wrap) return;
+  const f = window._boxKgFilter;
+  const learned = inventoryRelearnBoxKg();
+  const manual = ((DB.inventory || {}).boxKgManual || {});
+  let rows = (DB.products || []).filter(function(p){
+    return p && p.id && INVENTORY_CATEGORIES.includes(p.cut);
+  }).map(function(p){
+    const info = inventoryBoxKgInfo(p.id, p.cut);
+    return { p: p, info: info, gap: Math.abs(info.kg - info.def) };
+  });
+  const totalCnt = rows.length;
+  const learnedCnt = rows.filter(function(r){ return r.info.src === 'learned'; }).length;
+  const manualCnt  = rows.filter(function(r){ return r.info.src === 'manual'; }).length;
+  const suggestCnt = rows.filter(function(r){ return r.info.src === 'suggest'; }).length;
+  const defaultCnt = rows.filter(function(r){ return r.info.src === 'default'; }).length;
+  if (f.q) {
+    const q = String(f.q).toLowerCase();
+    rows = rows.filter(function(r){ return String(r.p.name || '').toLowerCase().indexOf(q) >= 0; });
+  }
+  if (f.onlyLearned) rows = rows.filter(function(r){ return r.info.src !== 'default'; });
+  if (f.sort === 'gap') rows.sort(function(a,b){ return b.gap - a.gap; });
+  else if (f.sort === 'kg') rows.sort(function(a,b){ return b.info.kg - a.info.kg; });
+  else { _sortProductsKo(rows.map(function(r){ return r.p; })); rows.sort(function(a,b){
+    return String(a.p.name||'').replace(/\s+/g,' ').trim().localeCompare(String(b.p.name||'').replace(/\s+/g,' ').trim(), 'ko-KR', {sensitivity:'base'}); }); }
+
+  const srcBadge = function(info){
+    if (info.src === 'manual')  return '<span style="background:#1565C0; color:#fff; padding:1px 6px; border-radius:3px; font-size:10px; white-space:nowrap;">직접 지정</span>';
+    if (info.src === 'learned') return '<span style="background:#2E7D32; color:#fff; padding:1px 6px; border-radius:3px; font-size:10px; white-space:nowrap;">학습 ' + info.n + '건</span>';
+    if (info.src === 'suggest') return '<span style="background:#E67E22; color:#fff; padding:1px 6px; border-radius:3px; font-size:10px; white-space:nowrap;">제안 ' + info.n + '건</span>';
+    return '<span style="background:#9E9E9E; color:#fff; padding:1px 6px; border-radius:3px; font-size:10px; white-space:nowrap;">기본값</span>';
+  };
+  const body = rows.slice(0, 300).map(function(r){
+    const i = r.info, p = r.p;
+    const gapTxt = r.gap > 0.05
+      ? '<span style="color:' + (r.gap >= 5 ? '#C62828' : '#E67E22') + '; font-weight:700;">' + (i.kg > i.def ? '+' : '−') + r.gap.toFixed(1) + '</span>'
+      : '<span style="color:#aaa;">–</span>';
+    const range = ((i.src === 'learned' || i.src === 'suggest') && i.hi > i.lo)
+      ? '<div style="font-size:10px; color:var(--muted);">실제 ' + i.lo.toFixed(1) + ' ~ ' + i.hi.toFixed(1) + 'kg'
+        + (i.consistency !== undefined ? ' · 일관성 ' + Math.round(i.consistency * 100) + '%' : '') + '</div>' : '';
+    const sugg = (i.src === 'suggest')
+      ? '<div style="font-size:10px; color:#B9641C; font-weight:700; margin-top:2px;">제안 ' + i.suggest + 'kg'
+        + ' <button class="btn sm" style="background:#E67E22; color:#fff; padding:1px 6px; font-size:10px;"'
+        + ' onclick="boxKgApplySuggest(this, ' + i.suggest + ')" title="제안값을 직접 지정으로 확정">적용</button></div>'
+      : '';
+    return '<tr data-pid="' + escapeHtmlSimple(p.id) + '">'
+      + '<td style="font-size:11px; color:var(--muted); white-space:nowrap;">' + escapeHtmlSimple(p.cut) + '</td>'
+      + '<td><b>' + escapeHtmlSimple(p.name || '') + '</b>' + range + sugg + '</td>'
+      + '<td>' + srcBadge(i) + '</td>'
+      + '<td class="num" style="color:var(--muted);">' + i.def + '</td>'
+      + '<td class="num" style="padding:3px 6px; white-space:nowrap;">'
+      +   '<input type="number" step="0.1" min="0" class="boxKgInput" value="' + i.kg + '"'
+      +   ' style="width:78px; text-align:right; font-weight:700; padding:4px 6px; border:1px solid '
+      +   (i.src === 'manual' ? '#1565C0' : '#CFC6B5') + '; border-radius:4px;">'
+      +   ' <button class="btn sm" style="background:#00695C; color:#fff; padding:3px 8px;" onclick="boxKgSaveRow(this)">저장</button>'
+      +   (i.src === 'manual' ? ' <button class="btn sm secondary" style="padding:3px 8px;" onclick="boxKgClearRow(this)" title="직접 지정 해제 → 학습값/기본값 사용">↩️</button>' : '')
+      + '</td>'
+      + '<td class="num">' + gapTxt + '</td>'
+      + '</tr>';
+  }).join('');
+
+  wrap.innerHTML = '<div style="border:2px solid #00695C; border-radius:8px; padding:12px;">'
+    + '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">'
+    +   '<h3 style="margin:0; color:#00695C;">⚖️ 품목별 1박스 중량</h3>'
+    +   '<button class="btn sm secondary" onclick="inventoryToggleBoxKgPanel()">✕ 닫기</button>'
+    + '</div>'
+    + '<div style="padding:9px 12px; background:#E0F2F1; border-left:4px solid #00695C; border-radius:4px; margin-bottom:10px; font-size:12px; line-height:1.75;">'
+    +   'kg 로 출고·반품된 양을 <b>박스로 환산할 때 쓰는 기준</b>입니다. '
+    +   '계근 이력(박스 주문 + 실측 kg)에서 <b>품목마다 자동으로 배웁니다</b> — 입력하실 건 없습니다.<br>'
+    +   '값이 이상하면 숫자를 고치고 [저장] 하세요. 직접 지정한 값은 자동 학습보다 <b>우선</b>합니다.<br>'
+    +   '<span style="color:#B9641C;">주황 <b>제안</b></span> 은 샘플이 적거나 들쭉날쭉해서 '
+    +   '<b>아직 쓰지 않는 값</b>입니다 — 맞다고 보이면 [적용] 을 누르세요.<br>'
+    +   '<span style="color:#00695C; font-weight:700;">학습 적용 ' + learnedCnt + '건</span> · '
+    +   '<span style="color:#1565C0; font-weight:700;">직접 지정 ' + manualCnt + '건</span> · '
+    +   '<span style="color:#B9641C; font-weight:700;">제안(미적용) ' + suggestCnt + '건</span> · '
+    +   '<span style="color:#777;">기본값 ' + defaultCnt + '건</span>  (전체 ' + totalCnt + '품목)'
+    + '</div>'
+    + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">'
+    +   '<input type="text" id="boxKgSearch" placeholder="품목명 검색" value="' + escapeHtmlSimple(f.q) + '"'
+    +     ' oninput="window._boxKgFilter.q=this.value; inventoryRenderBoxKgPanel(); var e=document.getElementById(\'boxKgSearch\'); if(e){e.focus(); e.setSelectionRange(e.value.length,e.value.length);}"'
+    +     ' style="padding:5px 8px; border:1px solid var(--line); border-radius:5px; font-size:12px; min-width:160px;">'
+    +   '<select onchange="window._boxKgFilter.sort=this.value; inventoryRenderBoxKgPanel();" style="padding:5px 8px; border:1px solid var(--line); border-radius:5px; font-size:12px;">'
+    +     '<option value="gap"' + (f.sort==='gap'?' selected':'') + '>기본값과 차이 큰 순</option>'
+    +     '<option value="kg"' + (f.sort==='kg'?' selected':'') + '>중량 큰 순</option>'
+    +     '<option value="name"' + (f.sort==='name'?' selected':'') + '>품목명 가나다</option>'
+    +   '</select>'
+    +   '<label style="font-size:12px; display:flex; align-items:center; gap:4px; cursor:pointer;">'
+    +     '<input type="checkbox"' + (f.onlyLearned?' checked':'') + ' onchange="window._boxKgFilter.onlyLearned=this.checked; inventoryRenderBoxKgPanel();"> 기본값 제외'
+    +   '</label>'
+    +   '<button class="btn sm secondary" onclick="boxKgRelearnNow()" title="주문이력을 다시 읽어 학습값 갱신">🔄 다시 학습</button>'
+    +   '<button class="btn sm secondary" onclick="boxKgExportCSV()">📥 CSV</button>'
+    +   '<span style="margin-left:auto; font-size:12px; color:var(--muted);">' + rows.length + '품목 표시</span>'
+    + '</div>'
+    + '<div style="overflow-x:auto; max-height:440px; overflow-y:auto; border:1px solid #E8DFCF; border-radius:6px;">'
+    +   '<table class="t" style="width:100%;">'
+    +   '<thead><tr><th>카테고리</th><th>품목</th><th>출처</th><th class="num">기본값</th>'
+    +     '<th class="num">1박스 중량(kg)</th><th class="num">차이</th></tr></thead>'
+    +   '<tbody id="boxKgTbody">' + body + '</tbody></table></div>'
+    + (rows.length > 300 ? '<div style="font-size:11px; color:var(--muted); margin-top:6px;">※ 300품목까지 표시 — 검색으로 좁혀 주세요.</div>' : '')
+    + '</div>';
+};
+
+window.boxKgApplySuggest = function(btn, kg) {
+  const tr = btn.closest('tr[data-pid]');
+  if (!tr) return;
+  const pid = tr.getAttribute('data-pid');
+  if (!confirm('제안값 ' + kg + 'kg 을 이 품목의 1박스 중량으로 확정합니다.\n\n'
+    + '(샘플이 적거나 편차가 커서 자동 적용하지 않은 값입니다.\n'
+    + ' 확정하면 kg 출고를 박스로 환산할 때 이 값을 씁니다.)\n\n진행할까요?')) return;
+  if (inventorySetBoxKgManual(pid, kg) !== false) {
+    showToast('✅ 제안값 적용 · ' + kg + 'kg');
+    inventoryRenderBoxKgPanel();
+  }
+};
+
+window.boxKgSaveRow = function(btn) {
+  const tr = btn.closest('tr[data-pid]');
+  if (!tr) return;
+  const pid = tr.getAttribute('data-pid');
+  const inp = tr.querySelector('.boxKgInput');
+  const v = parseFloat(String(inp.value).trim());
+  if (!(v > 0)) { alert('0 보다 큰 숫자를 입력하세요.'); return; }
+  if (inventorySetBoxKgManual(pid, v) !== false) {
+    showToast('✅ 박스 중량 저장 · ' + v + 'kg');
+    inventoryRenderBoxKgPanel();
+  }
+};
+
+window.boxKgClearRow = function(btn) {
+  const tr = btn.closest('tr[data-pid]');
+  if (!tr) return;
+  const pid = tr.getAttribute('data-pid');
+  if (!confirm('직접 지정한 값을 해제하고\n자동 학습값(없으면 카테고리 기본값)을 쓰도록 되돌립니다.\n\n진행할까요?')) return;
+  inventorySetBoxKgManual(pid, null);
+  showToast('↩️ 자동값으로 되돌렸습니다');
+  inventoryRenderBoxKgPanel();
+};
+
+window.boxKgRelearnNow = function() {
+  const before = Object.keys(inventoryRelearnBoxKg()).length;
+  const after = Object.keys(inventoryRelearnBoxKg(true)).length;
+  inventoryRenderBoxKgPanel();
+  showToast('🔄 다시 학습 완료 · 학습된 품목 ' + after + '개' + (after !== before ? ' (이전 ' + before + ')' : ''));
+};
+
+window.boxKgExportCSV = function() {
+  const learnedMap = inventoryRelearnBoxKg();
+  const rows = [['카테고리','품목','출처','카테고리 기본값(kg)','적용 박스중량(kg)','제안값(kg)','학습 건수','실제 최소(kg)','실제 최대(kg)']];
+  (DB.products || []).forEach(function(p){
+    if (!p || !p.id || !INVENTORY_CATEGORIES.includes(p.cut)) return;
+    const i = inventoryBoxKgInfo(p.id, p.cut);
+    const l = learnedMap[p.id] || {};
+    rows.push([p.cut, p.name || '', (i.src === 'manual' ? '직접 지정' : i.src === 'learned' ? '학습 적용' : i.src === 'suggest' ? '제안(미적용)' : '기본값'),
+               i.def, i.kg, (i.src === 'suggest' ? i.suggest : ''), l.n || '', l.lo || '', l.hi || '']);
+  });
+  const csv = '﻿' + rows.map(function(r){
+    return r.map(function(c){ return '"' + String(c).replace(/"/g,'""') + '"'; }).join(',');
+  }).join('\r\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'ATM_박스중량_' + todayLocalISO() + '.csv';
+  document.body.appendChild(a); a.click();
+  setTimeout(function(){ try { document.body.removeChild(a); URL.revokeObjectURL(a.href); } catch(_){} }, 1000);
+};
 
 window.inventoryApplyStocktakeBulk = function() {
   inventoryRolloverIfNeeded();
@@ -20113,7 +20457,7 @@ function inventoryRenderOutgoing() {
     const p = DB.products.find(x => x.id === pid);
     if (!p || !INVENTORY_CATEGORIES.includes(p.cut)) return;
     const o = out[pid];
-    const kgBoxConvert = inventoryBoxConvert(o.kgQty, p.cut);
+    const kgBoxConvert = inventoryBoxConvert(o.kgQty, p.cut, p.id);
     const packBoxConvert = inventoryPackToBox(o.packQty, p.cut);
     const totalDeduct = o.boxQty + packBoxConvert + kgBoxConvert;
     byCat[p.cut].push({ p, ...o, kgBoxConvert, packBoxConvert, totalDeduct });
@@ -20314,7 +20658,7 @@ function _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag) {
   else if (it.unit === '팩') addedPack = +(it.quantity) || 0;
   else addedBox = +(it.quantity) || 0;
   const packBox = inventoryPackToBox(addedPack, rawP.cut);
-  const kgBox = inventoryBoxConvert(addedKg, rawP.cut);
+  const kgBox = inventoryBoxConvert(addedKg, rawP.cut, rawP.id);
   const totalDeduct = addedBox + packBox + kgBox;
   // ⭐ (2026-07-29) 중량이 있으면 0박스라도 매칭 확정 처리 (라인 리스트에서 사라짐)
   //   예: 돼지 목뼈 실중량 2.5kg → 3kg 미만 구간 = 0박스. 재고는 안 건드리지만 처리 완료 기록.
@@ -20423,7 +20767,7 @@ window.inventoryAutoApplyOneOrder = function(orderId) {
       const packOut = byProductPack[pid] || 0;
       const kgOut = byProductKg[pid] || 0;
       const packBox = inventoryPackToBox(packOut, p.cut);
-      const kgBox = inventoryBoxConvert(kgOut, p.cut);
+      const kgBox = inventoryBoxConvert(kgOut, p.cut, p.id);
       const total = boxOut + packBox + kgBox;
       if (total > 0) {
         e.deductedToday = (e.deductedToday || 0) + total;
@@ -20543,7 +20887,7 @@ window.inventoryApplyAllToday = function() {
     const packOut = byProductPack[pid] || 0;
     const kgOut = byProductKg[pid] || 0;
     const packBox = inventoryPackToBox(packOut, p.cut);
-    const kgBox = inventoryBoxConvert(kgOut, p.cut);
+    const kgBox = inventoryBoxConvert(kgOut, p.cut, p.id);
     const total = boxOut + packBox + kgBox;
     e.deductedToday += total;
     e.stock -= total;
