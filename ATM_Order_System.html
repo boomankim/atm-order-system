@@ -4202,6 +4202,54 @@ function renderBackupAdmin() {
 //   테스트/오프닝 발란스 입력 중에 생긴 문제 인보이스 (거래처 없음 / orderNo 없음 / 오프닝 발란스 의심)
 //   를 감지하고 개별 삭제 또는 거래처 매핑으로 정리할 수 있게 함.
 //   화면 진입 시 자동 JSON 백업 다운로드.
+// ⭐ (2026-10-01 밤작업#379) 지워진 재고 복구 — 보스 전용
+//   2026-10-01 사고: 실사를 두 번 나눠 적용하면서 미입력→0 이 아직 세지 않은
+//   품목의 전재고를 지웠다. 가장 최근 일별 스냅샷 값으로 되돌린다.
+window.inventoryRestoreWipedStock = async function() {
+  const list = _invFindWipedStock();
+  if (list.length === 0) { alert('✅ 복구할 품목이 없습니다.'); return; }
+  const sum = list.reduce(function(s,x){ return s + x.snapStock; }, 0);
+  const show = list.slice(0, 20).map(function(x){
+    return '  • ' + x.name + '  0  →  ' + x.snapStock.toFixed(1) + '  (' + x.snapDate + ' 기록)';
+  }).join('\n');
+  const more = list.length > 20 ? '\n  ... 외 ' + (list.length - 20) + '건' : '';
+  if (!confirm('🔄 재고 복구\n\n'
+    + list.length + '개 품목 · 합계 ' + sum.toFixed(1) + ' box/pack 을\n'
+    + '가장 최근 일별 재고 기록 값으로 되돌립니다.\n\n'
+    + show + more + '\n\n'
+    + '오늘 입고·출고는 그 위에 그대로 가산됩니다.\n진행할까요?')) return;
+  if (!await verifyBossPassword('재고 복구 ' + list.length + '건')) return;
+  let n = 0;
+  list.forEach(function(x){
+    const e = inventoryEnsureProduct(x.pid);
+    e.prev = x.snapStock;
+    e.stock = x.snapStock + (+(e.receivedToday || 0)) - (+(e.deductedToday || 0));
+    n++;
+  });
+  saveDB();
+  try { auditLogAdd('🔄 재고 복구 (미입력→0 사고): ' + n + '건 · 합계 ' + sum.toFixed(1) + ' box/pack · 최근 스냅샷 기준'); } catch(_){}
+  alert('✅ ' + n + '개 품목 복구 완료 · 합계 ' + sum.toFixed(1) + ' box/pack\n\n재고 현황 화면에서 확인하세요.');
+  route();
+};
+
+// ⭐ (2026-10-01 밤작업#380) 유령 재고 기록 정리 — 품목 마스터에 없는 pid
+window.inventoryCleanupGhostRecords = async function() {
+  const list = _invFindGhostRecords();
+  if (list.length === 0) { alert('✅ 유령 재고 기록이 없습니다.'); return; }
+  const withStock = list.filter(function(x){ return Math.abs(x.stock) > 0.01; });
+  if (!confirm('🧹 유령 재고 기록 정리\n\n'
+    + '품목 마스터에 없는 재고 기록 ' + list.length + '건을 삭제합니다.\n'
+    + '(그중 재고가 0이 아닌 것 ' + withStock.length + '건)\n\n'
+    + '삭제된 품목의 잔여 기록이므로 실제 재고에는 영향이 없습니다.\n진행할까요?')) return;
+  if (!await verifyBossPassword('유령 재고 기록 정리 ' + list.length + '건')) return;
+  const bp = (DB.inventory || {}).byProduct || {};
+  list.forEach(function(x){ delete bp[x.pid]; });
+  saveDB();
+  try { auditLogAdd('🧹 유령 재고 기록 정리: ' + list.length + '건 삭제 (재고≠0 ' + withStock.length + '건 포함)'); } catch(_){}
+  alert('✅ ' + list.length + '건 정리 완료.');
+  route();
+};
+
 function renderOrphanAdmin() {
   const body = document.getElementById('adminBody');
   const orphans = _detectOrphanOrders();
@@ -4267,7 +4315,59 @@ function renderOrphanAdmin() {
       + '</tbody></table></div>';
   }
 
-  body.innerHTML = _ocHtml + '<div class="card">'
+  // ⭐ (2026-10-01 밤작업#379·380) 재고 복구 / 유령 재고 기록 카드
+  var _invFixHtml = '';
+  try {
+    const _wiped = _invFindWipedStock();
+    if (_wiped.length > 0) {
+      const _wSum = _wiped.reduce(function(s,x){ return s + x.snapStock; }, 0);
+      const _wRows = _wiped.slice(0, 30).map(function(x){
+        return '<tr><td>' + escapeHtmlSimple(x.cut) + '</td><td><b>' + escapeHtmlSimple(x.name) + '</b></td>'
+          + '<td class="num" style="color:#C62828; font-weight:700;">0</td>'
+          + '<td class="num" style="color:#2E7D32; font-weight:700;">' + x.snapStock.toFixed(1) + '</td>'
+          + '<td style="font-size:11px; color:var(--muted);">' + escapeHtmlSimple(x.snapDate) + '</td></tr>';
+      }).join('');
+      _invFixHtml += '<div class="card" style="border:2px solid #C0392B;">'
+        + '<h3 style="color:#C0392B;">🔄 재고 복구 필요 ' + _wiped.length + '건 · 합계 ' + _wSum.toFixed(1) + ' box/pack</h3>'
+        + '<div style="padding:10px 14px; background:#FDECEA; border-left:4px solid #C0392B; margin-bottom:12px; font-size:12px; line-height:1.7;">'
+        + '전재고가 <b>0</b>인데 과거 일별 재고 기록에는 재고가 남아 있는 품목입니다.<br>'
+        + '월 실사를 <b>여러 번 나눠 적용</b>하면서 "미입력 품목 → 0 처리"가 '
+        + '아직 세지 않은 품목의 재고까지 지웠을 때 생깁니다.<br>'
+        + '<b>직접 세어서 0으로 입력한 품목은 제외</b>되어 있습니다.'
+        + '</div>'
+        + '<div style="overflow-x:auto; max-height:360px; overflow-y:auto;"><table class="t" style="width:100%;">'
+        + '<thead><tr><th>카테고리</th><th>품목</th><th class="num">현재</th><th class="num">복구값</th><th>기준일</th></tr></thead>'
+        + '<tbody>' + _wRows + '</tbody></table></div>'
+        + (_wiped.length > 30 ? '<div style="font-size:11px; color:var(--muted); margin-top:6px;">... 외 ' + (_wiped.length - 30) + '건</div>' : '')
+        + '<div style="margin-top:12px;">'
+        + '<button class="btn" style="background:#C0392B; color:#fff;" onclick="inventoryRestoreWipedStock()">🔄 ' + _wiped.length + '건 일괄 복구 (보스 비번)</button>'
+        + '</div></div>';
+    }
+    const _ghosts = _invFindGhostRecords();
+    if (_ghosts.length > 0) {
+      const _gWith = _ghosts.filter(function(x){ return Math.abs(x.stock) > 0.01; });
+      const _gRows = _ghosts.slice(0, 20).map(function(x){
+        return '<tr><td style="font-family:monospace; font-size:11px;">' + escapeHtmlSimple(x.pid) + '</td>'
+          + '<td class="num">' + x.prev.toFixed(1) + '</td><td class="num">' + x.stock.toFixed(1) + '</td></tr>';
+      }).join('');
+      _invFixHtml += '<div class="card" style="border:2px solid #E67E22;">'
+        + '<h3 style="color:#B9641C;">🧹 유령 재고 기록 ' + _ghosts.length + '건</h3>'
+        + '<div style="padding:10px 14px; background:#FDF3E7; border-left:4px solid #E67E22; margin-bottom:12px; font-size:12px; line-height:1.7;">'
+        + '품목 마스터에서 <b>삭제된 품목</b>의 재고 기록만 남아 있는 경우입니다. '
+        + '화면에는 안 보이지만 재고 데이터에 계속 쌓입니다. '
+        + '(재고가 0이 아닌 것 <b>' + _gWith.length + '건</b>)'
+        + '</div>'
+        + '<div style="overflow-x:auto; max-height:260px; overflow-y:auto;"><table class="t" style="width:100%;">'
+        + '<thead><tr><th>재고 기록 ID</th><th class="num">전재고</th><th class="num">현재고</th></tr></thead>'
+        + '<tbody>' + _gRows + '</tbody></table></div>'
+        + (_ghosts.length > 20 ? '<div style="font-size:11px; color:var(--muted); margin-top:6px;">... 외 ' + (_ghosts.length - 20) + '건</div>' : '')
+        + '<div style="margin-top:12px;">'
+        + '<button class="btn" style="background:#E67E22; color:#fff;" onclick="inventoryCleanupGhostRecords()">🧹 ' + _ghosts.length + '건 정리 (보스 비번)</button>'
+        + '</div></div>';
+    }
+  } catch(e) { console.warn('inv fix card failed:', e); }
+
+  body.innerHTML = _invFixHtml + _ocHtml + '<div class="card">'
     + '<h3>🔧 Orphan 인보이스 진단 · 정리</h3>'
     + '<div style="padding:12px 14px; background:#FFF7E0; border-left:4px solid #B8860B; margin-bottom:14px; font-size:12px; line-height:1.7;">'
     + '<b>진단 결과 총 ' + cnt + '건</b><br>'
@@ -19231,6 +19331,67 @@ window.inventoryClearStocktakeInputs = function() {
 // ⭐ (2026-09-02 밤작업#330) inventoryCleanupNegativeStock 함수 제거됨
 //   밤작업#323 일회용 · 2026-09-01 사용 완료 (80건 정리) · 실사 미입력→0 로직으로 대체
 
+// ⭐ (2026-10-01 밤작업#377·378·379) 실사 안전장치 공통 헬퍼
+//   ■ 사고 경위 (2026-10-01)
+//     11:21 월 실사 1차 적용 205건 (미입력→0 154건)  ← 아직 세지 않은 품목이 0으로 지워짐
+//     11:29 월 실사 2차 적용 117건 (미입력→0  40건)  ← 1차가 만든 0을 전재고로 읽음
+//     결과: 오차가 +2,975박스로 부풀려짐 + 실제 재고 3,960박스(62품목)가 조용히 사라짐.
+//   ■ 대책
+//     #377 당일 재적용 시 미입력→0 금지 + 0처리 대상 전체 리스트 + 타이핑 확인
+//     #378 전재고 0 인데 과거 스냅샷에 재고가 있으면 스냅샷을 기준으로 오차 계산 + ⚠ 표시
+//     #379 지워진 재고 복구 도구 (관리자 → 🔧 진단)
+
+// beforeISO 이전(미포함) 가장 최근 일별 스냅샷의 마감재고
+function _invLatestSnapshotStock(pid, beforeISO) {
+  const dh = (DB.inventory && DB.inventory.dailyHistory) || {};
+  const keys = Object.keys(dh).filter(function(k){ return !beforeISO || k < beforeISO; }).sort();
+  for (let i = keys.length - 1; i >= 0; i--) {
+    const bp = (dh[keys[i]] || {}).byProduct || {};
+    const e = bp[pid];
+    if (e && typeof e.stock !== 'undefined') return { date: keys[i], stock: +(e.stock || 0) };
+  }
+  return null;
+}
+window._invLatestSnapshotStock = _invLatestSnapshotStock;
+
+// 미입력→0 으로 재고가 지워진 것으로 보이는 품목 (복구 후보)
+//   조건: 현재 전재고 0  +  과거 스냅샷엔 재고 있음
+//        +  (오늘 실사 기록에 없음  또는  오늘 자동 0처리 목록에 있음)
+function _invFindWipedStock() {
+  const inv = DB.inventory || {};
+  const bp = inv.byProduct || {};
+  const today = todayLocalISO();
+  const todayEntry = ((inv.stocktakeHistory || {})[today]) || null;
+  const counted = new Set((todayEntry && todayEntry.items || []).map(function(i){ return i.pid; }));
+  const autoZeroed = new Set((todayEntry && todayEntry.autoZeroPids) || []);
+  const out = [];
+  (DB.products || []).forEach(function(p) {
+    if (!p || !p.id) return;
+    const e = bp[p.id];
+    const cur = e ? +(e.prev || 0) : 0;
+    if (Math.abs(cur) > 0.01) return;
+    if (counted.has(p.id) && !autoZeroed.has(p.id)) return;   // 사람이 직접 센 0 은 건드리지 않음
+    const snap = _invLatestSnapshotStock(p.id, today);
+    if (!snap || snap.stock <= 0.01) return;
+    out.push({ pid: p.id, name: p.name || p.id, cut: p.cut || '', snapDate: snap.date, snapStock: snap.stock });
+  });
+  out.sort(function(a,b){ return b.snapStock - a.snapStock; });
+  return out;
+}
+window._invFindWipedStock = _invFindWipedStock;
+
+// 품목 마스터에 없는 재고 기록 (유령 재고 ID) — 밤작업#380
+function _invFindGhostRecords() {
+  const bp = (DB.inventory || {}).byProduct || {};
+  const ids = new Set((DB.products || []).filter(function(p){ return p && p.id; }).map(function(p){ return p.id; }));
+  return Object.keys(bp).filter(function(pid){ return !ids.has(pid); }).map(function(pid){
+    const e = bp[pid] || {};
+    return { pid: pid, prev: +(e.prev || 0), stock: +(e.stock || 0),
+             received: +(e.receivedToday || 0), deducted: +(e.deductedToday || 0) };
+  }).sort(function(a,b){ return Math.abs(b.stock) - Math.abs(a.stock); });
+}
+window._invFindGhostRecords = _invFindGhostRecords;
+
 window.inventoryApplyStocktakeBulk = function() {
   inventoryRolloverIfNeeded();
   const inputs = document.querySelectorAll('.invStockInput');
@@ -19258,16 +19419,55 @@ window.inventoryApplyStocktakeBulk = function() {
     const currentPrev = +(e.prev || 0);
     if (currentPrev !== 0) zeroChanges.push({ pid: pid, value: 0 });
   });
+  // ⭐ (2026-10-01 밤작업#377) 미입력→0 안전장치 3중
+  //   사고: 10/1 실사를 11:21 · 11:29 두 번 나눠 적용 → 1차의 미입력→0 이
+  //         아직 안 센 154품목을 0으로 지우고, 2차가 그 0을 전재고로 읽어
+  //         오차 +2,975박스 허수 + 실재고 3,960박스 유실.
   let autoZero = false;
-  if (zeroChanges.length > 0) {
-    autoZero = confirm(
-      '⚠ 실사값을 입력하지 않은 품목 중 · 전재고 0이 아닌 항목이 ' + zeroChanges.length + '개 있습니다.\n\n' +
-      '[확인] · 미입력 품목 · 전재고를 0으로 처리\n' +
-      '        (실사에 없다 = 재고 없다 · 정책)\n\n' +
-      '[취소] · 미입력 품목 · 기존 전재고 그대로 유지\n' +
-      '        (부분 실사만 하신 경우)\n\n' +
-      '이 결정은 되돌릴 수 없습니다. 신중히 선택하세요.'
+  const _todayISO0 = todayLocalISO();
+  const _alreadyToday = !!((DB.inventory && DB.inventory.stocktakeHistory || {})[_todayISO0]);
+  if (zeroChanges.length > 0 && _alreadyToday) {
+    // 방어 1 · 오늘 이미 실사를 적용했다면 미입력→0 을 아예 금지한다 (분할 실사 사고 봉쇄)
+    alert('🛡 오늘 이미 실사를 적용한 기록이 있습니다.\n\n'
+      + '미입력 품목 ' + zeroChanges.length + '개는 0으로 처리하지 않고\n'
+      + '기존 전재고를 그대로 유지합니다.\n\n'
+      + '(실사를 나눠서 여러 번 적용할 때 아직 세지 않은 품목의\n'
+      + ' 재고가 0으로 지워지는 사고를 막기 위한 조치입니다.)\n\n'
+      + '전체 품목을 한 번에 0 처리해야 한다면\n'
+      + '관리자 → 🔧 진단 에서 확인 후 진행하세요.');
+  } else if (zeroChanges.length > 0) {
+    // 방어 2 · 0 으로 지워질 재고를 금액이 큰 순서로 전부 보여준다
+    const _zList = zeroChanges.map(function(z){
+      const p = DB.products.find(function(x){ return x && x.id === z.pid; });
+      const e = inventoryEnsureProduct(z.pid);
+      return { name: p ? p.name : z.pid, prev: +(e.prev || 0) };
+    }).sort(function(a,b){ return b.prev - a.prev; });
+    const _zSum = _zList.reduce(function(s,z){ return s + z.prev; }, 0);
+    const _zShow = _zList.slice(0, 20).map(function(z){
+      return '  • ' + z.name + '  →  ' + z.prev.toFixed(1) + ' 이(가) 0 으로';
+    }).join('\n');
+    const _zMore = _zList.length > 20 ? '\n  ... 외 ' + (_zList.length - 20) + '건' : '';
+    const _ok1 = confirm(
+      '⚠️ 아래 ' + _zList.length + '개 품목의 재고를 0 으로 지웁니다.\n'
+      + '지워지는 재고 합계: ' + _zSum.toFixed(1) + ' box/pack\n\n'
+      + _zShow + _zMore + '\n\n'
+      + '실사표에 적지 않은 품목은 "재고 없음"이 아니라\n'
+      + '"아직 세지 않음"일 수 있습니다.\n'
+      + '부분 실사라면 반드시 [취소] 를 누르세요.\n\n'
+      + '계속하려면 [확인].'
     );
+    if (_ok1) {
+      // 방어 3 · 타이핑 확인 (실수 클릭 차단)
+      const _typed = prompt('마지막 확인입니다.\n\n'
+        + _zList.length + '개 품목 · ' + _zSum.toFixed(1) + ' box/pack 을 0 으로 지우려면\n'
+        + '아래에 정확히  0처리  라고 입력하세요.\n\n'
+        + '(취소하려면 빈칸으로 두고 [확인])');
+      if (_typed && _typed.trim() === '0처리') {
+        autoZero = true;
+      } else {
+        alert('취소했습니다. 미입력 품목의 전재고는 그대로 유지됩니다.');
+      }
+    }
   }
   const allChanges = autoZero ? changes.concat(zeroChanges) : changes;
   // 변경 미리보기
@@ -19286,14 +19486,29 @@ window.inventoryApplyStocktakeBulk = function() {
   const historyItems = allChanges.map(ch => {
     const p = DB.products.find(x => x.id === ch.pid);
     const e = inventoryEnsureProduct(ch.pid);
-    const prevStock = +(e.prev || 0);
+    const rawPrev = +(e.prev || 0);
     const actualStock = +ch.value;
+    // ⭐ (2026-10-01 밤작업#378) 오차 계산 방어
+    //   전재고가 0인데 과거 일별 스냅샷엔 재고가 있으면 = 재고 기록이 중간에 지워진 상태.
+    //   그대로 두면 오차가 "실사값 − 0" 으로 부풀려지므로 스냅샷을 기준으로 계산하고 ⚠ 표시한다.
+    let prevStock = rawPrev, mismatch = false, snapDate = '', snapStock = 0;
+    if (Math.abs(rawPrev) < 0.01) {
+      const snap = _invLatestSnapshotStock(ch.pid, _todayISO0);
+      if (snap && Math.abs(snap.stock) > 0.01) {
+        prevStock = snap.stock; mismatch = true;
+        snapDate = snap.date; snapStock = snap.stock;
+      }
+    }
     return {
       pid: ch.pid,
       name: p ? p.name : '(품목없음)',
       cut: p ? p.cut : '',
       unit: p ? inventoryUnitLabel(p.cut) : '단위',
       prevStock: prevStock,
+      prevStockRaw: rawPrev,
+      mismatch: mismatch,
+      snapDate: snapDate,
+      snapStock: snapStock,
       actualStock: actualStock,
       variance: actualStock - prevStock,
     };
@@ -19313,6 +19528,8 @@ window.inventoryApplyStocktakeBulk = function() {
   const entry = {
     appliedAt: new Date().toISOString(),
     items: historyItems,
+    // ⭐ (2026-10-01 밤작업#377) 자동 0처리된 품목 목록 — 복구 도구가 참조
+    autoZeroPids: autoZero ? zeroChanges.map(function(z){ return z.pid; }) : [],
   };
   DB.inventory.stocktakeHistory[dateISO] = entry;
   saveDB();
@@ -19333,10 +19550,36 @@ window.inventoryApplyStocktakeBulk = function() {
 };
 
 // ⭐ (2026-08-13) 실사 오차 리스트 렌더 — 특정 날짜 이력 조회 · 자동 카드 생성
+// ⭐ (2026-10-01 밤작업#378) 과거 실사 기록 소급 보정
+//   mismatch 필드가 없는 예전 기록도, 전재고 0 + 과거 스냅샷 재고>0 이면
+//   스냅샷을 기준으로 오차를 바로잡고 ⚠ 표시한다. 원래 값은 prevStockRaw 에 보존.
+//   화면·인쇄·CSV 모두 같은 숫자를 보게 하려고 공통 함수로 뺐다. (한 번만 동작 · 멱등)
+function _invBackfillVariance(entry, dateISO) {
+  if (!entry || !Array.isArray(entry.items)) return entry;
+  entry.items.forEach(function(it) {
+    if (!it || typeof it.mismatch !== 'undefined') return;
+    const raw = +(it.prevStock || 0);
+    it.prevStockRaw = raw;
+    it.mismatch = false;
+    if (Math.abs(raw) < 0.01) {
+      const snap = _invLatestSnapshotStock(it.pid, dateISO);
+      if (snap && Math.abs(snap.stock) > 0.01) {
+        it.mismatch = true;
+        it.snapDate = snap.date;
+        it.snapStock = snap.stock;
+        it.prevStock = snap.stock;
+        it.variance = (+it.actualStock || 0) - snap.stock;
+      }
+    }
+  });
+  return entry;
+}
+window._invBackfillVariance = _invBackfillVariance;
+
 window.inventoryRenderStocktakeVariance = function(dateISO) {
   if (!dateISO) return;
   if (!DB.inventory || !DB.inventory.stocktakeHistory) return;
-  const entry = DB.inventory.stocktakeHistory[dateISO];
+  const entry = _invBackfillVariance(DB.inventory.stocktakeHistory[dateISO], dateISO);
   if (!entry) return;
   let card = document.getElementById('invVarianceCard');
   if (!card) {
@@ -19390,11 +19633,26 @@ window.inventoryRenderStocktakeVariance = function(dateISO) {
       + '<td>' + escapeHtmlSimple(it.cut) + '</td>'
       + '<td><b>' + escapeHtmlSimple(it.name) + '</b></td>'
       + '<td class="num" style="font-size:11px; color:var(--muted);">' + escapeHtmlSimple(it.unit) + '</td>'
-      + '<td class="num">' + it.prevStock.toFixed(1) + '</td>'
+      + '<td class="num">' + it.prevStock.toFixed(1)
+      //   ⭐ (2026-10-01 밤작업#378) 재고 기록 불일치 표시
+      + (it.mismatch
+          ? '<div style="font-size:10px; color:#C62828; font-weight:700; white-space:nowrap;">⚠ ' + escapeHtmlSimple(it.snapDate || '') + ' 기록</div>'
+          : '')
+      + '</td>'
       + '<td class="num">' + it.actualStock.toFixed(1) + '</td>'
       + '<td class="num" style="color:' + color + '; font-weight:700;">' + sign + variance.toFixed(1) + arrow + '</td>'
       + '</tr>';
   }).join('');
+  // ⭐ (2026-10-01 밤작업#378) 불일치 건수 안내문
+  const _mmCount = entry.items.filter(function(it){ return it.mismatch; }).length;
+  const _mmNote = _mmCount > 0
+    ? '<div style="background:#FDECEA; border:1px solid #C62828; border-radius:6px; padding:8px 10px; margin-bottom:10px; font-size:12px; line-height:1.7; color:#8E2419;">'
+      + '<b>⚠ 재고 기록 불일치 ' + _mmCount + '건</b> — 전재고가 0으로 비어 있어서 '
+      + '가장 최근 일별 재고 기록을 기준으로 오차를 계산했습니다.<br>'
+      + '실사를 여러 번 나눠 적용했거나 재고가 중간에 지워졌을 때 생깁니다. '
+      + '관리자 → 🔧 진단 의 <b>재고 복구</b> 카드에서 확인하세요.'
+      + '</div>'
+    : '';
 
   card.innerHTML = '<div id="invVarianceCardBody">'
     + '<div style="display:flex; justify-content:space-between; align-items:center; flex-wrap:wrap; gap:8px; margin-bottom:10px;">'
@@ -19405,6 +19663,7 @@ window.inventoryRenderStocktakeVariance = function(dateISO) {
     +     '<button class="btn sm secondary" onclick="inventoryCloseVarianceCard()">✕ 닫기</button>'
     +   '</div>'
     + '</div>'
+    + _mmNote
     // 카테고리별 요약
     + '<div style="background:#FFFCF3; border:1px solid #F0D89A; border-radius:6px; padding:8px 10px; margin-bottom:10px;">'
     +   '<div style="font-size:11px; font-weight:700; color:var(--brand-dark); margin-bottom:4px;">카테고리별 오차</div>'
@@ -19431,7 +19690,7 @@ window.inventoryCloseVarianceCard = function() {
 
 window.inventoryPrintStocktakeVariance = function(dateISO) {
   if (!DB.inventory || !DB.inventory.stocktakeHistory) { alert('오차 이력이 없습니다.'); return; }
-  const entry = DB.inventory.stocktakeHistory[dateISO];
+  const entry = _invBackfillVariance(DB.inventory.stocktakeHistory[dateISO], dateISO);
   if (!entry) { alert('해당 날짜 실사 이력이 없습니다: ' + dateISO); return; }
   const company = (DB.company && DB.company.name) || 'ALL THAT MEAT WHOLESALE PTY LTD';
   const byCat = {};
@@ -19520,7 +19779,7 @@ window.inventoryPrintStocktakeVariance = function(dateISO) {
 
 window.inventoryExportStocktakeVarianceCSV = function(dateISO) {
   if (!DB.inventory || !DB.inventory.stocktakeHistory) { alert('오차 이력이 없습니다.'); return; }
-  const entry = DB.inventory.stocktakeHistory[dateISO];
+  const entry = _invBackfillVariance(DB.inventory.stocktakeHistory[dateISO], dateISO);
   if (!entry) { alert('해당 날짜 실사 이력이 없습니다: ' + dateISO); return; }
   const rows = [['카테고리', '품목', '단위', '기존 재고', '실사값', '오차']];
   entry.items.forEach(it => {
