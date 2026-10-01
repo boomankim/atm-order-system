@@ -300,6 +300,23 @@
   </div>
 </div>
 <div id="folderInfo" style="padding:6px 14px 0; font-size:11px; color:#6b7280;"></div>
+
+<!-- ⭐ (2026-10-01 밤작업#376) 기간 합계 (전 업체 합산) — 내부 참고용
+     · class="toolbar" → @media print 에서 숨김
+     · .sheet 바깥 → html2canvas(PDF) 캡처 대상에서 원천 제외
+     두 겹으로 인쇄·PDF 어디에도 나오지 않는다. -->
+<div class="toolbar" id="periodSumBar" style="background:#EEF4FB; border-top:1px solid #B9D2EC;">
+  <div class="grp">
+    <label>📊 기간 합계</label>
+    <input type="date" id="psFrom">
+    <span>~</span>
+    <input type="date" id="psTo">
+    <button class="primary" onclick="renderPeriodTotals()">조회</button>
+    <button class="ghost" onclick="setPeriodThisMonth()">이번 달</button>
+    <button class="ghost" onclick="setPeriodLastMonth()">지난 달</button>
+  </div>
+  <div class="grp" id="periodSumResult" style="flex:1; min-width:280px;"></div>
+</div>
 <div class="hint" id="hint">
   💰 <b>매입 등록</b>: 업체·날짜·<b>인보이스 #</b>(필수)·금액 입력. 저장하면 오늘 매입일보 표에 자동 반영.
   · 💵 <b>지급 등록</b>: 업체·날짜·금액·방법 입력.
@@ -1437,6 +1454,68 @@ function closeVendorModal(){
   document.getElementById('vendorModal').classList.remove('open');
   _editingVendorId = null;
 }
+
+// ═══════════════════════════════════════════════════════════════════════
+// ⭐ (2026-10-01 밤작업#376) 기간 합계 (전 업체 합산) — 내부 참고용
+//   사장님 요청: 기간만 정하면 모든 업체 매입/지급 합산이 보이게.
+//   ⚠️ 인쇄·PDF 노출 금지 — 2중 차단:
+//      ① class="toolbar" → @media print 에서 display:none
+//      ② .sheet 바깥 → html2canvas(PDF) 가 .sheet 만 캡처하므로 원천 제외
+//   업체별 기간 합계는 업체명 클릭 → 이력 모달에 이미 있음 (기간 매입/지급).
+// ═══════════════════════════════════════════════════════════════════════
+window.renderPeriodTotals = function() {
+  const box = document.getElementById('periodSumResult');
+  if (!box) return;
+  const from = (document.getElementById('psFrom') || {}).value || '';
+  const to   = (document.getElementById('psTo')   || {}).value || '';
+  if (!from || !to) { box.innerHTML = '<small style="color:var(--muted);">기간을 선택하고 [조회]를 누르세요.</small>'; return; }
+  if (from > to) { box.innerHTML = '<small style="color:#dc2626;">시작일이 종료일보다 늦습니다.</small>'; return; }
+
+  let pSum = 0, pCnt = 0, ySum = 0, yCnt = 0;
+  (store.purchases || []).forEach(function(x) {
+    if (!x || !x.date || x.date < from || x.date > to) return;
+    pSum += num(x.amount); pCnt++;
+  });
+  (store.payments || []).forEach(function(x) {
+    if (!x || !x.date || x.date < from || x.date > to) return;
+    ySum += num(x.amount); yCnt++;
+  });
+  const diff = pSum - ySum;
+
+  box.innerHTML =
+      '<span style="font-size:12px; color:#0D47A1; font-weight:700; margin-right:10px;">'
+    +   formatDateKR(from) + ' ~ ' + formatDateKR(to) + ' · 전 업체'
+    + '</span>'
+    + '<span style="margin-right:14px;"><small style="color:var(--muted);">매입 합계</small> '
+    +   '<b style="color:#dc2626; font-size:15px;">$' + fmtMoney(pSum) + '</b> '
+    +   '<small style="color:#777;">(' + pCnt + '건)</small></span>'
+    + '<span style="margin-right:14px;"><small style="color:var(--muted);">지급 합계</small> '
+    +   '<b style="color:#059669; font-size:15px;">$' + fmtMoney(ySum) + '</b> '
+    +   '<small style="color:#777;">(' + yCnt + '건)</small></span>'
+    + '<span style="margin-right:14px;"><small style="color:var(--muted);">차액</small> '
+    +   '<b style="color:' + (diff > 0.005 ? '#dc2626' : (diff < -0.005 ? '#059669' : '#555')) + '; font-size:15px;">$'
+    +   fmtMoney(diff) + '</b></span>'
+    + '<small style="color:#78909C;">※ 이 기간만의 합계 · 내부 참고용 — 인쇄·PDF에 나오지 않습니다</small>';
+};
+
+// 기간 프리셋
+//   ⚠️ 이 파일엔 toLocalISODate 가 없다. 로컬 날짜 포맷은 직접 만든다 (시드니 로컬 기준).
+function _psISO(d) {
+  const z = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + z(d.getMonth() + 1) + '-' + z(d.getDate());
+}
+window.setPeriodThisMonth = function() {
+  const d = new Date();
+  document.getElementById('psFrom').value = _psISO(new Date(d.getFullYear(), d.getMonth(), 1));
+  document.getElementById('psTo').value = todayLocalISO();
+  renderPeriodTotals();
+};
+window.setPeriodLastMonth = function() {
+  const d = new Date();
+  document.getElementById('psFrom').value = _psISO(new Date(d.getFullYear(), d.getMonth() - 1, 1));
+  document.getElementById('psTo').value   = _psISO(new Date(d.getFullYear(), d.getMonth(), 0));
+  renderPeriodTotals();
+};
 
 // =========== 업체 이력 조회 모달 (통합 뷰 · 기간 필터) ===========
 // ⭐ (2026-08-06) 매입·지급 시간순 병합 표 + 기간 지정. 기본 최근 3개월.
