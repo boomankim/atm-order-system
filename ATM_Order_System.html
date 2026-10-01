@@ -4205,29 +4205,105 @@ function renderBackupAdmin() {
 // ⭐ (2026-10-01 밤작업#379) 지워진 재고 복구 — 보스 전용
 //   2026-10-01 사고: 실사를 두 번 나눠 적용하면서 미입력→0 이 아직 세지 않은
 //   품목의 전재고를 지웠다. 가장 최근 일별 스냅샷 값으로 되돌린다.
+// ⭐ (2026-10-01 밤작업#382) 카드에서 선택·수정한 값을 읽어온다
+//   체크된 행만, 그리고 입력칸에 적힌 값(사장님이 고친 값)으로 복구한다.
+function _invReadRestoreSelection() {
+  const rows = document.querySelectorAll('#invRestoreTbody tr[data-pid]');
+  const picked = [], bad = [];
+  rows.forEach(function(tr) {
+    const cb = tr.querySelector('.invRestoreChk');
+    if (!cb || !cb.checked) return;
+    const inp = tr.querySelector('.invRestoreVal');
+    const raw = inp ? String(inp.value).trim() : '';
+    const v = parseFloat(raw);
+    const name = tr.getAttribute('data-name') || tr.getAttribute('data-pid');
+    if (raw === '' || isNaN(v)) { bad.push(name + ' (빈칸)'); return; }
+    if (v < 0) { bad.push(name + ' (' + raw + ' · 음수)'); return; }
+    picked.push({ pid: tr.getAttribute('data-pid'), name: name,
+                  value: v, suggested: +(tr.getAttribute('data-suggested') || 0) });
+  });
+  return { picked: picked, bad: bad, total: rows.length };
+}
+
+// 선택 건수·합계 실시간 갱신 + 버튼 라벨
+window.invRestoreRecalc = function() {
+  const r = _invReadRestoreSelection();
+  const sum = r.picked.reduce(function(s,x){ return s + x.value; }, 0);
+  const edited = r.picked.filter(function(x){ return Math.abs(x.value - x.suggested) > 0.01; }).length;
+  const btn = document.getElementById('invRestoreBtn');
+  if (btn) {
+    btn.textContent = r.picked.length === 0
+      ? '🔄 복구할 품목을 선택하세요'
+      : '🔄 선택한 ' + r.picked.length + '건 복구 · 합계 ' + sum.toFixed(1) + ' (보스 비번)';
+    btn.disabled = (r.picked.length === 0);
+    btn.style.opacity = r.picked.length === 0 ? '0.5' : '1';
+  }
+  const info = document.getElementById('invRestoreInfo');
+  if (info) {
+    info.innerHTML = '선택 <b>' + r.picked.length + '</b> / ' + r.total + '건'
+      + ' · 합계 <b>' + sum.toFixed(1) + '</b> box/pack'
+      + (edited > 0 ? ' · <span style="color:#1565C0; font-weight:700;">값 수정 ' + edited + '건</span>' : '')
+      + (r.bad.length > 0 ? ' · <span style="color:#C62828; font-weight:700;">입력 오류 ' + r.bad.length + '건</span>' : '');
+  }
+};
+
+window.invRestoreCheckAll = function(on) {
+  document.querySelectorAll('#invRestoreTbody .invRestoreChk').forEach(function(cb){ cb.checked = !!on; });
+  invRestoreRecalc();
+};
+
+// 입력칸을 추천값으로 되돌림
+window.invRestoreResetVals = function() {
+  document.querySelectorAll('#invRestoreTbody tr[data-pid]').forEach(function(tr){
+    const inp = tr.querySelector('.invRestoreVal');
+    if (inp) inp.value = (+(tr.getAttribute('data-suggested') || 0)).toFixed(1);
+  });
+  invRestoreRecalc();
+};
+
 window.inventoryRestoreWipedStock = async function() {
-  const list = _invFindWipedStock();
-  if (list.length === 0) { alert('✅ 복구할 품목이 없습니다.'); return; }
-  const sum = list.reduce(function(s,x){ return s + x.snapStock; }, 0);
+  const r = _invReadRestoreSelection();
+  if (r.bad.length > 0) {
+    alert('⚠ 입력값을 확인해 주세요 (' + r.bad.length + '건)\n\n'
+      + r.bad.slice(0, 15).join('\n')
+      + (r.bad.length > 15 ? '\n... 외 ' + (r.bad.length - 15) + '건' : '')
+      + '\n\n빈칸이거나 음수인 행은 체크를 해제하거나 숫자를 입력하세요.');
+    return;
+  }
+  const list = r.picked;
+  if (list.length === 0) { alert('복구할 품목을 하나 이상 선택하세요.'); return; }
+  const sum = list.reduce(function(s,x){ return s + x.value; }, 0);
+  const edited = list.filter(function(x){ return Math.abs(x.value - x.suggested) > 0.01; });
   const show = list.slice(0, 20).map(function(x){
-    return '  • ' + x.name + '  0  →  ' + x.snapStock.toFixed(1) + '  (' + x.snapDate + ' 기록)';
+    const mark = Math.abs(x.value - x.suggested) > 0.01 ? '  ✎(추천 ' + x.suggested.toFixed(1) + ')' : '';
+    return '  • ' + x.name + '  →  ' + x.value.toFixed(1) + mark;
   }).join('\n');
   const more = list.length > 20 ? '\n  ... 외 ' + (list.length - 20) + '건' : '';
   if (!confirm('🔄 재고 복구\n\n'
-    + list.length + '개 품목 · 합계 ' + sum.toFixed(1) + ' box/pack 을\n'
-    + '가장 최근 일별 재고 기록 값으로 되돌립니다.\n\n'
-    + show + more + '\n\n'
+    + '선택한 ' + list.length + '개 품목 · 합계 ' + sum.toFixed(1) + ' box/pack\n'
+    + (edited.length > 0 ? '(그중 ' + edited.length + '건은 직접 수정한 값 ✎)\n' : '')
+    + '\n' + show + more + '\n\n'
     + '오늘 입고·출고는 그 위에 그대로 가산됩니다.\n진행할까요?')) return;
   if (!await verifyBossPassword('재고 복구 ' + list.length + '건')) return;
+  const _base = _invRestoreBaseDate();
+  if (!DB.inventory) DB.inventory = {};
+  if (!DB.inventory.restoreHandled) DB.inventory.restoreHandled = {};
   let n = 0;
   list.forEach(function(x){
     const e = inventoryEnsureProduct(x.pid);
-    e.prev = x.snapStock;
-    e.stock = x.snapStock + (+(e.receivedToday || 0)) - (+(e.deductedToday || 0));
+    e.prev = x.value;
+    e.stock = x.value + (+(e.receivedToday || 0)) - (+(e.deductedToday || 0));
+    DB.inventory.restoreHandled[x.pid] = _base;   // 이번 사고 처리 완료 — 목록에 다시 뜨지 않게
     n++;
   });
   saveDB();
-  try { auditLogAdd('🔄 재고 복구 (미입력→0 사고): ' + n + '건 · 합계 ' + sum.toFixed(1) + ' box/pack · 최근 스냅샷 기준'); } catch(_){}
+  try {
+    auditLogAdd('🔄 재고 복구 (미입력→0 사고): ' + n + '건 · 합계 ' + sum.toFixed(1)
+      + ' box/pack · 기준일 ' + (_invRestoreBaseDate() || '?')
+      + (edited.length > 0 ? ' · 직접 수정 ' + edited.length + '건 ['
+          + edited.slice(0, 10).map(function(x){ return x.name + ' ' + x.suggested.toFixed(1) + '→' + x.value.toFixed(1); }).join(', ')
+          + (edited.length > 10 ? ' 외 ' + (edited.length - 10) + '건' : '') + ']' : ''));
+  } catch(_){}
   alert('✅ ' + n + '개 품목 복구 완료 · 합계 ' + sum.toFixed(1) + ' box/pack\n\n재고 현황 화면에서 확인하세요.');
   route();
 };
@@ -4321,10 +4397,26 @@ function renderOrphanAdmin() {
     const _wiped = _invFindWipedStock();
     if (_wiped.length > 0) {
       const _wSum = _wiped.reduce(function(s,x){ return s + x.snapStock; }, 0);
-      const _wRows = _wiped.slice(0, 30).map(function(x){
-        return '<tr><td>' + escapeHtmlSimple(x.cut) + '</td><td><b>' + escapeHtmlSimple(x.name) + '</b></td>'
-          + '<td class="num" style="color:#C62828; font-weight:700;">0</td>'
-          + '<td class="num" style="color:#2E7D32; font-weight:700;">' + x.snapStock.toFixed(1) + '</td>'
+      // ⭐ (2026-10-01 밤작업#382) 품목별 체크박스 + 복구값 인라인 수정
+      //   전체 목록을 다 뿌린다 (30건 컷 제거) — 체크를 풀려면 행이 보여야 한다.
+      const _wRows = _wiped.map(function(x){
+        const _mv = (x.moves && x.moves.length) ? x.moves.join(' · ') : '';
+        return '<tr data-pid="' + escapeHtmlSimple(x.pid) + '"'
+          + ' data-name="' + escapeHtmlSimple(x.name) + '"'
+          + ' data-suggested="' + x.snapStock.toFixed(1) + '">'
+          + '<td style="text-align:center;"><input type="checkbox" class="invRestoreChk" checked'
+          +   ' onchange="invRestoreRecalc()" style="width:18px; height:18px; cursor:pointer;"></td>'
+          + '<td style="font-size:11px; color:var(--muted);">' + escapeHtmlSimple(x.cut) + '</td>'
+          + '<td><b>' + escapeHtmlSimple(x.name) + '</b>'
+          +   (_mv ? '<div style="font-size:10px; color:var(--muted);">' + escapeHtmlSimple(_mv) + '</div>' : '')
+          + '</td>'
+          + '<td class="num" style="color:#C62828; font-weight:700;">' + (+(x.curPrev||0)).toFixed(1) + '</td>'
+          + '<td class="num" style="padding:3px 6px;">'
+          +   '<input type="number" step="0.1" min="0" class="invRestoreVal"'
+          +   ' value="' + x.snapStock.toFixed(1) + '" oninput="invRestoreRecalc()"'
+          +   ' style="width:86px; text-align:right; font-weight:700; color:#2E7D32;'
+          +   ' padding:4px 6px; border:1px solid #8BC34A; border-radius:4px; background:#F7FCF4;">'
+          + '</td>'
           + '<td style="font-size:11px; color:var(--muted);">' + escapeHtmlSimple(x.snapDate) + '</td></tr>';
       }).join('');
       _invFixHtml += '<div class="card" style="border:2px solid #C0392B;">'
@@ -4333,14 +4425,27 @@ function renderOrphanAdmin() {
         + '전재고가 <b>0</b>인데 과거 일별 재고 기록에는 재고가 남아 있는 품목입니다.<br>'
         + '월 실사를 <b>여러 번 나눠 적용</b>하면서 "미입력 품목 → 0 처리"가 '
         + '아직 세지 않은 품목의 재고까지 지웠을 때 생깁니다.<br>'
-        + '<b>직접 세어서 0으로 입력한 품목은 제외</b>되어 있습니다.'
+        + '<b>직접 세어서 0으로 입력한 품목은 제외</b>되어 있습니다.<br>'
+        + '복구값 = <b>' + escapeHtmlSimple(_invRestoreBaseDate() || '-') + ' 마감재고</b> + 그 이후 발생한 입고 − 출고. '
+        + '며칠 뒤에 눌러도 같은 값이 나옵니다.'
         + '</div>'
-        + '<div style="overflow-x:auto; max-height:360px; overflow-y:auto;"><table class="t" style="width:100%;">'
-        + '<thead><tr><th>카테고리</th><th>품목</th><th class="num">현재</th><th class="num">복구값</th><th>기준일</th></tr></thead>'
-        + '<tbody>' + _wRows + '</tbody></table></div>'
-        + (_wiped.length > 30 ? '<div style="font-size:11px; color:var(--muted); margin-top:6px;">... 외 ' + (_wiped.length - 30) + '건</div>' : '')
+        + '<div style="padding:8px 12px; background:#E8F4FD; border:1px solid #90CAF9; border-radius:6px; margin-bottom:10px; font-size:12px; line-height:1.7;">'
+        + '💡 <b>복구값은 그 자리에서 고칠 수 있습니다.</b> 숫자를 직접 입력하면 그 값으로 복구됩니다.<br>'
+        + '애매한 품목은 <b>체크를 풀어두면</b> 건드리지 않고, 나중에 다시 여기서 처리할 수 있습니다.'
+        + '</div>'
+        + '<div style="display:flex; gap:6px; align-items:center; flex-wrap:wrap; margin-bottom:8px;">'
+        +   '<button class="btn sm secondary" onclick="invRestoreCheckAll(true)">☑ 전체 선택</button>'
+        +   '<button class="btn sm secondary" onclick="invRestoreCheckAll(false)">☐ 전체 해제</button>'
+        +   '<button class="btn sm secondary" onclick="invRestoreResetVals()">↩️ 추천값으로 되돌리기</button>'
+        +   '<span id="invRestoreInfo" style="margin-left:auto; font-size:12px; color:var(--brand-dark);"></span>'
+        + '</div>'
+        + '<div style="overflow-x:auto; max-height:420px; overflow-y:auto; border:1px solid #E8DFCF; border-radius:6px;">'
+        +   '<table class="t" style="width:100%;">'
+        +   '<thead><tr><th style="width:40px; text-align:center;">✓</th><th>카테고리</th><th>품목</th>'
+        +     '<th class="num">현재</th><th class="num">복구값 ✎</th><th>기준일</th></tr></thead>'
+        +   '<tbody id="invRestoreTbody">' + _wRows + '</tbody></table></div>'
         + '<div style="margin-top:12px;">'
-        + '<button class="btn" style="background:#C0392B; color:#fff;" onclick="inventoryRestoreWipedStock()">🔄 ' + _wiped.length + '건 일괄 복구 (보스 비번)</button>'
+        + '<button class="btn" id="invRestoreBtn" style="background:#C0392B; color:#fff;" onclick="inventoryRestoreWipedStock()">🔄 선택한 ' + _wiped.length + '건 복구 (보스 비번)</button>'
         + '</div></div>';
     }
     const _ghosts = _invFindGhostRecords();
@@ -4419,6 +4524,8 @@ function renderOrphanAdmin() {
         }).join('')
         + '</tbody></table>')
     + '</div>';
+  // ⭐ (2026-10-01 밤작업#382) 복구 카드 선택 건수·합계·버튼 라벨 초기화
+  try { if (document.getElementById('invRestoreTbody')) invRestoreRecalc(); } catch(e) { console.warn('invRestoreRecalc init:', e); }
 }
 
 // orphan 감지: 인보이스/배송완료 상태이면서 거래처가 없거나 orderNo가 없거나 오프닝 발란스 의심
@@ -19354,26 +19461,64 @@ function _invLatestSnapshotStock(pid, beforeISO) {
 }
 window._invLatestSnapshotStock = _invLatestSnapshotStock;
 
+// 사고가 일어난 실사의 "직전 마감일" — 복구 기준일
+//   가장 최근 실사일(D) 이전의 마지막 일별 스냅샷 날짜. 날짜가 바뀌어도 고정된다.
+function _invRestoreBaseDate() {
+  const inv = DB.inventory || {};
+  const stks = Object.keys(inv.stocktakeHistory || {}).sort();
+  const D = stks.length ? stks[stks.length - 1] : todayLocalISO();
+  const days = Object.keys(inv.dailyHistory || {}).filter(function(k){ return k < D; }).sort();
+  return days.length ? days[days.length - 1] : '';
+}
+window._invRestoreBaseDate = _invRestoreBaseDate;
+
 // 미입력→0 으로 재고가 지워진 것으로 보이는 품목 (복구 후보)
-//   조건: 현재 전재고 0  +  과거 스냅샷엔 재고 있음
-//        +  (오늘 실사 기록에 없음  또는  오늘 자동 0처리 목록에 있음)
+//   ⭐ 날짜가 바뀌어도 같은 결과가 나와야 한다. 그래서
+//      기준일 마감재고 + (기준일 이후 각 날의 입고−출고) 를 누적해 "오늘의 전재고"를 재구성한다.
+//      (기준일 다음날 하루만 지나도 당일 출고가 prev 로 접혀 들어가므로 단순 스냅샷 비교로는 틀린다.)
 function _invFindWipedStock() {
   const inv = DB.inventory || {};
   const bp = inv.byProduct || {};
+  const dh = inv.dailyHistory || {};
   const today = todayLocalISO();
-  const todayEntry = ((inv.stocktakeHistory || {})[today]) || null;
-  const counted = new Set((todayEntry && todayEntry.items || []).map(function(i){ return i.pid; }));
-  const autoZeroed = new Set((todayEntry && todayEntry.autoZeroPids) || []);
+  const base = _invRestoreBaseDate();
+  if (!base) return [];
+  // 기준일 이후 ~ 어제까지의 날짜 (오늘 입·출고는 byProduct 에 살아 있으므로 제외)
+  const afterDays = Object.keys(dh).filter(function(k){ return k > base && k < today; }).sort();
+  const stks = Object.keys(inv.stocktakeHistory || {}).sort();
+  const D = stks.length ? stks[stks.length - 1] : today;
+  const stEntry = inv.stocktakeHistory[D] || null;
+  const counted = new Set((stEntry && stEntry.items || []).map(function(i){ return i.pid; }));
+  const autoZeroed = new Set((stEntry && stEntry.autoZeroPids) || []);
+  //   ⭐ (2026-10-01 밤작업#382) 이미 사장님이 처리한 품목은 다시 올리지 않는다.
+  //   추천값보다 "낮은 값"으로 복구하면 차이가 남아 계속 목록에 떠버린다 → 사고 단위로 처리 완료 표시.
+  const handled = inv.restoreHandled || {};
   const out = [];
   (DB.products || []).forEach(function(p) {
     if (!p || !p.id) return;
+    if (handled[p.id] === base) return;                       // 이번 사고(기준일 base)에 대해 이미 처리됨
+    if (counted.has(p.id) && !autoZeroed.has(p.id)) return;   // 사람이 직접 센 값은 건드리지 않음
+    const baseSnap = ((dh[base] || {}).byProduct || {})[p.id];
+    if (!baseSnap) return;
+    let want = +(baseSnap.stock || 0);
+    if (want <= 0.01) return;                                 // 기준일에 재고가 없던 품목은 대상 아님
+    const moves = [];
+    afterDays.forEach(function(d) {
+      const s = ((dh[d] || {}).byProduct || {})[p.id];
+      if (!s) return;
+      const r = +(s.receivedToday || 0), x = +(s.deductedToday || 0);
+      want += r - x;
+      if (r || x) moves.push(d + ' 입' + r.toFixed(1) + '/출' + x.toFixed(1));
+    });
+    if (want <= 0.01) return;                                 // 이후 출고로 다 빠진 품목은 복구 불필요
     const e = bp[p.id];
     const cur = e ? +(e.prev || 0) : 0;
-    if (Math.abs(cur) > 0.01) return;
-    if (counted.has(p.id) && !autoZeroed.has(p.id)) return;   // 사람이 직접 센 0 은 건드리지 않음
-    const snap = _invLatestSnapshotStock(p.id, today);
-    if (!snap || snap.stock <= 0.01) return;
-    out.push({ pid: p.id, name: p.name || p.id, cut: p.cut || '', snapDate: snap.date, snapStock: snap.stock });
+    //   재구성값은 건드리지 않은 품목에선 현재 전재고와 정확히 일치한다(실데이터 151건 검증).
+    //   그래서 "재구성값이 더 큰 경우"만 = 재고가 사라진 경우만 복구 대상으로 본다.
+    //   (전재고가 0 이 아니어도 대상이 될 수 있다 — 지워진 뒤 입고가 들어온 품목)
+    if (want - cur <= 0.01) return;
+    out.push({ pid: p.id, name: p.name || p.id, cut: p.cut || '',
+               snapDate: base, snapStock: want, curPrev: cur, moves: moves });
   });
   out.sort(function(a,b){ return b.snapStock - a.snapStock; });
   return out;
