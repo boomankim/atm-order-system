@@ -623,7 +623,15 @@ function saveLocalDB() {
 function getInvoiceItems(o) {
   // 항상 배열 반환 — items/invoiceItems 가 누락된 손상 데이터에서도 .forEach 가 터지지 않도록 방어
   const arr = (o && (o.invoiceItems || o.items)) || [];
-  return Array.isArray(arr) ? arr : [];
+  if (!Array.isArray(arr)) return [];
+  // ⭐ (2026-10-02 밤작업#384) 배열 안의 null 구멍 제거.
+  //   Firebase 배열은 중간 원소가 지워지면 null 로 돌아온다. 실데이터에 3건 존재
+  //   (ATM-20260930-2896 invoiceItems[3] · ATM-20260930-2903 items[1],[2]).
+  //   computeTotals 등이 it._status 를 읽다가 터져서 매출일보·스테이트먼트가 통째로 안 뜰 수 있었다.
+  //   호출부가 40곳 가까이 되므로 여기 한 곳에서 걸러내는 게 가장 안전하다.
+  let hasHole = false;
+  for (let i = 0; i < arr.length; i++) { if (!arr[i]) { hasHole = true; break; } }
+  return hasHole ? arr.filter(function(x){ return !!x; }) : arr;
 }
 
 // =========================================================================
@@ -2331,6 +2339,8 @@ function renderProcessingToday() {
       else if (dDate === tomorrow) bucket = 'tomorrow';
       else return;
       o.items.forEach(function(it) {
+    if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
+        if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
         const p = DB.products.find(function(x){ return x.id === it.productId; });
         if (!p) return;
         if (p.cut !== '작업육' && !p.name.includes('작업')) return;
@@ -3997,6 +4007,57 @@ async function ordAdmDeleteSelected(cid) {
   route();
 }
 window.ordAdmDeleteSelected = ordAdmDeleteSelected;
+
+// =========================================================================
+// ⭐ (2026-10-02 밤작업#384) 채번 타임아웃 대응
+// -------------------------------------------------------------------------
+// 사고 (2026-10-02 아침 · 인보이스 202834):
+//   서버는 202834 를 정상 발급하고 카운터를 202835 로 올렸는데,
+//   응답이 3초 안에 돌아오지 않아 화면이 "채번 실패"로 보고 발행을 취소했다.
+//   번호만 타버린 것 — 데이터 유실도 삭제도 아니다.
+//   게다가 그 시점엔 화면이 자기 번호를 모르므로 로그에 '(채번전)' 로 남아
+//   결번 배너가 202834 를 "원인 불명"으로 표시했다.
+// 대책:
+//   ① 대기 시간 3초 → 10초 (아침 동시 접속 시 3초는 너무 짧다)
+//   ② 타임아웃 뒤에도 트랜잭션을 버리지 않고 끝까지 지켜본다.
+//      뒤늦게 commit 되면 그 번호로 [결번원인] 을 남겨 배너가 정확한 원인을 띄운다.
+// 번호를 재사용하지는 않는다 — 중복 배정이 결번보다 훨씬 위험하기 때문
+// (도모도모·척스벨리 중복 배정 사고).
+const INVOICE_NO_TXN_TIMEOUT_MS = 10000;
+
+// 타임아웃으로 버린 채번 트랜잭션을 끝까지 추적해 실제 소실 번호를 기록
+//   txnPromise : 원래 트랜잭션 promise (await 하지 않은 것)
+//   label      : '인보이스' | '크레딧'
+function _trackOrphanedInvoiceNo(txnPromise, label) {
+  if (!txnPromise || typeof txnPromise.then !== 'function') return;
+  try {
+    txnPromise.then(function(result) {
+      const committed = result && result.committed;
+      const newVal = result && result.snapshot && result.snapshot.val();
+      if (!committed || typeof newVal !== 'number') return;
+      const burned = newVal - 1;
+      // 서버 카운터는 올라갔으므로 로컬도 맞춰 둔다 (다음 발행이 뒤처지지 않게)
+      try {
+        if (!DB.settings) DB.settings = {};
+        if ((DB.settings.invoiceNoNext || 0) < newVal) DB.settings.invoiceNoNext = newVal;
+      } catch(_){}
+      console.warn('[채번] 응답 지연으로 버려진 번호:', burned);
+      try {
+        auditLogAdd('[결번원인] 결번 발생 · ' + burned + ' · 원인: 채번 응답 지연(타임아웃) · '
+          + label + ' 발행 취소됨 · 인쇄본 없음 · ' + new Date().toISOString());
+      } catch(_){}
+      try {
+        if (typeof showToast === 'function') {
+          showToast('ℹ ' + label + ' 번호 ' + burned + ' 은(는) 응답 지연으로 비었습니다 · 결번 처리하세요', 12000);
+        }
+      } catch(_){}
+    }).catch(function(e) {
+      console.warn('[채번] 지연 추적 실패:', e);
+      try { auditLogAdd('[결번원인] 결번 발생 · (채번전) · 원인: 채번 응답 없음 · ' + label + ' 발행 취소 · ' + new Date().toISOString()); } catch(_){}
+    });
+  } catch(e) { console.warn('_trackOrphanedInvoiceNo 예외:', e); }
+}
+window._trackOrphanedInvoiceNo = _trackOrphanedInvoiceNo;
 
 // ⭐ (2026-07-29) 보스 권한 인증 — 매니저도 관리자 비번 알지만 이 액션만은 보스만.
 //   최초 사용 시 자동으로 보스 비번 설정 화면 → 이후엔 매번 보스 비번 입력.
@@ -9446,6 +9507,7 @@ window.updateWeighOrderUnit = updateWeighOrderUnit;
 function renderWeighingTotal(o) {
   let total = 0, weighed = 0;
   o.items.forEach(it => {
+    if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
     if (it.actualWeightKg != null && it.actualWeightKg > 0) {
       total += it.actualWeightKg;
       weighed++;
@@ -10011,19 +10073,23 @@ window.submitQuickCredit = async function() {
   // 크레딧 번호 채번 (인보이스 시퀀스 공유) — ⭐ (2026-09-22 밤작업#348) Firebase transaction 원자 채번
   if (!DB.settings) DB.settings = {};
   let cnNo;
+  let _qcTxnPending = null;
   if (typeof DB_REF !== 'undefined' && DB_REF) {
     try {
       const txn = DB_REF.child('settings/invoiceNoNext').transaction(function(curr) {
         const next = (typeof curr === 'number' && curr >= 200001) ? curr : 200001;
         return next + 1;
       });
-      const result = await Promise.race([ txn, new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('cn txn timeout')); }, 3000); }) ]);
+      _qcTxnPending = txn;   // ⭐ (밤작업#384) 타임아웃 시 추적용
+      const result = await Promise.race([ txn, new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('cn txn timeout')); }, INVOICE_NO_TXN_TIMEOUT_MS); }) ]);
+      _qcTxnPending = null;
       if (result && result.committed && result.snapshot && typeof result.snapshot.val() === 'number') {
         cnNo = String(result.snapshot.val() - 1);
         DB.settings.invoiceNoNext = result.snapshot.val();
       }
     } catch(e) { console.warn('quickCN txn failed:', e); }
   }
+  if (!cnNo && _qcTxnPending) _trackOrphanedInvoiceNo(_qcTxnPending, '크레딧');
   if (!cnNo) {
     alert('❌ 크레딧 번호 발급 실패 (Firebase 연결 문제)\n\n' +
           '· 인터넷 연결을 확인해주세요\n' +
@@ -12820,6 +12886,7 @@ function computeTotals(order) {
   let subtotal = 0, totalKg = 0, unweighedCount = 0;
   const cust = DB.customers.find(c => c.id === order.customerId);
   getInvoiceItems(order).forEach(it => {
+    if (!it) return;                       // ⭐ (밤작업#384) null 구멍 2중 방어
     if (it._status === 'cancelled') return;
     const p = DB.products.find(x => x.id === it.productId);
     if (it.actualWeightKg == null) { unweighedCount++; return; }
@@ -13021,6 +13088,7 @@ function renderHistoryResults() {
     byStatus[o.status] = (byStatus[o.status] || 0) + 1;
     const _cust = DB.customers.find(c => c.id === o.customerId);
     o.items.forEach(it => {
+      if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
       if (it.actualWeightKg == null) return;
       const p = DB.products.find(x => x.id === it.productId);
       const price = lineUnitPrice(it, p, _cust);
@@ -13234,6 +13302,7 @@ function exportHistoryCSV(detailed) {
     orders.forEach(o => {
       const c = DB.customers.find(x => x.id === o.customerId);
       o.items.forEach(it => {
+        if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
         const p = DB.products.find(x => x.id === it.productId);
         const price = lineUnitPrice(it, p, c);
         const w = it.actualWeightKg;
@@ -13343,6 +13412,7 @@ function viewInvoicePrep(params) {
   } else {
     // 재진입 — 비어있는 라인만 customP/마스터로 채움 (사용자 설정값 보존)
     o.invoiceItems.forEach(function(it) {
+      if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
       if (it.lineUnitPrice == null || it.lineUnitPrice === 0) {
         var p = DB.products.find(function(x) { return x.id === it.productId; });
         var customP = customerCustomPrice(cust, it.productId, it.notes);
@@ -14140,6 +14210,7 @@ async function _issueInvoiceInner(orderId) {
 
   // 1) 인보이스 번호 결정 — Firebase 트랜잭션 시도 (3초 타임아웃) + 실패 시 로컬 폴백.
   let invoiceNo;
+  let _invNoTxnPending = null;   // ⭐ (밤작업#384) 타임아웃 시 끝까지 지켜볼 트랜잭션
   if (DB_REF) {
     _lastSaveTime = Date.now();
     try {
@@ -14147,11 +14218,14 @@ async function _issueInvoiceInner(orderId) {
         const next = (typeof curr === 'number' && curr >= 200001) ? curr : 200001;
         return next + 1;
       });
-      // Firebase 응답이 없어도 3초 후 로컬 폴백 — 화면 멈춤 방지
+      // ⭐ (2026-10-02 밤작업#384) 3초 → 10초. 아침 동시 접속 때 3초는 너무 짧아
+      //   서버가 번호를 내줬는데도 실패로 처리되는 사고가 났다 (202834).
+      _invNoTxnPending = txnPromise;
       const result = await Promise.race([
         txnPromise,
-        new Promise((_, rej) => setTimeout(() => rej(new Error('invoiceNoNext timeout')), 3000))
+        new Promise((_, rej) => setTimeout(() => rej(new Error('invoiceNoNext timeout')), INVOICE_NO_TXN_TIMEOUT_MS))
       ]);
+      _invNoTxnPending = null;   // 제시간에 받음 — 추적 불필요
       _lastSaveTime = Date.now();
       const committed = result && result.committed;
       const newVal = result && result.snapshot && result.snapshot.val();
@@ -14164,6 +14238,9 @@ async function _issueInvoiceInner(orderId) {
       console.warn('invoiceNoNext transaction failed/timeout, falling back:', e);
     }
   }
+  // ⭐ (2026-10-02 밤작업#384) 타임아웃으로 포기했어도 서버는 번호를 내줬을 수 있다.
+  //   끝까지 지켜보다 commit 되면 그 번호로 [결번원인] 을 남긴다 → 배너가 "원인 불명" 대신 정확한 원인 표시.
+  if (!invoiceNo && _invNoTxnPending) _trackOrphanedInvoiceNo(_invNoTxnPending, '인보이스');
   if (!invoiceNo) {
     // ⭐ (2026-09-01 밤작업#320) 로컬 폴백 금지 · 채번 실패 시 발행 중단
     //   원인: 로컬 폴백은 카운터가 서버 안 올라감 → 다음 발행이 같은 번호 재사용 (도모도모/척스벨리 사고)
@@ -14173,9 +14250,9 @@ async function _issueInvoiceInner(orderId) {
           '· 잠시 후 다시 시도해주세요\n' +
           '· 반복 발생 시 관리자에게 알림\n\n' +
           '⚠ 로컬 폴백 발급은 · 중복 배정 위험으로 · 비활성화됨');
-    try { auditLogAdd('❌ 인보이스 채번 실패 · Firebase 트랜잭션 응답 없음 · 발행 취소'); } catch(_){}
-    // ⭐ (2026-09-07 밤작업#336) 결번 원인 자동 태깅 · 배너 파서용 표준 프리픽스
-    try { auditLogAdd('[결번원인] 결번 발생 · (채번전) · 원인: 동시 발행 race · 인쇄본 파기 필요 · ' + new Date().toISOString()); } catch(_){}
+    try { auditLogAdd('❌ 인보이스 채번 실패 · Firebase 트랜잭션 응답 없음(' + (INVOICE_NO_TXN_TIMEOUT_MS/1000) + '초 대기) · 발행 취소'); } catch(_){}
+    // ⭐ (2026-10-02 밤작업#384) 실제 번호는 _trackOrphanedInvoiceNo 가 뒤늦게 기록한다.
+    //   여기선 번호를 모르므로 '(채번전)' 로만 남긴다 — 번호가 확정되면 위 추적이 정식 태그를 덧붙임.
     _releaseLock();
     return;
   }
@@ -15034,6 +15111,7 @@ function computeCreditNoteTotals(cn) {
   let subtotal = 0;
   let totalKg = 0;
   (cn.items || []).forEach(it => {
+    if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
     subtotal += Number(it.amount) || 0;
     totalKg  += Number(it.returnKg) || 0;
   });
@@ -15366,7 +15444,7 @@ window.mergeOrdersInGroup = async function(customerId, deliveryDate) {
   // items 병합
   const combinedItems = target.items.slice();
   sources.forEach(src => {
-    (src.items || []).forEach(it => combinedItems.push(Object.assign({}, it)));
+    (src.items || []).forEach(it => { if (it) combinedItems.push(Object.assign({}, it)); });   // ⭐ (밤작업#384) null 구멍 방어
   });
   target.items = combinedItems;
   // invoiceItems 도 있으면 병합 (이미 편집됐을 수도)
@@ -15648,6 +15726,7 @@ window.confirmIssueCreditNote = async function() {
 
   // 번호 발행 — 인보이스와 동일 시퀀스(invoiceNoNext) 공유 (사용자 확정 정책)
   let cnNo;
+  let _cnTxnPending = null;
   if (DB_REF) {
     _lastSaveTime = Date.now();
     try {
@@ -15655,7 +15734,9 @@ window.confirmIssueCreditNote = async function() {
         const next = (typeof curr === 'number' && curr >= 200001) ? curr : 200001;
         return next + 1;
       });
-      const result = await Promise.race([ txn, new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('cn number timeout')); }, 3000); }) ]);
+      _cnTxnPending = txn;   // ⭐ (밤작업#384) 타임아웃 시 추적용
+      const result = await Promise.race([ txn, new Promise(function(_, rej){ setTimeout(function(){ rej(new Error('cn number timeout')); }, INVOICE_NO_TXN_TIMEOUT_MS); }) ]);
+      _cnTxnPending = null;
       _lastSaveTime = Date.now();
       if (result && result.committed && result.snapshot && typeof result.snapshot.val() === 'number') {
         cnNo = String(result.snapshot.val() - 1);
@@ -15664,6 +15745,7 @@ window.confirmIssueCreditNote = async function() {
       }
     } catch(e) { console.warn('CN number transaction failed:', e); }
   }
+  if (!cnNo && _cnTxnPending) _trackOrphanedInvoiceNo(_cnTxnPending, '크레딧');
   if (!cnNo) {
     // ⭐ (2026-09-22 밤작업#348) 로컬 폴백 금지 · 중복 방지
     alert('❌ 크레딧 번호 발급 실패 (Firebase 연결 문제)\n\n' +
@@ -16406,7 +16488,7 @@ function buildOrderSheetHTML(o, cust) {
     </tr>`;
   }).join('');
   let totalKg = 0;
-  o.items.forEach(it => { if (it.actualWeightKg != null) totalKg += it.actualWeightKg; });
+  o.items.forEach(it => { if (it && it.actualWeightKg != null) totalKg += it.actualWeightKg; });   // ⭐ (밤작업#384) null 구멍 방어
 
   return `
     <div style="font-family:'Malgun Gothic','Apple SD Gothic Neo','Helvetica Neue',Arial,sans-serif;
@@ -19143,6 +19225,7 @@ function inventoryRenderReturns(days) {
     if (!dateISO || dateISO < cutoffISO) return;
     const cust = DB.customers.find(c => c.id === cn.customerId);
     (cn.items || []).forEach((it, idx) => {
+    if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
       if (!it || !it.productId) return;
       // 크레딧: kg 모드만 실물 반품으로 취급. 금액 모드는 skip.
       const kg = +(it.returnKg) || 0;
