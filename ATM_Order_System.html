@@ -10407,8 +10407,26 @@ window.deletePayment = function(payId) {
   const idxNow = DB.payments.findIndex(x => x && x.id === payId);
   if (idxNow < 0) { alert('삭제 대상이 사라졌습니다. 새로고침 후 다시 시도해주세요.'); return; }
 
+  // ⭐ (2026-10-14 밤작업) 은행 CSV 로 들어온 입금이면 · 다음 CSV 업로드 때 다시 뜨지 않게 기록할지 확인
+  //   (다른 거래처로 옮겨 수동 입력한 경우 · 같은 입금이 원래 거래처로 다시 들어가는 사고 방지)
+  let _dismiss = null;
+  if (p.bankSource) {
+    if (confirm('이 입금은 은행 CSV 에서 들어온 입금입니다.\n\n다음 CSV 업로드 때 이 입금이 다시 뜨지 않게 할까요?\n\n[확인] 다시 안 뜨게 (다른 거래처로 옮기는 경우 권장)\n[취소] 그냥 삭제만 (다음 CSV 때 다시 뜰 수 있음)')) {
+      const _comp = (p.bankSource||'') + '|' + (p.bankDate || p.date || '') + '|' + Math.round((p.amount||0)*100) + '|' + String(p.notes||'').slice(0,30).toLowerCase();
+      _dismiss = { bankRef: p.bankRef || null, composite: _comp, loose: (p.bankSource||'') + '|' + (p.bankDate || p.date || '') + '|' + Math.round((p.amount||0)*100), amount: p.amount, bankDate: p.bankDate || p.date || '', notes: p.notes || '', fromCustomerId: p.customerId, dismissedAt: new Date().toISOString() };
+    }
+  }
+
   // 로컬 제거
   DB.payments.splice(idxNow, 1);
+  if (_dismiss) {
+    if (!DB.bankDismissed || typeof DB.bankDismissed !== 'object') DB.bankDismissed = {};
+    const _dk = 'dm_' + p.id;
+    DB.bankDismissed[_dk] = _dismiss;
+    try {
+      if (typeof DB_REF !== 'undefined' && DB_REF) { _lastSaveTime = Date.now(); DB_REF.child('bankDismissed/' + _dk).set(_dismiss); }
+    } catch(_){}
+  }
   try { saveLocalDB(); } catch(e){}
 
   // 🛡️ (2026-07-30) 동시성 안전 — 서버에서 payment ID 로 삭제 (전체 재기록 X)
@@ -10432,6 +10450,7 @@ window.deletePayment = function(payId) {
     });
   }
 
+  try { auditLogAdd('입금 삭제: ' + custName + ' · ' + dateStr + ' $' + amtStr + (_dismiss ? ' · 은행CSV 재등록 차단' : '')); } catch(_){}
   showToast('🗑 입금 기록 삭제 완료 (' + custName + ' · $' + amtStr + ')');
 
   // UI 재렌더링: 이력 목록 + 매출일보 표
@@ -11476,7 +11495,7 @@ BANK_CSV.parseFile = function(text, bankHint) {
 BANK_CSV.extractDescriptionFields = function(descr) {
   // 리턴: { type, senderName, businessGuess, refNo, invoiceHints:[], cleaned }
   let d = ' ' + (descr || '') + ' ';
-  const out = { type: '', senderName: '', businessGuess: '', refNo: '', invoiceHints: [], cleaned: '' };
+  const out = { type: '', senderName: '', businessGuess: '', refNo: '', invoiceHints: [], cleaned: '', tradingName: '' };
 
   // 1) REF NO 추출
   const mRef = /\bREF\s*NO\s+(\d+)/i.exec(d);
@@ -11515,7 +11534,8 @@ BANK_CSV.extractDescriptionFields = function(descr) {
     d = d.slice((d.indexOf(mType[0]) + mType[0].length));
   } else {
     // ANZ style: "TRANSFER FROM XXX", "DEPOSIT", "PAYMENT TO ..." (지출)
-    const mAlt = /\b(TRANSFER FROM|DEPOSIT|CREDIT INTEREST)\b\s*/i.exec(d);
+    // ⭐ (2026-10-14 밤작업) "DIRECT CREDIT CBA ..." (FROM 없음) 도 유형으로 인식 → sender 가 "DIRECT" 로 잘리지 않게
+    const mAlt = /\b(DIRECT CREDIT|TRANSFER FROM|DEPOSIT|CREDIT INTEREST)\b\s*/i.exec(d);
     if (mAlt) {
       out.type = mAlt[1].toUpperCase().replace(/\s+/g, '_');
       d = d.slice(d.indexOf(mAlt[0]) + mAlt[0].length);
@@ -11536,7 +11556,8 @@ BANK_CSV.extractDescriptionFields = function(descr) {
   d = d.replace(/\b\d{2}\/\d{2}\/\d{2,4}\b/g, ' '); // 날짜 조각
   d = d.replace(/\b\d{1,2}\s+(JAN|FEB|MAR|APR|MAY|JUN|JUL|AUG|SEP|OCT|NOV|DEC)\b/ig, ' ');
   // ⭐ 은행 시스템 코드 · 결제 유형 잔재 (매칭에 무의미)
-  d = d.replace(/\b(TRF|EFT|DEP|PAYID|PAYID PAYMENT|OSKO|NPP|BPAY|CBA|NAB|WBC|ANZ|SUNCORP|CBAX)\b/ig, ' ');
+  // ⭐ (2026-10-14 밤작업) DIRECT 추가 · "DIRECT CREDIT"·"DIRECT BATCH BUTCHERS" 등 은행 용어가 sender 로 학습되던 문제 (ASHIN 오매칭 원인)
+  d = d.replace(/\b(TRF|EFT|DEP|PAYID|PAYID PAYMENT|OSKO|NPP|BPAY|CBA|NAB|WBC|ANZ|SUNCORP|CBAX|DIRECT)\b/ig, ' ');
   d = d.replace(/\b(PAYMENT|TRANSFER|DEPOSIT|CREDIT|DEBIT|FROM|TO)\b/ig, ' ');
   // ⭐ 카드 마스크 (예: ****1234, XXXX1234)
   d = d.replace(/\b[X\*]{2,}\d{2,4}\b/g, ' ');
@@ -11548,6 +11569,10 @@ BANK_CSV.extractDescriptionFields = function(descr) {
   d = d.replace(/\s+/g, ' ').trim();
   d = d.replace(/[,;]\s*$/, ''); // 트레일링 콤마
   out.cleaned = d;
+  // ⭐ (2026-10-14 밤작업) "법인명 TRADING AS 상호" → 상호를 별도 보관 (매칭 시 법인명보다 우선)
+  //   예: "KORYO FOOD PTY LTD TRADING AS YUN'S PORK & DU Yuns pork0910" → tradingName = "YUN'S PORK & DU Yuns pork0910"
+  const mTa = /\b(?:TRADING AS|T\/AS)\s+(.+)$/i.exec(d);
+  if (mTa && mTa[1].trim().length >= 3) out.tradingName = mTa[1].trim();
 
   // 6) sender / business 분리
   //    "JIHYE MUN Obongzip" → senderName="JIHYE MUN", businessGuess="Obongzip"
@@ -11596,11 +11621,24 @@ BANK_CSV.extractDescriptionFields = function(descr) {
 //   제거 대상: "week 35", "wk 12", "day 5", "w 3", "d 15", "202609"(순수 6+자리 숫자)
 //   원인: 명장시티/돈돈 등 · 매주 REFERENCE에 "week N" 붙어와서 · 매주 재학습 필요했음
 //   목적: sender 없어도 · biz의 회사명 부분만 정규화 · 매주 안정된 키
+// ⭐ (2026-10-14 밤작업) 학습 금지 키 · 은행 용어·흔한 단어·너무 짧은 키
+//   원인: "direct"→ASHIN, "invoice"→STAFF 처럼 일반 단어가 학습되면 다른 거래처 입금을 끌어감
+BANK_CSV.STOP_KEYS = new Set(['direct','direct credit','credit','internet','transfer','payment','invoice','inv','ref','reference',
+  'pty','ltd','pty ltd','food','foods','trading','trading as','the','and','co','meat','mr','ms','mrs','week','wk','bill','account','acc','deposit','online','banking','to','from']);
+BANK_CSV.isLearnableKey = function(k) {
+  if (!k || k.length < 3) return false;
+  if (BANK_CSV.STOP_KEYS.has(k)) return false;
+  // 모든 단어가 금지어/숫자뿐이면 학습 안 함
+  const ws = k.split(' ').filter(Boolean);
+  if (ws.every(w => BANK_CSV.STOP_KEYS.has(w) || /^\d+$/.test(w))) return false;
+  return true;
+};
 BANK_CSV.normKey = function(s) {
   return String(s || '').toLowerCase()
     .replace(/[^\w\s가-힣]/g, ' ')                              // 특수문자 → 공백
     .replace(/\b(week|wk|day)\s*\d+\b/g, ' ')                   // week 35, wk 12, day 5 제거
     .replace(/\b\d{6,}\b/g, ' ')                                // 6자리 이상 숫자 (날짜/영수증 번호) 제거
+    .replace(/\b([a-z]{2,})\d{3,}\b/g, '$1')                    // ⭐ (2026-10-14) 글자에 붙은 날짜숫자 제거 · "pork0910" → "pork" (매주 같은 키)
     .replace(/\s+/g, ' ')
     .trim();
 };
@@ -11623,6 +11661,12 @@ BANK_CSV.matchCustomer = function(fields) {
   // ⭐ 0. 학습된 매핑 우선 (score 100)
   const learned = BANK_CSV.lookupLearnedMap(fields);
   if (learned) return { cid: learned.cid, custName: learned.custName, score: 100, reason: learned.reason };
+
+  // ⭐ (2026-10-14 밤작업) "TRADING AS 상호" 가 있으면 상호만으로 먼저 매칭 (법인명 겹침으로 인한 오매칭 방지)
+  if (fields.tradingName && !fields._taPass) {
+    const ta = BANK_CSV.matchCustomer({ senderName: '', businessGuess: fields.tradingName, _taPass: true });
+    if (ta && ta.score >= 70) return { cid: ta.cid, custName: ta.custName, score: ta.score, reason: 'TRADING AS · ' + ta.reason };
+  }
 
   // 매칭 확률 (0~100). 결과: { cid, score, reason, custName }
   const customers = (DB.customers || []).filter(c => c && c.active !== false);
@@ -11657,11 +11701,17 @@ BANK_CSV.matchCustomer = function(fields) {
     }
     // 단어 단위 부분 매칭 (2단어 이상 겹치면)
     if (score < 60 && name) {
+      // ⭐ (2026-10-14 밤작업) PTY·LTD·FOOD 등 흔한 단어만 겹치면 점수 없음 · 거래처 고유 단어가 최소 1개 맞아야 함
+      //   원인: "KORYO FOOD PTY LTD" 입금이 이름에 FOOD·PTY·LTD 가 있는 다른 거래처로 매칭되던 문제
+      const _generic = new Set(['pty','ltd','ltd)','(pty','pty.','ltd.','food','foods','trading','holdings','australia','group','the','and','company','restaurant','meat']);
+      const _isGen = w => _generic.has(w.replace(/[()]/g, '')) || _generic.has(w);
       const nameWords = name.split(' ').filter(w => w.length >= 3);
+      const _specWords = nameWords.filter(w => !_isGen(w));
       const searchStr = (biz + ' ' + sender).trim();
       const hits = nameWords.filter(w => searchStr.includes(w)).length;
-      if (hits >= 2) { score = Math.max(score, 70); reasons.push('단어 2+개'); }
-      else if (hits === 1 && nameWords.length === 1) { score = Math.max(score, 60); reasons.push('단일단어'); }
+      const _specHits = _specWords.filter(w => searchStr.includes(w)).length;
+      if (hits >= 2 && _specHits >= 1) { score = Math.max(score, 70); reasons.push('단어 2+개'); }
+      else if (_specHits === 1 && _specWords.length === 1) { score = Math.max(score, 60); reasons.push('단일단어'); }
     }
     if (score > 0) {
       candidates.push({ cid: c.id, custName: c.name, score, reason: reasons.join(', ') });
@@ -11720,6 +11770,45 @@ BANK_CSV.buildPreview = function(text, opts) {
     if (p.bankRef) existingRefs.add(String(p.bankRef));
     if (p.bankSource) existingComposites.add(_mkComposite(p.bankSource, p.bankDate || p.date, p.amount, p.notes || ''));
   });
+  // ⭐ (2026-10-14 밤작업) 느슨한 중복 키 (은행|날짜|금액) · 메모 해석 방식이 바뀌어도 이미 등록된 입금은 중복 처리
+  //   같은 날 같은 금액이 여러 건이면 기존 등록 건수만큼만 중복으로 셈
+  const _looseCnt = {};
+  const _mkLoose = (bnk, dISO, amt) => (bnk||'') + '|' + (dISO||'') + '|' + Math.round((amt||0)*100);
+  (DB.payments || []).forEach(p => {
+    if (!p || !p.bankSource) return;
+    const lk = _mkLoose(p.bankSource, p.bankDate || p.date, p.amount);
+    _looseCnt[lk] = (_looseCnt[lk] || 0) + 1;
+  });
+  // ⭐ (2026-10-14 밤작업) 삭제하면서 "다시 안 뜨게" 처리한 은행 입금 · 중복으로 취급
+  const dismissed = (DB && DB.bankDismissed) || {};
+  Object.keys(dismissed).forEach(k => {
+    const d0 = dismissed[k]; if (!d0) return;
+    if (d0.bankRef) existingRefs.add(String(d0.bankRef));
+    if (d0.composite) existingComposites.add(d0.composite);
+    if (d0.loose) _looseCnt[d0.loose] = (_looseCnt[d0.loose] || 0) + 1;
+  });
+  // ⭐ (2026-10-14 밤작업) 중복 의심 · 같은 금액 입금이 은행일 ±3일 안에 이미 있으면 (수동 입력 포함)
+  //   원인: 수동으로 다른 거래처에 옮긴 입금은 bankRef 가 없어 CSV 재업로드 시 새 입금으로 자동 체크됨 (ASHIN 건)
+  const _dayMs = 86400000;
+  const _toMs = iso => { const t = Date.parse((iso || '') + 'T00:00:00'); return isNaN(t) ? null : t; };
+  const _existingByAmt = {};
+  (DB.payments || []).forEach(p => {
+    if (!p || !p.amount) return;
+    const k = Math.round(p.amount * 100);
+    (_existingByAmt[k] = _existingByAmt[k] || []).push(p);
+  });
+  const _findSuspect = (amt, dISO) => {
+    const list = _existingByAmt[Math.round((amt || 0) * 100)] || [];
+    const t = _toMs(dISO); if (t === null) return null;
+    for (const p of list) {
+      const pt = _toMs(p.bankDate || p.date); if (pt === null) continue;
+      if (Math.abs(pt - t) <= 3 * _dayMs) {
+        const c = (DB.customers || []).find(x => x.id === p.customerId);
+        return { payId: p.id, cid: p.customerId, custName: c ? c.name : '(?)', date: p.date };
+      }
+    }
+    return null;
+  };
 
   // ⭐ (2026-08-12) 날짜 필터 제거 — CSV는 매번 7일치 정도만 다운로드해서 올림.
   //   중복은 bankRef + composite 키로 자동 감지 → 필터 없이도 안전.
@@ -11729,7 +11818,11 @@ BANK_CSV.buildPreview = function(text, opts) {
     if (r.amount <= 0) return; // 지출 스킵
     const fields = BANK_CSV.extractDescriptionFields(r.descr);
     const compKey = _mkComposite(bank, r.dateISO, r.amount, '[' + (bank||'').toUpperCase() + ' CSV] ' + (fields.senderName||'') + (fields.businessGuess ? ' / ' + fields.businessGuess : ''));
-    const isDup = (fields.refNo && existingRefs.has(String(fields.refNo))) || existingComposites.has(compKey);
+    let isDup = (fields.refNo && existingRefs.has(String(fields.refNo))) || existingComposites.has(compKey);
+    const _lk = _mkLoose(bank, r.dateISO, r.amount);
+    if (isDup) { if (_looseCnt[_lk] > 0) _looseCnt[_lk]--; }
+    else if (!fields.refNo && _looseCnt[_lk] > 0) { isDup = true; _looseCnt[_lk]--; }
+    const dupSuspect = isDup ? null : _findSuspect(r.amount, r.dateISO);
     const custMatch = BANK_CSV.matchCustomer(fields);
     const invMatch = BANK_CSV.matchInvoice(fields, custMatch && custMatch.cid, r.amount);
     // 인보이스 매칭이 거래처를 확정해줄 수도 있음
@@ -11758,7 +11851,9 @@ BANK_CSV.buildPreview = function(text, opts) {
       note: matchNote,
       invMatch: invMatch,
       isDup,
-      selected: !isDup && matchConfidence >= 70,
+      dupSuspect,
+      // ⭐ (2026-10-14) 중복 의심은 자동 체크 안 함 · 사용자가 확인 후 직접 체크
+      selected: !isDup && !dupSuspect && matchConfidence >= 70,
     });
   });
   return { bank, items, dupCount: items.filter(x => x.isDup).length };
@@ -12001,6 +12096,7 @@ window.bankCsvRenderPreview = function() {
   const rowHtml = items.map((it, i) => {
     let bg = '#fff', tag = '', tagColor = '';
     if (it.isDup) { bg = '#F5F5F5'; tag = '중복'; tagColor = '#999'; }
+    else if (it.dupSuspect) { bg = '#FFE0B2'; tag = '중복의심'; tagColor = '#E65100'; }
     else if (it.confidence >= 100) { bg = '#E8F5E9'; tag = '완벽매칭'; tagColor = '#2E7D32'; }
     else if (it.confidence >= 85) { bg = '#F1F8E9'; tag = '고신뢰(' + it.confidence + '%)'; tagColor = '#558B2F'; }
     else if (it.confidence >= 60) { bg = '#FFF9C4'; tag = '중신뢰(' + it.confidence + '%)'; tagColor = '#F57F17'; }
@@ -12023,6 +12119,7 @@ window.bankCsvRenderPreview = function() {
         + custOptions.replace('value="' + selValue + '"', 'value="' + selValue + '" selected')
         + '</select>'
         + (it.note ? '<div style="font-size:10px; color:var(--muted); margin-top:2px;">' + escapeHtmlSimple(it.note) + '</div>' : '')
+        + (it.dupSuspect ? '<div style="font-size:10px; color:#E65100; font-weight:700; margin-top:2px;">⚠ 같은 금액이 이미 등록됨: ' + escapeHtmlSimple(it.dupSuspect.custName) + ' · ' + escapeHtmlSimple(it.dupSuspect.date || '') + ' — 확인 후 필요하면 직접 체크</div>' : '')
       + '</td>'
       + '<td style="padding:4px 6px; text-align:center;"><span style="background:' + tagColor + '; color:#fff; padding:2px 6px; border-radius:4px; font-size:10px; font-weight:700;">' + tag + '</span></td>'
       + '</tr>';
@@ -12117,7 +12214,7 @@ window.bankCsvSaveBatch = async function() {
   const conflictKeys = new Set();
   for (const it of toSave) {
     const keys = [BANK_CSV.normKey(it.fields.senderName), BANK_CSV.normKey(it.fields.businessGuess),
-                  BANK_CSV.normKey((it.fields.senderName||'') + ' ' + (it.fields.businessGuess||''))].filter(k => k && k.length >= 2);
+                  BANK_CSV.normKey((it.fields.senderName||'') + ' ' + (it.fields.businessGuess||''))].filter(k => BANK_CSV.isLearnableKey(k));
     for (const k of keys) {
       if (proposedMap[k] && proposedMap[k] !== it.cid) conflictKeys.add(k);
       else proposedMap[k] = it.cid;
@@ -12155,7 +12252,9 @@ window.bankCsvSaveBatch = async function() {
       const senderKey = BANK_CSV.normKey(it.fields.senderName);
       const bizKey = BANK_CSV.normKey(it.fields.businessGuess);
       const fullKey = BANK_CSV.normKey((it.fields.senderName||'') + ' ' + (it.fields.businessGuess||''));
-      const keys = [senderKey, bizKey, fullKey].filter(k => k && k.length >= 2);
+      // ⭐ (2026-10-14 밤작업) 일반 단어·짧은 키 학습 금지 + TRADING AS 상호도 학습
+      const taKey = it.fields.tradingName ? BANK_CSV.normKey(it.fields.tradingName) : '';
+      const keys = [senderKey, bizKey, fullKey, taKey].filter(k => BANK_CSV.isLearnableKey(k));
       let anyNew = false;
       for (const k of keys) {
         if (conflictKeys.has(k)) continue;   // ⭐ H4: 충돌 키는 학습 스킵
