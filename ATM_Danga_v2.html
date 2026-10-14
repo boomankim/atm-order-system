@@ -274,6 +274,19 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
     </div>
   </div>
   <div class="card">
+    <h2>AI 사진 인식 (선택)</h2>
+    <div class="muted small" style="margin-bottom:8px;">
+      Claude API 키를 넣으면 사진 인식을 AI가 처리해 인식률이 크게 올라갑니다 (인보이스 1장당 1센트 미만).
+      키는 <b>이 기기에만</b> 저장되며, 키가 없으면 기존 무료 인식으로 작동합니다.
+    </div>
+    <input type="password" id="aiKeyInput" class="meta" style="width:100%;" placeholder="sk-ant-… API 키 붙여넣기">
+    <div class="btnrow" style="margin-top:8px;">
+      <button class="btn btn-ghost btn-sm" id="btnSaveAiKey">저장</button>
+      <button class="btn btn-red btn-sm" id="btnDelAiKey">삭제</button>
+      <span class="muted small" id="aiKeyState" style="align-self:center;"></span>
+    </div>
+  </div>
+  <div class="card">
     <h2>백업</h2>
     <div class="btnrow">
       <button class="btn btn-ghost btn-sm" id="btnExport">JSON 백업 내려받기</button>
@@ -910,21 +923,98 @@ async function ocrOneFile(file){
     $('#ocrProgress').classList.add('hidden');
   }
 }
+
+/* ============================ AI 사진 인식 (Claude API, 선택 기능) ============================ */
+function aiKey(){ try{ return (localStorage.getItem('danga_ai_key')||'').trim(); }catch(e){ return ''; } }
+function fileToJpegB64(file, maxW){
+  return new Promise((res,rej)=>{
+    const img=new Image();
+    img.onload=()=>{
+      const sc=Math.min(1,(maxW||1800)/img.width);
+      const c=document.createElement('canvas');
+      c.width=Math.round(img.width*sc); c.height=Math.round(img.height*sc);
+      c.getContext('2d').drawImage(img,0,0,c.width,c.height);
+      URL.revokeObjectURL(img.src);
+      res(c.toDataURL('image/jpeg',0.85).split(',')[1]);
+    };
+    img.onerror=rej;
+    img.src=URL.createObjectURL(file);
+  });
+}
+const AI_PROMPT='This is a photo of an Australian meat supplier tax invoice. Extract ONLY valid JSON, no other text:\n'
+ +'{"supplier":"<supplier company name>","invoiceNo":"<invoice number>","date":"YYYY-MM-DD",'
+ +'"lines":[{"code":"<item/product code, empty string if none>","desc":"<item description>","qtyKg":<weight in kg as number>,"unitPrice":<price per kg as number>,"amount":<line total as number>}]}\n'
+ +'Rules: qtyKg is the WEIGHT in kg (not carton count). unitPrice is the $/kg (or $/unit) shown. '
+ +'Include every product line. Exclude totals, GST, freight and levy lines. Use the invoice date, not order/due dates.';
+async function aiExtractInvoice(file){
+  const key=aiKey(); if(!key) return null;
+  OCR_BUSY=true;
+  $('#ocrProgress').classList.remove('hidden');
+  const bar=$('#ocrBar'), msg=$('#ocrMsg');
+  bar.style.width='35%'; msg.textContent='AI가 인보이스를 읽는 중… (5~10초)';
+  try{
+    const b64=await fileToJpegB64(file, 1800);
+    bar.style.width='55%';
+    const res=await fetch('https://api.anthropic.com/v1/messages',{
+      method:'POST',
+      headers:{ 'content-type':'application/json', 'x-api-key':key,
+        'anthropic-version':'2023-06-01',
+        'anthropic-dangerous-direct-browser-access':'true' },
+      body: JSON.stringify({ model:'claude-haiku-4-5', max_tokens:2000,
+        messages:[{role:'user', content:[
+          {type:'image', source:{type:'base64', media_type:'image/jpeg', data:b64}},
+          {type:'text', text:AI_PROMPT}]}] })
+    });
+    bar.style.width='90%';
+    if(res.status===401) throw new Error('API 키가 올바르지 않습니다 (설정에서 확인)');
+    if(!res.ok) throw new Error('AI 응답 오류 '+res.status);
+    const j=await res.json();
+    const txt=(j.content||[]).map(c=>c.text||'').join('');
+    const m=/\{[\s\S]*\}/.exec(txt); if(!m) throw new Error('AI 응답 해석 실패');
+    const d=JSON.parse(m[0]);
+    const date=/^\d{4}-\d{2}-\d{2}$/.test(d.date||'') ? d.date : todayISO();
+    return {
+      supplierKey: detectSupplier(String(d.supplier||'')),
+      invoiceNo: String(d.invoiceNo||''),
+      date: date,
+      lines: (d.lines||[]).map(l=>({
+        rawCode:String(l.code||'').trim(), rawDesc:cleanDesc(String(l.desc||'')),
+        qtyKg:(isFinite(+l.qtyKg)&&+l.qtyKg>0)?+l.qtyKg:NaN,
+        unitPrice:(isFinite(+l.unitPrice)&&+l.unitPrice>0)?+l.unitPrice:NaN,
+        amount:(isFinite(+l.amount)&&+l.amount>0)?+l.amount:NaN }))
+        .filter(l=>l.rawDesc || l.rawCode)
+    };
+  } finally {
+    OCR_BUSY=false;
+    $('#ocrProgress').classList.add('hidden');
+  }
+}
+// 통합 추출: AI(키 있고 이미지일 때) → 실패/키 없음 시 기존 OCR
+async function extractParsed(file){
+  if(aiKey() && /^image\//.test(file.type)){
+    try{
+      const p=await aiExtractInvoice(file);
+      if(p && p.lines.length) return p;
+      if(p) toast('AI가 품목을 찾지 못해 일반 인식으로 재시도합니다');
+    }catch(e){ console.warn(e); toast('AI 인식 실패('+e.message+') — 일반 인식으로 재시도'); }
+  }
+  const text=await ocrOneFile(file);
+  return parseInvoiceText(text);
+}
 async function processNextInQueue(){
   const entry=FILE_QUEUE.shift();
   if(!entry){ updateQueueUI(); return; }
   const file=entry.file;
   CURRENT_QID=entry.id;
   $('#resumeInfo').classList.add('hidden');
-  let text='';
-  try{ text=await ocrOneFile(file); }
+  let parsed=null;
+  try{ parsed=await extractParsed(file); }
   catch(e){
     console.error(e); CURRENT_QID=null;
     toast('인식 실패: '+e.message+(FILE_QUEUE.length?' — 다음 사진으로 넘어갑니다':''));
     if(FILE_QUEUE.length) return processNextInQueue();
     return;
   }
-  const parsed=parseInvoiceText(text);
   parsed.photoUrls = /^image\//.test(file.type) ? [URL.createObjectURL(file)] : [];
   if(!parsed.lines.length) toast('품목 줄을 찾지 못했어요 — 사진을 보며 직접 추가하거나 취소로 건너뛰세요');
   startReview(parsed);
@@ -960,8 +1050,7 @@ document.addEventListener('click', async e=>{
     const file=entry.file;
     qDel(entry.id);
     try{
-      const text=await ocrOneFile(file);
-      const parsed=parseInvoiceText(text);
+      const parsed=await extractParsed(file);
       parsed.lines.forEach(l=>{ CURRENT.lines.push(l); applyMatch(l); });
       if(/^image\//.test(file.type)){ (CURRENT.photoUrls=CURRENT.photoUrls||[]).push(URL.createObjectURL(file)); renderPhotos(); }
       if(!CURRENT.invoiceNo && parsed.invoiceNo) $('#invNo').value=parsed.invoiceNo;
@@ -1403,6 +1492,25 @@ $('#btnReloadMaster').addEventListener('click', ()=>{
     toast('품목마스터 새로고침 완료');
   });
 });
+/* ---- AI 키 설정 ---- */
+function renderAiKeyState(){
+  const el=$('#aiKeyState'); if(!el) return;
+  el.textContent = aiKey() ? '✓ AI 인식 사용 중' : '미설정 (일반 인식 사용)';
+}
+$('#btnSaveAiKey').addEventListener('click', ()=>{
+  const v=($('#aiKeyInput').value||'').trim();
+  if(!v){ toast('API 키를 붙여넣어 주세요'); return; }
+  if(v.indexOf('sk-ant')!==0){ toast('키 형식이 이상해요 — sk-ant로 시작해야 합니다'); return; }
+  try{ localStorage.setItem('danga_ai_key', v); }catch(e){}
+  $('#aiKeyInput').value='';
+  renderAiKeyState(); toast('AI 인식이 켜졌습니다 (이 기기)');
+});
+$('#btnDelAiKey').addEventListener('click', ()=>{
+  try{ localStorage.removeItem('danga_ai_key'); }catch(e){}
+  renderAiKeyState(); toast('AI 키 삭제됨 — 일반 인식으로 작동합니다');
+});
+renderAiKeyState();
+
 $('#btnExport').addEventListener('click', ()=>{
   const data=JSON.stringify({exportedAt:new Date().toISOString(), suppliers:SUPPLIERS, aliasDict:ALIAS, invoices:INVOICES}, null, 1);
   const a=document.createElement('a');
