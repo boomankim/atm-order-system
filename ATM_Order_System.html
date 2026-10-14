@@ -11624,7 +11624,8 @@ BANK_CSV.extractDescriptionFields = function(descr) {
 // ⭐ (2026-10-14 밤작업) 학습 금지 키 · 은행 용어·흔한 단어·너무 짧은 키
 //   원인: "direct"→ASHIN, "invoice"→STAFF 처럼 일반 단어가 학습되면 다른 거래처 입금을 끌어감
 BANK_CSV.STOP_KEYS = new Set(['direct','direct credit','credit','internet','transfer','payment','invoice','inv','ref','reference',
-  'pty','ltd','pty ltd','food','foods','trading','trading as','the','and','co','meat','mr','ms','mrs','week','wk','bill','account','acc','deposit','online','banking','to','from']);
+  'pty','ltd','pty ltd','food','foods','trading','trading as','the','and','co','meat','mr','ms','mrs','week','wk','bill','account','acc','deposit','online','banking','to','from',
+  'cba','anz','nab','wbc','suncorp','may','eric','kris','sung','soon','pbs','pay','paid','tomorrow','balance','atm','all that meat']);
 BANK_CSV.isLearnableKey = function(k) {
   if (!k || k.length < 3) return false;
   if (BANK_CSV.STOP_KEYS.has(k)) return false;
@@ -11635,8 +11636,12 @@ BANK_CSV.isLearnableKey = function(k) {
 };
 BANK_CSV.normKey = function(s) {
   return String(s || '').toLowerCase()
+    // ⭐ (2026-10-14 밤작업2) 날짜·기간 표기 제거 (특수문자 처리 전에) · 매주 바뀌어 학습이 안 되던 원인
+    //   예: "08-14/09/2026", "22/09-27/09/2026", "23/09/26-29/09/26", "3-8/08/2026", 잘린 "08-"
+    .replace(/\b\d{1,4}(?:[\/\-.]\d{1,4})+\b-?/g, ' ')
+    .replace(/\b\d{1,2}-(?=\s|$)/g, ' ')
     .replace(/[^\w\s가-힣]/g, ' ')                              // 특수문자 → 공백
-    .replace(/\b(week|wk|day)\s*\d+\b/g, ' ')                   // week 35, wk 12, day 5 제거
+    .replace(/\b(week|wk|w|day)\s*\d+\b/g, ' ')                 // week 35, wk 12, w32, day 5 제거
     .replace(/\b\d{6,}\b/g, ' ')                                // 6자리 이상 숫자 (날짜/영수증 번호) 제거
     .replace(/\b([a-z]{2,})\d{3,}\b/g, '$1')                    // ⭐ (2026-10-14) 글자에 붙은 날짜숫자 제거 · "pork0910" → "pork" (매주 같은 키)
     .replace(/\s+/g, ' ')
@@ -11705,12 +11710,20 @@ BANK_CSV.matchCustomer = function(fields) {
       //   원인: "KORYO FOOD PTY LTD" 입금이 이름에 FOOD·PTY·LTD 가 있는 다른 거래처로 매칭되던 문제
       const _generic = new Set(['pty','ltd','ltd)','(pty','pty.','ltd.','food','foods','trading','holdings','australia','group','the','and','company','restaurant','meat']);
       const _isGen = w => _generic.has(w.replace(/[()]/g, '')) || _generic.has(w);
-      const nameWords = name.split(' ').filter(w => w.length >= 3);
+      // ⭐ (2026-10-14 밤작업2) 괄호 분리 · 단어 앞부분 일치로만 인정 (예: "stra" 가 "australia" 안에 있다고 맞다고 보지 않음)
+      //   붙여 쓴 이름은 공백 없이 비교 (예: 거래처 "ROROBROS" ↔ 은행 "RORO BROS")
+      const nameWords = name.replace(/[()\/&\-]/g, ' ').split(' ').filter(w => w.length >= 3);
       const _specWords = nameWords.filter(w => !_isGen(w));
       const searchStr = (biz + ' ' + sender).trim();
-      const hits = nameWords.filter(w => searchStr.includes(w)).length;
-      const _specHits = _specWords.filter(w => searchStr.includes(w)).length;
-      if (hits >= 2 && _specHits >= 1) { score = Math.max(score, 70); reasons.push('단어 2+개'); }
+      const _sTokens = searchStr.replace(/[()\/&,\-]/g, ' ').split(' ').filter(Boolean);
+      const _sCompact = searchStr.replace(/[^a-z0-9가-힣]/g, '');
+      const _hit = w => _sTokens.some(t => t === w || t.startsWith(w)) || (w.length >= 5 && _sCompact.includes(w));
+      const hits = nameWords.filter(_hit).length;
+      const _specHits = _specWords.filter(_hit).length;
+      // ⭐ (2026-10-14 밤작업2) 거래처 고유 단어가 많이 맞을수록 높은 점수 (EEDAERO 이스트우드 vs 리드컴 구분)
+      if (_specHits >= 3) { score = Math.max(score, 90); reasons.push('고유단어 3+개'); }
+      else if (_specHits >= 2) { score = Math.max(score, 85); reasons.push('고유단어 2개'); }
+      else if (hits >= 2 && _specHits >= 1) { score = Math.max(score, 70); reasons.push('단어 2+개'); }
       else if (_specHits === 1 && _specWords.length === 1) { score = Math.max(score, 60); reasons.push('단일단어'); }
     }
     if (score > 0) {
