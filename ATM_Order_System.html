@@ -9858,6 +9858,13 @@ function viewOffice() {
     const ref = toLocalISODate(o.invoicedAt);
     return ref === todayISO;
   });
+  // ⭐ (2026-10-15 #389) 배송대기(발행됨·미배송)는 발행일과 상관없이 리스트 맨 위 · 배송일 순
+  const _allIds = new Set(all.map(o => o.id));
+  const _waitList = DB.orders.filter(o => o && o.status === 'invoiced')
+    .sort((a, b) => String(a.deliveryDate || '').localeCompare(String(b.deliveryDate || '')) || String(a.invoiceNo || '').localeCompare(String(b.invoiceNo || '')));
+  const _issuedRows = _waitList.concat(all.filter(o => o.status !== 'invoiced'));
+  const _shipDue = _waitList.filter(o => (o.deliveryDate || todayISO) <= todayISO);
+  const _shipLater = _waitList.filter(o => (o.deliveryDate || todayISO) > todayISO);
   // ⭐ (2026-07-07) 백업 경고 배너 — 어제 백업 안 했으면 오늘 표시.
   //   조건: toLocalISODate(lastFullBackupAt) < 어제(로컬)  &&  오늘 dismiss 안 함
   const _backupBanner = renderOfficeBackupBanner();
@@ -10027,27 +10034,36 @@ function viewOffice() {
           <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span>
         </h3>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">${renderDailyCloseButton()}${(() => {
-          const pending = all.filter(o => o.status === 'invoiced');
-          if (pending.length > 0) {
-            return `<button class="btn sm" style="background:#2E7D32; color:#fff; padding:8px 14px; font-size:13px; font-weight:700;" onclick="batchMarkDelivered()" title="오늘 발행된 인보이스 상태 주문 ${pending.length}건을 모두 배송완료로 변경 + 재고 자동 차감">🚚 일괄 배송완료 (${pending.length}건)</button>`;
+          // ⭐ (2026-10-15 #389) 배송일이 오늘(또는 지난 날)인 배송대기만 일괄 처리 · 내일 이후는 대기 유지
+          const later = _shipLater.length ? `<span style="font-size:12px; color:#1565C0; font-weight:700;">📦 내일 이후 배송대기 ${_shipLater.length}건</span>` : '';
+          if (_shipDue.length > 0) {
+            return `<button class="btn sm" style="background:#2E7D32; color:#fff; padding:8px 14px; font-size:13px; font-weight:700;" onclick="batchMarkDelivered()" title="배송일이 오늘인 배송대기 ${_shipDue.length}건을 배송완료로 변경 + 재고 자동 차감">🚚 일괄 배송완료 ${_shipDue.length}건</button>` + later;
+          } else if (later) {
+            return later;
           } else if (all.length > 0) {
             return `<span style="font-size:12px; color:var(--ok); font-weight:600;">✅ 모두 배송완료됨</span>`;
           }
           return '';
         })()}</div>
       </div>
-      ${all.length === 0 ? `<div class="empty">오늘 발행된 인보이스가 없습니다.</div>` : `
+      ${_issuedRows.length === 0 ? `<div class="empty">오늘 발행된 인보이스가 없습니다.</div>` : `
       <table class="t">
         <thead><tr><th>인보이스#</th><th>주문번호</th><th>거래처</th><th class="num">금액</th><th>상태</th><th class="act"></th></tr></thead>
         <tbody>
-          ${all.map(o => {
+          ${_issuedRows.map(o => {
             const c = DB.customers.find(x=>x.id===o.customerId);
-            return `<tr>
+            const _wait = o.status === 'invoiced';
+            const _dd = o.deliveryDate || todayISO;
+            const _ddTxt = _dd === todayISO ? '오늘' : (_dd < todayISO ? '지연 ' + formatDateDMY(_dd) : formatDateDMY(_dd));
+            const _stCell = _wait
+              ? `<span class="pill" style="background:${_dd > todayISO ? '#E3F2FD' : '#FFF3E0'}; color:${_dd > todayISO ? '#1565C0' : '#E65100'}; font-weight:700;">배송대기 · ${_ddTxt}</span>`
+              : `<span class="pill ${o.status}">${statusLabel(o.status)}</span>`;
+            return `<tr${_wait ? ' style="background:#FFFDF5;"' : ''}>
               <td><b>${o.invoiceNo||'-'}</b></td>
               <td>${o.orderNo || '-'}</td>
               <td>${c?c.name:'-'}</td>
               <td class="num">$${fmtMoney(computeTotalsWithCredits(o).net)}</td>
-              <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+              <td>${_stCell}</td>
               <td class="act"><button class="btn sm secondary" onclick="location.hash='#invoice?id=${o.id}'">보기</button></td>
             </tr>`;
           }).join('')}
@@ -10136,39 +10152,45 @@ function viewOffice() {
 
 // ⭐ (2026-10-15 밤작업#387) 오늘 마감 점검 · 담당자 최종 확인
 //   위치: 사무실 "오늘 발행 완료" 제목줄 · [일괄 배송완료] 앞 버튼
+//   (#389) 핵심 = [오늘 배송 예정] = [오늘 배송 완료] · 배송일 기준
 //   경고: ① 인보이스 번호 있는데 발행 상태 아님 (빨강·마감 불가) ② 계근완료·미발행 / 계근 미완료 (노랑)
 //         ③ 오늘 발행 번호 중 빈 번호 (빨강) ④ 같은 거래처·같은 날 비슷한 주문 (노랑) ⑤ 미출고 포함 (안내)
 function _dcCollect() {
+  // ⭐ (2026-10-15 #389) 기준 = 배송일 · [오늘 배송 예정] = [오늘 배송 완료] 확인이 핵심
   const today = todayLocalISO();
   const orders = (DB.orders || []).filter(o => o && o.status !== 'merged');
-  const isToday = function(o) {
-    return toLocalISODate(o.orderDate) === today || o.deliveryDate === today || toLocalISODate(o.invoicedAt) === today;
-  };
-  const todays = orders.filter(isToday);
-  const cnt = { total: todays.length, waiting: 0, weighing: 0, weighed: 0, invoiced: 0, delivered: 0 };
-  todays.forEach(o => {
-    if (o.status === 'new') cnt.waiting++;
-    else if (o.status === 'weighing') cnt.weighing++;
-    else if (o.status === 'weighed') cnt.weighed++;
-    else if (o.status === 'invoiced') cnt.invoiced++;
-    else if (o.status === 'delivered') cnt.delivered++;
-  });
-  const issues = [];
   const custName = id => { const c = (DB.customers || []).find(x => x.id === id); return c ? c.name : '-'; };
   const money = o => { try { return '$' + fmtMoney(computeTotalsWithCredits(o).net); } catch(_) { return ''; } };
   const prodName = id => { const p = (DB.products || []).find(x => x.id === id); return p ? p.name : '품목'; };
-  // ① 최근 60일 · 인보이스 번호가 있는데 발행/배송 상태 아님
+  const shortDate = d => { try { return formatDateDMY(d); } catch(_) { return d; } };
+  // 오늘 배송 예정 = 배송일 오늘 + 지난 배송일인데 아직 배송 안 됨(14일 이내) + 오늘 배송완료 처리된 건
+  const cutoff14 = (function(){ const d = new Date(); d.setDate(d.getDate() - 14); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); })();
+  const expected = orders.filter(o => {
+    const dd = o.deliveryDate || '';
+    if (dd === today) return true;
+    if (o.status === 'delivered') return toLocalISODate(o.deliveredAt) === today;
+    return dd && dd < today && dd >= cutoff14;
+  });
+  const delivered = expected.filter(o => o.status === 'delivered');
+  const stLabel = o => {
+    if (o.status === 'invoiced') return '발행됨 · 배송 안 함';
+    if (o.status === 'weighed') return o.invoiceNo ? '⚠ 번호 #' + o.invoiceNo + ' 있는데 계근완료 상태' : '계근완료 · 발행 안 됨';
+    if (o.status === 'weighing') return '계근중';
+    if (o.status === 'new') return '신규 · 계근 전';
+    return statusLabel(o.status);
+  };
+  const remaining = expected.filter(o => o.status !== 'delivered').map(o => ({
+    id: o.id, cust: custName(o.customerId), inv: o.invoiceNo || '', orderNo: o.orderNo || '', st: stLabel(o),
+    late: o.deliveryDate && o.deliveryDate < today ? shortDate(o.deliveryDate) : '', canMove: o.status === 'invoiced'
+  })).sort((a, b) => a.cust.localeCompare(b.cust));
+  const issues = [];
+  // ① 최근 60일 · 인보이스 번호가 있는데 발행/배송 상태 아님 (매출 누락)
   const cutoff60 = Date.now() - 60 * 86400000;
   const r1 = orders.filter(o => o.invoiceNo && o.status !== 'invoiced' && o.status !== 'delivered'
     && (Date.parse(o.invoicedAt || o.orderDate || '') || Date.now()) >= cutoff60);
   if (r1.length) issues.push({ level: 'red', key: 'r1', title: '인보이스 번호가 있는데 발행 상태가 아님 (매출일보·거래내역서에서 빠짐)',
-    rows: r1.map(o => '#' + o.invoiceNo + ' · ' + (o.orderNo || '') + ' · ' + custName(o.customerId) + ' · ' + money(o) + ' · 현재: ' + statusLabel(o.status)) });
-  // ② 오늘 · 계근완료 미발행 / 계근 미완료
-  const r2 = todays.filter(o => o.status === 'weighed' && !o.invoiceNo);
-  if (r2.length) issues.push({ level: 'yellow', key: 'r2', title: '계근 완료 · 아직 발행 안 됨', rows: r2.map(o => (o.orderNo || '') + ' · ' + custName(o.customerId)) });
-  const r2b = todays.filter(o => (o.status === 'new' || o.status === 'weighing') && !o.invoiceNo);
-  if (r2b.length) issues.push({ level: 'yellow', key: 'r2b', title: '아직 계근 안 끝남 (주문 · 계근중)', rows: r2b.map(o => (o.orderNo || '') + ' · ' + custName(o.customerId) + ' · ' + statusLabel(o.status)) });
-  // ③ 오늘 발행 번호 범위 안 빈 번호 (크레딧·결번확정 제외)
+    rows: r1.map(o => '#' + o.invoiceNo + ' · ' + custName(o.customerId) + ' · ' + money(o) + ' · 현재: ' + statusLabel(o.status)) });
+  // ② 오늘 발행 번호 범위 안 빈 번호 (크레딧·결번확정 제외)
   try {
     const todayInv = orders.filter(o => o.invoiceNo && toLocalISODate(o.invoicedAt) === today).map(o => parseInt(o.invoiceNo, 10)).filter(n => isFinite(n));
     if (todayInv.length >= 2) {
@@ -10179,13 +10201,13 @@ function _dcCollect() {
       const lo = Math.min.apply(null, todayInv), hi = Math.max.apply(null, todayInv);
       const miss = [];
       for (let n = lo; n <= hi; n++) if (!used.has(n) && !ack.has(n)) miss.push(n);
-      if (miss.length) issues.push({ level: 'red', key: 'r3', title: '오늘 발행 번호 중 빈 번호 (기록 없는 번호)', rows: miss.map(n => '#' + n + ' · 사무실 상단 결번 배너에서 원인 확인 · 결번 확정') });
+      if (miss.length) issues.push({ level: 'red', key: 'r3', title: '오늘 발행 번호 중 빈 번호', rows: miss.map(n => '#' + n + ' · 사무실 상단 결번 배너에서 원인 확인 · 결번 확정') });
     }
   } catch(_){}
-  // ④ 같은 거래처 · 같은 날 · 품목 절반 이상 겹치는 주문 2건 이상
+  // ③ 같은 거래처 · 같은 배송일 · 품목 절반 이상 겹치는 주문 (중복 의심)
   try {
     const groups = {};
-    todays.forEach(o => { const k = o.customerId + '::' + (o.deliveryDate || toLocalISODate(o.orderDate)); (groups[k] = groups[k] || []).push(o); });
+    expected.forEach(o => { const k = o.customerId + '::' + (o.deliveryDate || ''); (groups[k] = groups[k] || []).push(o); });
     const rows4 = [];
     Object.keys(groups).forEach(k => {
       const arr = groups[k];
@@ -10195,45 +10217,30 @@ function _dcCollect() {
         const B = (arr[j].items || []).filter(Boolean).map(x => x.productId);
         const common = B.filter(x => A.has(x)).length;
         const base = Math.min(A.size, B.length) || 1;
-        if (common / base >= 0.5 && (common >= 2 || (A.size === 1 && B.length === 1))) rows4.push(custName(arr[i].customerId) + ' · ' + (arr[i].orderNo || '') + (arr[i].invoiceNo ? ' (#' + arr[i].invoiceNo + ')' : '')
-          + ' ↔ ' + (arr[j].orderNo || '') + (arr[j].invoiceNo ? ' (#' + arr[j].invoiceNo + ')' : '') + ' · 겹치는 품목 ' + common + '개');
+        if (common / base >= 0.5 && (common >= 2 || (A.size === 1 && B.length === 1))) rows4.push(custName(arr[i].customerId) + ' · '
+          + (arr[i].invoiceNo ? '#' + arr[i].invoiceNo : arr[i].orderNo) + ' ↔ ' + (arr[j].invoiceNo ? '#' + arr[j].invoiceNo : arr[j].orderNo) + ' · 겹치는 품목 ' + common + '개');
       }
     });
-    if (rows4.length) issues.push({ level: 'yellow', key: 'r4', title: '중복 의심 (같은 거래처 · 같은 날 · 비슷한 품목)', rows: rows4 });
+    if (rows4.length) issues.push({ level: 'yellow', key: 'r4', title: '중복 의심 (같은 거래처 · 같은 배송일 · 비슷한 품목)', rows: rows4 });
   } catch(_){}
-  // ⑤ 미출고 품목 포함 (안내)
+  // ④ 미출고 품목 포함 (안내)
   const nsItems = o => getInvoiceItems(o).filter(it => it && it._notShipped && it._status === 'cancelled');
-  const r5 = todays.filter(o => (o.invoiceNo || o.status === 'weighed') && nsItems(o).length > 0);
+  const r5 = expected.filter(o => o.invoiceNo && nsItems(o).length > 0);
   if (r5.length) issues.push({ level: 'info', key: 'r5', title: '미출고 품목 포함 (인보이스에는 안 나옴)',
-    rows: r5.map(o => (o.invoiceNo ? '#' + o.invoiceNo + ' · ' : '') + custName(o.customerId) + ' · ' + nsItems(o).map(it => prodName(it.productId)).join(', ')) });
-  // ⑥ (2026-10-15 #388) 발행 리스트(오늘 발행 완료) vs 발행+배송완료 숫자 차이 설명
-  const recon = { listCount: 0, statusCount: cnt.invoiced + cnt.delivered, otherDay: [], notInPanel: [] };
-  try {
-    const issuedToday = (DB.orders || []).filter(o => o && (o.status === 'invoiced' || o.status === 'delivered') && toLocalISODate(o.invoicedAt) === today);
-    recon.listCount = issuedToday.length;
-    const ids = new Set(issuedToday.map(o => o.id));
-    const tIds = new Set(todays.map(o => o.id));
-    recon.otherDay = todays.filter(o => (o.status === 'invoiced' || o.status === 'delivered') && !ids.has(o.id)).map(o => {
-      let why = '';
-      if (o.deliveryDate === today) why = '오늘 배송 예정';
-      else if (toLocalISODate(o.orderDate) === today) why = '오늘 들어온 주문';
-      return { inv: o.invoiceNo || '', orderNo: o.orderNo || '', cust: custName(o.customerId), issued: toLocalISODate(o.invoicedAt) || '-', why: why, status: statusLabel(o.status) };
-    });
-    recon.notInPanel = issuedToday.filter(o => !tIds.has(o.id)).map(o => ({ inv: o.invoiceNo || '', orderNo: o.orderNo || '', cust: custName(o.customerId) }));
-  } catch(_){}
+    rows: r5.map(o => '#' + o.invoiceNo + ' · ' + custName(o.customerId) + ' · ' + nsItems(o).map(it => prodName(it.productId)).join(', ')) });
   const done = DB.settings && DB.settings.dailyClose && DB.settings.dailyClose[today];
-  return { today, cnt, issues, done, recon };
+  return { today, expected: expected.length, delivered: delivered.length, remaining, issues, done };
 }
 function renderDailyCloseButton() {
   try {
     const d = _dcCollect();
     const red = d.issues.some(x => x.level === 'red');
-    const warn = d.issues.filter(x => x.level !== 'info').reduce((s, x) => s + x.rows.length, 0);
-    let bg = '#2E7D32', label = '✅ 마감 점검 이상 없음';
-    if (red) { bg = '#C62828'; label = '🔎 오늘 마감 점검 ⚠' + warn; }
-    else if (warn) { bg = '#E68A00'; label = '🔎 오늘 마감 점검 ⚠' + warn; }
+    const ok = d.expected === d.delivered;
+    let bg = '#2E7D32', label = '✅ 마감 점검 ' + d.delivered + '/' + d.expected;
+    if (red) { bg = '#C62828'; label = '⛔ 마감 점검 ' + d.delivered + '/' + d.expected; }
+    else if (!ok) { bg = '#E68A00'; label = '🔎 마감 점검 ' + d.delivered + '/' + d.expected; }
     if (d.done) label += ' · 마감됨';
-    return '<button class="btn sm" style="background:' + bg + '; color:#fff; padding:8px 14px; font-size:13px; font-weight:700;" onclick="openDailyClosePanel()">' + label + '</button>';
+    return '<button class="btn sm" style="background:' + bg + '; color:#fff; padding:8px 14px; font-size:13px; font-weight:700;" onclick="openDailyClosePanel()" title="오늘 배송 예정 = 배송 완료 확인">' + label + '</button>';
   } catch(e) { console.warn('마감 점검 버튼 오류:', e); return ''; }
 }
 window.openDailyClosePanel = function() {
@@ -10243,35 +10250,28 @@ window.openDailyClosePanel = function() {
   const color = { red: '#C62828', yellow: '#E68A00', info: '#1565C0' };
   const bgc = { red: '#FFEBEE', yellow: '#FFF8E1', info: '#E3F2FD' };
   const hasRed = d.issues.some(x => x.level === 'red');
-  const c = d.cnt;
-  const card = (t, n, col) => '<div style="flex:1; min-width:96px; padding:10px; border-radius:8px; background:#FAF6F1; text-align:center;">'
-    + '<div style="font-size:11px; color:var(--muted);">' + t + '</div><div style="font-size:22px; font-weight:800; color:' + (col || 'var(--brand-dark)') + ';">' + n + '</div></div>';
-  let h = '<div style="background:#fff; border-radius:10px; padding:20px 24px; max-width:760px; width:100%; max-height:90vh; overflow-y:auto; box-shadow:0 10px 30px rgba(0,0,0,0.25);">';
-  h += '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px;"><h3 style="margin:0; font-size:17px; color:var(--brand-dark);">🔎 오늘 마감 점검 · ' + d.today + '</h3>'
+  const ok = d.expected === d.delivered;
+  let h = '<div style="background:#fff; border-radius:10px; padding:20px 24px; max-width:640px; width:100%; max-height:90vh; overflow-y:auto; box-shadow:0 10px 30px rgba(0,0,0,0.25);">';
+  h += '<div style="display:flex; justify-content:space-between; align-items:center; gap:10px;"><h3 style="margin:0; font-size:17px; color:var(--brand-dark);">🔎 오늘 마감 점검 · ' + esc(formatDateDMY(d.today)) + '</h3>'
     + '<button class="btn sm secondary" onclick="document.getElementById(\'dailyCloseModal\').remove()">✕ 닫기</button></div>';
-  h += '<div style="display:flex; gap:8px; flex-wrap:wrap; margin:14px 0 6px;">'
-    + card('오늘 주문', c.total)
-    + card('주문 · 계근중', c.waiting + c.weighing, (c.waiting + c.weighing) ? '#E68A00' : null)
-    + card('계근완료 · 미발행', c.weighed, c.weighed ? '#E68A00' : null)
-    + card('발행', c.invoiced)
-    + card('배송완료', c.delivered, '#2E7D32') + '</div>';
-  h += '<div style="font-size:11px; color:var(--muted); margin-bottom:8px;">※ 오늘 주문 = 오늘 들어왔거나 · 오늘 배송 예정이거나 · 오늘 발행된 주문 (병합 제외)</div>';
-  const sumOk = (c.waiting + c.weighing + c.weighed + c.invoiced + c.delivered) === c.total;
-  h += '<div style="font-size:12px; margin-bottom:8px; padding:6px 10px; background:' + (sumOk ? '#F1F8E9' : '#FFEBEE') + '; border-radius:6px;">🧮 오늘 주문 <b>' + c.total + '</b> = 주문·계근중 ' + (c.waiting + c.weighing) + ' + 계근완료·미발행 ' + c.weighed + ' + 발행 ' + c.invoiced + ' + 배송완료 ' + c.delivered + (sumOk ? ' ✅' : ' ⚠ 합계 불일치') + '</div>';
-  const rc = d.recon || { listCount: 0, statusCount: 0, otherDay: [], notInPanel: [] };
-  const diff = rc.statusCount - rc.listCount;
-  if (!diff && !rc.otherDay.length && !rc.notInPanel.length) {
-    h += '<div style="font-size:12px; margin-bottom:12px; padding:6px 10px; background:#F1F8E9; border-radius:6px;">📋 발행 리스트 「오늘 발행 완료」 <b>' + rc.listCount + '건</b> = 발행 + 배송완료 <b>' + rc.statusCount + '건</b> ✅ 일치</div>';
-  } else {
-    h += '<div style="font-size:12px; margin-bottom:12px; padding:8px 12px; background:#E3F2FD; border-left:4px solid #1565C0; border-radius:4px;">'
-      + '<div style="font-weight:800; color:#1565C0;">📋 발행 리스트 「오늘 발행 완료」 ' + rc.listCount + '건 ↔ 발행 + 배송완료 ' + rc.statusCount + '건 · 차이 ' + Math.abs(diff) + '건 (정상)</div>'
-      + '<div style="margin:4px 0; color:#333;">발행 리스트는 <b>오늘 발행한 인보이스</b>만 보여주고, 위 숫자는 <b>오늘 배송 건</b>도 포함합니다. 아래는 다른 날 발행된 인보이스입니다.</div>'
-      + '<ul style="margin:4px 0 0; padding-left:18px;">'
-      + rc.otherDay.map(x => '<li>#' + esc(x.inv) + ' · ' + esc(x.orderNo) + ' · ' + esc(x.cust) + ' · <b>' + esc(x.issued) + ' 발행</b>' + (x.why ? ' · ' + esc(x.why) : '') + ' · ' + esc(x.status) + '</li>').join('')
-      + rc.notInPanel.map(x => '<li>#' + esc(x.inv) + ' · ' + esc(x.orderNo) + ' · ' + esc(x.cust) + ' · 오늘 발행 · 위 숫자에 미포함</li>').join('')
-      + '</ul></div>';
+  // 핵심 등식
+  h += '<div style="margin:16px 0 14px; padding:16px; border-radius:10px; text-align:center; background:' + (ok ? '#E8F5E9' : '#FFF3E0') + '; border:2px solid ' + (ok ? '#2E7D32' : '#E68A00') + ';">'
+    + '<div style="display:flex; justify-content:center; align-items:center; gap:18px; flex-wrap:wrap;">'
+    + '<div><div style="font-size:12px; color:var(--muted);">오늘 배송 예정</div><div style="font-size:30px; font-weight:800;">' + d.expected + '</div></div>'
+    + '<div style="font-size:28px; font-weight:800; color:' + (ok ? '#2E7D32' : '#E68A00') + ';">' + (ok ? '=' : '≠') + '</div>'
+    + '<div><div style="font-size:12px; color:var(--muted);">배송 완료</div><div style="font-size:30px; font-weight:800; color:#2E7D32;">' + d.delivered + '</div></div>'
+    + '</div>'
+    + '<div style="margin-top:8px; font-size:14px; font-weight:800; color:' + (ok ? '#2E7D32' : '#E65100') + ';">' + (ok ? '✅ 일치 · 오늘 배송 모두 완료' : '⚠ 남은 ' + d.remaining.length + '건') + '</div></div>';
+  if (d.remaining.length) {
+    h += '<div style="margin-bottom:12px; padding:10px 12px; border-left:4px solid #E68A00; background:#FFF8E1; border-radius:4px;">'
+      + '<div style="font-weight:800; color:#E65100; font-size:13px; margin-bottom:6px;">남은 건 (' + d.remaining.length + ')</div>'
+      + '<table style="width:100%; font-size:12px; border-collapse:collapse;">'
+      + d.remaining.map(r => '<tr style="border-top:1px solid #F3E0B5;"><td style="padding:5px 4px;"><b>' + esc(r.cust) + '</b>' + (r.inv ? ' <span style="color:var(--muted);">#' + esc(r.inv) + '</span>' : '')
+        + (r.late ? ' <span style="color:#C62828; font-weight:700;">(배송일 ' + esc(r.late) + ' 지남)</span>' : '') + '</td>'
+        + '<td style="padding:5px 4px; color:#5C3A00;">' + esc(r.st) + '</td>'
+        + '<td style="padding:5px 4px; text-align:right;">' + (r.canMove ? '<button class="btn sm" style="background:#1565C0; color:#fff;" onclick="document.getElementById(\'dailyCloseModal\').remove(); officeEditDeliveryDate(\'' + r.id + '\')">📅 배송일 변경</button>' : '') + '</td></tr>').join('')
+      + '</table></div>';
   }
-  if (!d.issues.length) h += '<div style="padding:14px; background:#E8F5E9; border-radius:8px; color:#1B5E20; font-weight:700;">✅ 이상 없음</div>';
   d.issues.forEach(is => {
     h += '<div style="margin-bottom:10px; padding:10px 12px; border-left:4px solid ' + color[is.level] + '; background:' + bgc[is.level] + '; border-radius:4px;">'
       + '<div style="font-weight:800; color:' + color[is.level] + '; font-size:13px;">' + (is.level === 'red' ? '⛔ ' : (is.level === 'yellow' ? '⚠ ' : 'ℹ ')) + esc(is.title) + ' (' + is.rows.length + ')</div>'
@@ -10286,7 +10286,7 @@ window.openDailyClosePanel = function() {
   if (hasRed) {
     h += '<div style="font-size:12px; color:#C62828; font-weight:700;">⛔ 빨간 항목을 먼저 해결해야 마감 확인을 할 수 있습니다.</div>';
   } else {
-    h += '<button class="btn success" onclick="confirmDailyClose()">✅ 마감 확인</button>';
+    h += '<button class="btn success" onclick="confirmDailyClose()">' + (ok ? '✅ 마감 확인' : '⚠ 남은 ' + d.remaining.length + '건 있음 · 그래도 마감') + '</button>';
   }
   h += '</div></div>';
   const m = document.createElement('div');
@@ -10299,11 +10299,11 @@ window.openDailyClosePanel = function() {
 window.confirmDailyClose = async function() {
   const d = _dcCollect();
   if (d.issues.some(x => x.level === 'red')) { alert('빨간 항목을 먼저 해결하세요.'); return; }
-  // (2026-10-15 #388) 담당자 이름 입력창·노란 항목 체크 제거 · 기기/권한 자동 기록
+  // (2026-10-15 #388) 담당자 이름 입력창·체크박스 없음 · 기기/권한 자동 기록
   let who = '사무실';
   try { who = _whoTag() + (typeof _deviceTag === 'function' ? ' · ' + _deviceTag() : ''); } catch(_){}
-  const rec = { by: who, at: new Date().toISOString(), orders: d.cnt.total, invoiced: d.cnt.invoiced, delivered: d.cnt.delivered,
-    warnings: d.issues.reduce((s, x) => s + (x.level === 'info' ? 0 : x.rows.length), 0) };
+  const rec = { by: who, at: new Date().toISOString(), expected: d.expected, delivered: d.delivered, remaining: d.remaining.length,
+    remainingList: d.remaining.map(r => r.cust + (r.inv ? ' #' + r.inv : '') + ' · ' + r.st).slice(0, 30) };
   if (!DB.settings) DB.settings = {};
   if (!DB.settings.dailyClose || typeof DB.settings.dailyClose !== 'object') DB.settings.dailyClose = {};
   DB.settings.dailyClose[d.today] = rec;
@@ -10311,7 +10311,7 @@ window.confirmDailyClose = async function() {
   try {
     if (typeof DB_REF !== 'undefined' && DB_REF) { _lastSaveTime = Date.now(); await DB_REF.child('settings/dailyClose/' + d.today).set(rec); }
   } catch(e) { console.warn('마감 저장 실패:', e); }
-  try { auditLogAdd('✅ 오늘 마감 확인 (' + d.today + '): ' + rec.by + ' · 주문 ' + rec.orders + ' · 발행 ' + rec.invoiced + ' · 배송완료 ' + rec.delivered + ' · 확인한 경고 ' + rec.warnings); } catch(_){}
+  try { auditLogAdd('✅ 오늘 마감 확인 (' + d.today + '): ' + rec.by + ' · 배송 예정 ' + rec.expected + ' · 배송 완료 ' + rec.delivered + (rec.remaining ? ' · 남은 ' + rec.remaining + '건: ' + rec.remainingList.join(' / ') : '')); } catch(_){}
   const m = document.getElementById('dailyCloseModal'); if (m) m.remove();
   if (typeof viewOffice === 'function' && location.hash.indexOf('#office') === 0) viewOffice();
 };
@@ -15099,6 +15099,7 @@ function viewInvoice(params) {
       ${isInvoiceEditable(o)
         ? `<button class="btn" style="background:#B8860B;color:#fff;" onclick="attemptEditInvoice('${o.id}')" title="발행 후 ${INVOICE_EDIT_DAYS}일 이내 수정 가능 — 보스 권한 필요">✏️ 인보이스 수정</button>`
         : `<button class="btn secondary" style="cursor:not-allowed;opacity:0.55;" onclick="alert('편집 불가: '+ (invoiceEditLockReason(DB.orders.find(x=>x.id==='${o.id}'))||'')); return false;" title="편집 잠금">🔒 편집 잠금</button>`}
+      ${o.status==='invoiced' ? `<button class="btn" style="background:#1565C0; color:#fff;" onclick="officeEditDeliveryDate('${o.id}')" title="배송이 미뤄졌을 때 배송일 변경 · 인보이스 재발행 없음">📅 배송일 변경 <small style="opacity:.85;">(${o.deliveryDate ? formatDateDMY(o.deliveryDate) : '미지정'})</small></button>` : ''}
       <button class="btn secondary" onclick="window._preserveHistoryFilter = true; location.hash = window._prevHashForBack || '#office';">← 이전 페이지</button>
     </div>
     ${isInvoiceEditable(o) ? `
@@ -15286,16 +15287,16 @@ function viewInvoice(params) {
 //   각 주문마다 markDelivered 와 동일한 처리 (status 변경 + 재고 자동 차감)
 window.batchMarkDelivered = function() {
   const todayISO = todayLocalISO();
+  // ⭐ (2026-10-15 #389) 대상 = 배송대기 중 배송일이 오늘 또는 지난 날 (발행일 무관) · 내일 이후 배송은 제외
   const targets = DB.orders.filter(function(o) {
-    if (o.status !== 'invoiced') return false;
-    const ref = toLocalISODate(o.invoicedAt);
-    return ref === todayISO;
+    if (!o || o.status !== 'invoiced') return false;
+    return (o.deliveryDate || todayISO) <= todayISO;
   });
   if (targets.length === 0) {
     alert('오늘 배송 처리할 인보이스가 없습니다.');
     return;
   }
-  if (!confirm('오늘 발행된 인보이스 ' + targets.length + '건을 모두 배송완료로 변경합니다.\n\n' +
+  if (!confirm('배송일이 오늘인 인보이스 ' + targets.length + '건을 모두 배송완료로 변경합니다.\n\n' +
                '· 각 주문 상태: 인보이스 → 배송완료\n' +
                '· 재고 자동 차감 함께 실행 (매칭 성공한 원료)\n' +
                '· 매칭 실패 작업육은 재고현황 리스트로 이동\n\n' +
@@ -15374,8 +15375,13 @@ window.batchMarkDelivered = function() {
 function markDelivered(id) {
   const o = DB.orders.find(x => x.id === id);
   o.status = 'delivered'; o.deliveredAt = new Date().toISOString();
+  // ⭐ (2026-10-15 #389) 배송일보다 먼저 배송하면 배송일을 실제 배송일(오늘)로 맞춤 · 마감 점검 정확도
+  const _today = todayLocalISO();
+  const _early = o.deliveryDate && o.deliveryDate > _today ? o.deliveryDate : null;
+  if (_early) o.deliveryDate = _today;
   // Phase 2 동시성: 이 주문의 status/deliveredAt 만 부분 업데이트
-  saveEntityFields('orders', id, { status: o.status, deliveredAt: o.deliveredAt });
+  saveEntityFields('orders', id, _early ? { status: o.status, deliveredAt: o.deliveredAt, deliveryDate: o.deliveryDate } : { status: o.status, deliveredAt: o.deliveredAt });
+  if (_early) { try { auditLogAdd('배송일 자동 조정(미리 배송): ' + (o.orderNo || id) + ' · ' + formatDateDMY(_early) + ' → ' + formatDateDMY(_today)); } catch(_){} }
   const cust = DB.customers.find(c => c.id === o.customerId);
   // ⭐ (2026-07-08) 배송완료 즉시 재고 자동 차감 — 매출일보처럼 실시간 반영.
   //   매칭 실패한 작업육은 재고 화면 "매칭 실패 리스트"에 자동 표시.
