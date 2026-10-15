@@ -10206,8 +10206,23 @@ function _dcCollect() {
   const r5 = todays.filter(o => (o.invoiceNo || o.status === 'weighed') && nsItems(o).length > 0);
   if (r5.length) issues.push({ level: 'info', key: 'r5', title: '미출고 품목 포함 (인보이스에는 안 나옴)',
     rows: r5.map(o => (o.invoiceNo ? '#' + o.invoiceNo + ' · ' : '') + custName(o.customerId) + ' · ' + nsItems(o).map(it => prodName(it.productId)).join(', ')) });
+  // ⑥ (2026-10-15 #388) 발행 리스트(오늘 발행 완료) vs 발행+배송완료 숫자 차이 설명
+  const recon = { listCount: 0, statusCount: cnt.invoiced + cnt.delivered, otherDay: [], notInPanel: [] };
+  try {
+    const issuedToday = (DB.orders || []).filter(o => o && (o.status === 'invoiced' || o.status === 'delivered') && toLocalISODate(o.invoicedAt) === today);
+    recon.listCount = issuedToday.length;
+    const ids = new Set(issuedToday.map(o => o.id));
+    const tIds = new Set(todays.map(o => o.id));
+    recon.otherDay = todays.filter(o => (o.status === 'invoiced' || o.status === 'delivered') && !ids.has(o.id)).map(o => {
+      let why = '';
+      if (o.deliveryDate === today) why = '오늘 배송 예정';
+      else if (toLocalISODate(o.orderDate) === today) why = '오늘 들어온 주문';
+      return { inv: o.invoiceNo || '', orderNo: o.orderNo || '', cust: custName(o.customerId), issued: toLocalISODate(o.invoicedAt) || '-', why: why, status: statusLabel(o.status) };
+    });
+    recon.notInPanel = issuedToday.filter(o => !tIds.has(o.id)).map(o => ({ inv: o.invoiceNo || '', orderNo: o.orderNo || '', cust: custName(o.customerId) }));
+  } catch(_){}
   const done = DB.settings && DB.settings.dailyClose && DB.settings.dailyClose[today];
-  return { today, cnt, issues, done };
+  return { today, cnt, issues, done, recon };
 }
 function renderDailyCloseButton() {
   try {
@@ -10228,7 +10243,6 @@ window.openDailyClosePanel = function() {
   const color = { red: '#C62828', yellow: '#E68A00', info: '#1565C0' };
   const bgc = { red: '#FFEBEE', yellow: '#FFF8E1', info: '#E3F2FD' };
   const hasRed = d.issues.some(x => x.level === 'red');
-  const needAck = d.issues.some(x => x.level === 'yellow');
   const c = d.cnt;
   const card = (t, n, col) => '<div style="flex:1; min-width:96px; padding:10px; border-radius:8px; background:#FAF6F1; text-align:center;">'
     + '<div style="font-size:11px; color:var(--muted);">' + t + '</div><div style="font-size:22px; font-weight:800; color:' + (col || 'var(--brand-dark)') + ';">' + n + '</div></div>';
@@ -10241,7 +10255,22 @@ window.openDailyClosePanel = function() {
     + card('계근완료 · 미발행', c.weighed, c.weighed ? '#E68A00' : null)
     + card('발행', c.invoiced)
     + card('배송완료', c.delivered, '#2E7D32') + '</div>';
-  h += '<div style="font-size:11px; color:var(--muted); margin-bottom:12px;">※ 오늘 주문 = 오늘 들어왔거나 · 오늘 배송 예정이거나 · 오늘 발행된 주문 (병합 제외)</div>';
+  h += '<div style="font-size:11px; color:var(--muted); margin-bottom:8px;">※ 오늘 주문 = 오늘 들어왔거나 · 오늘 배송 예정이거나 · 오늘 발행된 주문 (병합 제외)</div>';
+  const sumOk = (c.waiting + c.weighing + c.weighed + c.invoiced + c.delivered) === c.total;
+  h += '<div style="font-size:12px; margin-bottom:8px; padding:6px 10px; background:' + (sumOk ? '#F1F8E9' : '#FFEBEE') + '; border-radius:6px;">🧮 오늘 주문 <b>' + c.total + '</b> = 주문·계근중 ' + (c.waiting + c.weighing) + ' + 계근완료·미발행 ' + c.weighed + ' + 발행 ' + c.invoiced + ' + 배송완료 ' + c.delivered + (sumOk ? ' ✅' : ' ⚠ 합계 불일치') + '</div>';
+  const rc = d.recon || { listCount: 0, statusCount: 0, otherDay: [], notInPanel: [] };
+  const diff = rc.statusCount - rc.listCount;
+  if (!diff && !rc.otherDay.length && !rc.notInPanel.length) {
+    h += '<div style="font-size:12px; margin-bottom:12px; padding:6px 10px; background:#F1F8E9; border-radius:6px;">📋 발행 리스트 「오늘 발행 완료」 <b>' + rc.listCount + '건</b> = 발행 + 배송완료 <b>' + rc.statusCount + '건</b> ✅ 일치</div>';
+  } else {
+    h += '<div style="font-size:12px; margin-bottom:12px; padding:8px 12px; background:#E3F2FD; border-left:4px solid #1565C0; border-radius:4px;">'
+      + '<div style="font-weight:800; color:#1565C0;">📋 발행 리스트 「오늘 발행 완료」 ' + rc.listCount + '건 ↔ 발행 + 배송완료 ' + rc.statusCount + '건 · 차이 ' + Math.abs(diff) + '건 (정상)</div>'
+      + '<div style="margin:4px 0; color:#333;">발행 리스트는 <b>오늘 발행한 인보이스</b>만 보여주고, 위 숫자는 <b>오늘 배송 건</b>도 포함합니다. 아래는 다른 날 발행된 인보이스입니다.</div>'
+      + '<ul style="margin:4px 0 0; padding-left:18px;">'
+      + rc.otherDay.map(x => '<li>#' + esc(x.inv) + ' · ' + esc(x.orderNo) + ' · ' + esc(x.cust) + ' · <b>' + esc(x.issued) + ' 발행</b>' + (x.why ? ' · ' + esc(x.why) : '') + ' · ' + esc(x.status) + '</li>').join('')
+      + rc.notInPanel.map(x => '<li>#' + esc(x.inv) + ' · ' + esc(x.orderNo) + ' · ' + esc(x.cust) + ' · 오늘 발행 · 위 숫자에 미포함</li>').join('')
+      + '</ul></div>';
+  }
   if (!d.issues.length) h += '<div style="padding:14px; background:#E8F5E9; border-radius:8px; color:#1B5E20; font-weight:700;">✅ 이상 없음</div>';
   d.issues.forEach(is => {
     h += '<div style="margin-bottom:10px; padding:10px 12px; border-left:4px solid ' + color[is.level] + '; background:' + bgc[is.level] + '; border-radius:4px;">'
@@ -10257,7 +10286,6 @@ window.openDailyClosePanel = function() {
   if (hasRed) {
     h += '<div style="font-size:12px; color:#C62828; font-weight:700;">⛔ 빨간 항목을 먼저 해결해야 마감 확인을 할 수 있습니다.</div>';
   } else {
-    if (needAck) h += '<label style="display:block; font-size:12px; margin-bottom:8px; cursor:pointer;"><input type="checkbox" id="dcAck"> 노란 항목을 확인했습니다 (정상인 경우)</label>';
     h += '<button class="btn success" onclick="confirmDailyClose()">✅ 마감 확인</button>';
   }
   h += '</div></div>';
@@ -10271,14 +10299,10 @@ window.openDailyClosePanel = function() {
 window.confirmDailyClose = async function() {
   const d = _dcCollect();
   if (d.issues.some(x => x.level === 'red')) { alert('빨간 항목을 먼저 해결하세요.'); return; }
-  const ack = document.getElementById('dcAck');
-  if (ack && !ack.checked) { alert('노란 항목 확인 체크를 해 주세요.'); return; }
-  let last = '';
-  try { last = localStorage.getItem('atm_dc_name') || ''; } catch(_){}
-  const name = prompt('마감 확인 담당자 이름을 입력하세요', last);
-  if (!name || !name.trim()) return;
-  try { localStorage.setItem('atm_dc_name', name.trim()); } catch(_){}
-  const rec = { by: name.trim(), at: new Date().toISOString(), orders: d.cnt.total, invoiced: d.cnt.invoiced, delivered: d.cnt.delivered,
+  // (2026-10-15 #388) 담당자 이름 입력창·노란 항목 체크 제거 · 기기/권한 자동 기록
+  let who = '사무실';
+  try { who = _whoTag() + (typeof _deviceTag === 'function' ? ' · ' + _deviceTag() : ''); } catch(_){}
+  const rec = { by: who, at: new Date().toISOString(), orders: d.cnt.total, invoiced: d.cnt.invoiced, delivered: d.cnt.delivered,
     warnings: d.issues.reduce((s, x) => s + (x.level === 'info' ? 0 : x.rows.length), 0) };
   if (!DB.settings) DB.settings = {};
   if (!DB.settings.dailyClose || typeof DB.settings.dailyClose !== 'object') DB.settings.dailyClose = {};
@@ -10289,7 +10313,6 @@ window.confirmDailyClose = async function() {
   } catch(e) { console.warn('마감 저장 실패:', e); }
   try { auditLogAdd('✅ 오늘 마감 확인 (' + d.today + '): ' + rec.by + ' · 주문 ' + rec.orders + ' · 발행 ' + rec.invoiced + ' · 배송완료 ' + rec.delivered + ' · 확인한 경고 ' + rec.warnings); } catch(_){}
   const m = document.getElementById('dailyCloseModal'); if (m) m.remove();
-  alert('✅ 마감 확인 완료 · ' + rec.by);
   if (typeof viewOffice === 'function' && location.hash.indexOf('#office') === 0) viewOffice();
 };
 // 앱 시작 시 ① 자동 검사 → 화면 아래 빨간 배너 (거래처 화면 제외)
