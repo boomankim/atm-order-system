@@ -9529,8 +9529,7 @@ function viewWeigh(params) {
                   style="width:110px; padding:8px; border:2px solid var(--warn); border-radius:5px; font-size:16px; text-align:right;"
                   onfocus="this.select()"
                   onblur="if(this.value!=='')this.value=parseFloat(this.value||0).toFixed(2)"
-                  onchange="updateWeighing('${order.id}', ${i}, this.value)">
-                <button type="button" class="btn sm" style="margin-left:6px; background:#fff; color:#C62828; border:1px solid #C62828; padding:6px 8px; font-size:12px;" onclick="toggleWeighNotShipped('${order.id}', ${i})" title="안 나가는 품목 (품절 등) · 인보이스에 안 나옴">미출고</button>`}
+                  onchange="updateWeighing('${order.id}', ${i}, this.value)">`}
               </td>
             </tr>`;
           }).join('')}
@@ -9560,7 +9559,7 @@ function viewWeigh(params) {
   });
 }
 // ⭐ (2026-10-15 밤작업#387) 계근 완료 · 서버 상태 확인 후 저장 (트랜잭션)
-//   · 모든 품목이 [무게 입력] 또는 [미출고] 여야 함 (건너뛰기 없음)
+//   · (#391) 미입력 품목 있으면 경고창 후 진행 · 사무실 발행 시 무게 없는 품목 자동 제외
 //   · 서버에서 이미 발행/배송완료 → 저장 거부 · 이미 계근완료(다른 기기) → 안내
 //   · 첫 계근완료 시각(weighedFirstAt) 보존 · 계근완료 감사로그 기록
 async function completeWeighing(orderId) {
@@ -9569,15 +9568,12 @@ async function completeWeighing(orderId) {
   if (_weighLocked(o)) { _weighLockedAlert(o); if (typeof route === 'function') route(); return; }
   const items = (o.items || []).filter(Boolean);
   const notDone = items.filter(it => !_weighItemDone(it));
+  // ⭐ (2026-10-15 #391) 미입력 품목이 있어도 경고창 후 진행 가능 (예전 방식) · 사무실 발행 때 제외 여부 결정
   if (notDone.length > 0) {
     const names = notDone.map(it => { const p = DB.products.find(x => x.id === it.productId); return '· ' + (p ? p.name : '(품목)'); }).join('\n');
-    alert('⚠ 아직 끝나지 않은 품목이 ' + notDone.length + '개 있습니다.\n\n' + names + '\n\n무게를 입력하거나, 안 나가는 품목은 [미출고] 를 눌러 주세요.');
-    return;
+    if (!confirm('⚠ 중량 미입력 품목 ' + notDone.length + '개\n\n' + names + '\n\n그래도 계근 완료할까요?')) return;
   }
   const nsCount = items.filter(it => it._status === 'cancelled').length;
-  if (nsCount > 0) {
-    if (!confirm('미출고 품목 ' + nsCount + '개가 있습니다.\n이 품목은 인보이스에 나오지 않습니다.\n\n계근 완료할까요?')) return;
-  }
   const now = new Date().toISOString();
   const cust = DB.customers.find(c => c.id === o.customerId);
   const tag = (o.orderNo || orderId) + ' · ' + (cust ? cust.name : '-') + ' · ' + _whoTag() + ' · ' + _deviceTag();
@@ -9764,9 +9760,9 @@ function renderWeighingTotal(o) {
   const bEl = document.getElementById('weighCompleteBtn');
   if (bEl) {
     const ok = cnt > 0 && done === cnt;
-    bEl.textContent = ok ? '✅ 계근 완료 → 사무실로 전송' : '⏳ 계근 완료 (' + done + '/' + cnt + ') · 남은 품목 입력';
-    bEl.style.opacity = ok ? '1' : '0.55';
-    bEl.style.background = ok ? '' : '#9E9E9E';
+    bEl.textContent = ok ? '✅ 계근 완료 → 사무실로 전송' : '✅ 계근 완료 → 사무실로 전송 (' + done + '/' + cnt + ')';
+    bEl.style.opacity = '1';
+    bEl.style.background = '';
   }
 }
 
@@ -14734,9 +14730,25 @@ async function _issueInvoiceInner(orderId) {
   }
   const t = computeTotals(o);
   // ⭐ (밤작업#387) 계근 안 된 품목 있으면 발행 차단 (기존: 확인창만) · 무게 입력 또는 ❌ 취소(미출고) 처리 필요
+  // ⭐ (2026-10-15 #391) 무게 없는 품목 · 차단 대신 경고 · [그래도 발행] 시 해당 품목 자동 제외 (인보이스·금액·재고)
   if (t.unweighedCount > 0) {
-    alert(`⛔ 계근(무게)이 없는 품목이 ${t.unweighedCount}건 있습니다.\n\n· 무게를 입력하거나\n· 안 나간 품목이면 ❌ (취소) 를 눌러 주세요\n· 창고 확인이 필요하면 창고에서 [↩ 계근 다시 열기]`);
-    return;
+    const _lk = o.invoiceItems ? 'invoiceItems' : 'items';
+    const _arr = Array.isArray(o[_lk]) ? o[_lk] : [];
+    const _miss = [];
+    _arr.forEach((it, idx) => { if (it && it._status !== 'cancelled' && it.actualWeightKg == null) _miss.push(idx); });
+    const _names = _miss.map(idx => { const p = DB.products.find(x => x.id === _arr[idx].productId); return '· ' + (p ? p.name : '(품목)'); }).join('\n');
+    if (_miss.length >= _arr.filter(it => it && it._status !== 'cancelled').length) {
+      alert('⛔ 무게가 입력된 품목이 하나도 없습니다.\n\n무게를 입력한 뒤 발행하세요.');
+      return;
+    }
+    if (!confirm('⚠ 무게 없는 품목 ' + _miss.length + '개\n\n' + _names + '\n\n이 품목은 인보이스·금액·재고에서 빠집니다.\n그래도 발행할까요?')) return;
+    _miss.forEach(idx => {
+      const it = _arr[idx];
+      it._status = 'cancelled'; it._cancelNote = '계근 없음 (발행 시 제외)'; it._notShipped = true;
+      try { saveOrderItemField(o.id, _lk, idx, '_status'); saveOrderItemField(o.id, _lk, idx, '_cancelNote'); saveOrderItemField(o.id, _lk, idx, '_notShipped'); } catch(e) { console.warn('제외 저장 실패:', e); }
+    });
+    saveLocalDB();
+    try { auditLogAdd('⚠ 무게 없는 품목 제외 후 발행: ' + (o.orderNo || o.id) + ' · ' + _names.replace(/\n/g, ' ')); } catch(_){}
   }
   if (!confirm(`인보이스를 발행합니다.\n총액: $${fmtMoney(t.grand)} (GST 포함)\n\n발행 후에는 단가 수정이 불가합니다. 진행할까요?`)) return;
 
