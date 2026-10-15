@@ -10026,7 +10026,7 @@ function viewOffice() {
     </div>
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-        <h3 style="margin:0;">오늘 발행 완료 (${all.length}건)
+        <h3 style="margin:0;">오늘 인보이스 발행 완료 (${all.length}건)
           ${(() => {
             const todayTotal = all.reduce((sum, o) => sum + (computeTotalsWithCredits(o).net || 0), 0);
             return all.length > 0 ? '<span style="font-weight:800; font-size:15px; color:var(--brand-dark); margin-left:10px;">총 $' + fmtMoney(todayTotal) + '</span>' : '';
@@ -10151,7 +10151,7 @@ function viewOffice() {
 }
 
 // ⭐ (2026-10-15 밤작업#387) 오늘 마감 점검 · 담당자 최종 확인
-//   위치: 사무실 "오늘 발행 완료" 제목줄 · [일괄 배송완료] 앞 버튼
+//   위치: 사무실 "오늘 인보이스 발행 완료" 제목줄 · [일괄 배송완료] 앞 버튼
 //   (#389) 핵심 = [오늘 배송 예정] = [오늘 배송 완료] · 배송일 기준
 //   경고: ① 인보이스 번호 있는데 발행 상태 아님 (빨강·마감 불가) ② 계근완료·미발행 / 계근 미완료 (노랑)
 //         ③ 오늘 발행 번호 중 빈 번호 (빨강) ④ 같은 거래처·같은 날 비슷한 주문 (노랑) ⑤ 미출고 포함 (안내)
@@ -10165,10 +10165,11 @@ function _dcCollect() {
   const shortDate = d => { try { return formatDateDMY(d); } catch(_) { return d; } };
   // 오늘 배송 예정 = 배송일 오늘 + 지난 배송일인데 아직 배송 안 됨(14일 이내) + 오늘 배송완료 처리된 건
   const cutoff14 = (function(){ const d = new Date(); d.setDate(d.getDate() - 14); return d.getFullYear() + '-' + String(d.getMonth()+1).padStart(2,'0') + '-' + String(d.getDate()).padStart(2,'0'); })();
+  //   배송완료 건은 실제 배송완료 누른 날(deliveredAt)로만 셈 · 예정일이 오늘이어도 어제 배송했으면 제외
   const expected = orders.filter(o => {
+    if (o.status === 'delivered') return toLocalISODate(o.deliveredAt) === today;
     const dd = o.deliveryDate || '';
     if (dd === today) return true;
-    if (o.status === 'delivered') return toLocalISODate(o.deliveredAt) === today;
     return dd && dd < today && dd >= cutoff14;
   });
   const delivered = expected.filter(o => o.status === 'delivered');
@@ -10228,8 +10229,16 @@ function _dcCollect() {
   const r5 = expected.filter(o => o.invoiceNo && nsItems(o).length > 0);
   if (r5.length) issues.push({ level: 'info', key: 'r5', title: '미출고 품목 포함 (인보이스에는 안 나옴)',
     rows: r5.map(o => '#' + o.invoiceNo + ' · ' + custName(o.customerId) + ' · ' + nsItems(o).map(it => prodName(it.productId)).join(', ')) });
+  // ⑤ 오늘 인보이스 발행 건수와 차이 나는 이유
+  const issuedToday = orders.filter(o => o.invoiceNo && (o.status === 'invoiced' || o.status === 'delivered') && toLocalISODate(o.invoicedAt) === today);
+  const expIds = new Set(expected.map(o => o.id)), issIds = new Set(issuedToday.map(o => o.id));
+  const diffRows = [];
+  issuedToday.filter(o => !expIds.has(o.id)).forEach(o => diffRows.push({ sign: '+', cust: custName(o.customerId), inv: o.invoiceNo,
+    why: o.status === 'delivered' ? '오늘 발행 · ' + shortDate(toLocalISODate(o.deliveredAt)) + ' 배송완료' : '오늘 발행 · 배송일 ' + (o.deliveryDate ? shortDate(o.deliveryDate) : '미지정') }));
+  expected.filter(o => !issIds.has(o.id)).forEach(o => diffRows.push({ sign: '-', cust: custName(o.customerId), inv: o.invoiceNo || '',
+    why: o.invoiceNo ? shortDate(toLocalISODate(o.invoicedAt)) + ' 발행 · 오늘 배송' : '아직 발행 안 됨' }));
   const done = DB.settings && DB.settings.dailyClose && DB.settings.dailyClose[today];
-  return { today, expected: expected.length, delivered: delivered.length, remaining, issues, done };
+  return { today, expected: expected.length, delivered: delivered.length, remaining, issues, done, issuedCount: issuedToday.length, diffRows };
 }
 function renderDailyCloseButton() {
   try {
@@ -10271,6 +10280,16 @@ window.openDailyClosePanel = function() {
         + '<td style="padding:5px 4px; color:#5C3A00;">' + esc(r.st) + '</td>'
         + '<td style="padding:5px 4px; text-align:right;">' + (r.canMove ? '<button class="btn sm" style="background:#1565C0; color:#fff;" onclick="document.getElementById(\'dailyCloseModal\').remove(); officeEditDeliveryDate(\'' + r.id + '\')">📅 배송일 변경</button>' : '') + '</td></tr>').join('')
       + '</table></div>';
+  }
+  // 오늘 인보이스 발행 건수 비교
+  if (!d.diffRows.length) {
+    h += '<div style="margin-bottom:12px; padding:8px 12px; background:#F1F8E9; border-radius:6px; font-size:13px;">📋 오늘 인보이스 발행 <b>' + d.issuedCount + '건</b> ✅ 배송 예정과 일치</div>';
+  } else {
+    h += '<div style="margin-bottom:12px; padding:10px 12px; background:#E3F2FD; border-left:4px solid #1565C0; border-radius:4px; font-size:13px;">'
+      + '<div style="font-weight:800; color:#1565C0;">📋 오늘 인보이스 발행 ' + d.issuedCount + '건 · 배송 예정과 차이 ' + d.diffRows.length + '건</div>'
+      + '<ul style="margin:6px 0 0; padding-left:18px; font-size:12px;">'
+      + d.diffRows.map(r => '<li><b>' + esc(r.cust) + '</b>' + (r.inv ? ' #' + esc(r.inv) : '') + ' · ' + esc(r.why) + '</li>').join('')
+      + '</ul></div>';
   }
   d.issues.forEach(is => {
     h += '<div style="margin-bottom:10px; padding:10px 12px; border-left:4px solid ' + color[is.level] + '; background:' + bgc[is.level] + '; border-radius:4px;">'
