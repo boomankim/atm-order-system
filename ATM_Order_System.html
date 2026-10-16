@@ -2050,6 +2050,7 @@ function updateNav() {
         ? `<button class="tab" data-route="#admin">⚙️ Admin</button>`
         : `<button class="tab" data-route="#admin" title="🔒 어드민 비밀번호 필요" style="opacity:0.65;">🔒 Admin</button>`}
       <span class="spacer"></span>
+      ${_appVerBadge()}
       <span style="font-size:12px; color:rgba(255,255,255,0.85); margin-right:8px; white-space:nowrap;">${roleLbl}</span>
       ${lockBtn}
       <button class="util" onclick="staffLogout()" style="background:#fff; color:var(--brand-dark);">🔒 Logout</button>
@@ -2058,12 +2059,36 @@ function updateNav() {
     nav.innerHTML = `
       <span class="logo">🥩 ALL THAT MEAT</span>
       <span class="spacer"></span>
+      ${_appVerBadge()}
       <button class="util" onclick="showStaffLogin()">🔑 Staff Login</button>
     `;
   }
   document.querySelectorAll('.nav .tab').forEach(t => {
     t.onclick = () => { location.hash = t.dataset.route; };
   });
+}
+
+// ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
+const APP_VERSION = 392;
+const APP_VERSION_DATE = '16/10';
+function _appVerBadge() {
+  let latest = 0;
+  try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
+  if (latest > APP_VERSION) {
+    return '<span onclick="location.reload()" title="이 기기는 예전 버전입니다 · 눌러서 새로고침" style="cursor:pointer; font-size:11px; font-weight:800; color:#fff; background:#C62828; padding:2px 8px; border-radius:10px; margin-right:8px; white-space:nowrap;">v' + APP_VERSION + ' ⚠ 새로고침 필요 (최신 v' + latest + ')</span>';
+  }
+  return '<span title="앱 버전 (' + APP_VERSION_DATE + ' 배포)" style="font-size:11px; color:rgba(255,255,255,0.6); margin-right:8px; white-space:nowrap;">v' + APP_VERSION + ' · ' + APP_VERSION_DATE + '</span>';
+}
+// 최신 버전 기기가 열리면 서버 최신 번호를 올림 · 예전 버전 기기는 빨간 표시
+function _appVersionAnnounce() {
+  try {
+    if (typeof DB_REF === 'undefined' || !DB_REF) return;
+    if (typeof CUSTOMER_MODE !== 'undefined' && CUSTOMER_MODE) return;
+    DB_REF.child('settings/appLatestVersion').transaction(function(cur) {
+      if (typeof cur === 'number' && cur >= APP_VERSION) return;   // 그대로 (중단)
+      return APP_VERSION;
+    }).catch(function(){});
+  } catch(_){}
 }
 
 // -------- Routing --------
@@ -9326,6 +9351,7 @@ function _deviceTag() {
 function _whoTag() {
   try {
     if (typeof ADMIN_UNLOCKED !== 'undefined' && ADMIN_UNLOCKED) return '어드민';
+    if (typeof OFFICE_UNLOCKED !== 'undefined' && OFFICE_UNLOCKED) return '사무실';   // (#392)
     if (typeof STAFF_UNLOCKED !== 'undefined' && STAFF_UNLOCKED) return '직원';
   } catch(_){}
   return '작업장';
@@ -21404,9 +21430,11 @@ window.inventoryAutoApplyOneOrder = function(orderId) {
     if (!DB.inventory) DB.inventory = { lastResetDate:'', byProduct:{}, deductedOrders:{}, workedMeatDeductions:{} };
     if (!DB.inventory.deductedOrders) DB.inventory.deductedOrders = {};
     if (!DB.inventory.workedMeatDeductions) DB.inventory.workedMeatDeductions = {};
+    const _resetBefore = DB.inventory.lastResetDate;
     if (typeof inventoryRolloverIfNeeded === 'function') inventoryRolloverIfNeeded();
     const inv = DB.inventory;
-    if (inv.deductedOrders[orderId]) return { ok:true, skipped:true }; // 이미 차감됨
+    const _rolled = inv.lastResetDate !== _resetBefore;
+    if (inv.deductedOrders[orderId]) { if (_rolled) { try { saveLocalDB(); if (DB_REF) { _lastSaveTime = Date.now(); DB_REF.child('inventory').set(DB.inventory); } } catch(_){} } return { ok:true, skipped:true }; } // 이미 차감됨
     const o = DB.orders.find(x => x.id === orderId);
     if (!o) return { ok:false };
     if (o.status !== 'delivered') return { ok:false };
@@ -21461,6 +21489,7 @@ window.inventoryAutoApplyOneOrder = function(orderId) {
       ...Object.keys(byProductKg)
     ]);
     let deductedProducts = 0;
+    const _touchedPids = [];
     allPids.forEach(pid => {
       const p = DB.products.find(x => x.id === pid);
       if (!p) return;
@@ -21475,6 +21504,7 @@ window.inventoryAutoApplyOneOrder = function(orderId) {
         e.deductedToday = (e.deductedToday || 0) + total;
         e.stock = (e.stock || 0) - total;  // 마이너스 허용
         deductedProducts++;
+        _touchedPids.push(pid);
       }
     });
 
@@ -21486,7 +21516,22 @@ window.inventoryAutoApplyOneOrder = function(orderId) {
 
     // 차감 마킹
     inv.deductedOrders[orderId] = new Date().toISOString();
-    saveDB();
+    // ⭐ (2026-10-15 #392) 전체 DB 덮어쓰기(saveDB) 대신 재고 부분만 저장
+    //   원인: saveDB 는 이 기기의 DB 전체로 서버를 덮어씀 → 이 기기가 아직 못 받은 다른 기기 변경
+    //         (창고 계근완료·무게 등)이 배송완료 순간 되돌아감 (시뮬레이션에서 재현)
+    saveLocalDB();
+    if (DB_REF) {
+      _lastSaveTime = Date.now();
+      if (_rolled) {
+        DB_REF.child('inventory').set(DB.inventory).catch(e => console.error('재고 저장 실패:', e));
+      } else {
+        const _up = {};
+        _touchedPids.forEach(pid => { _up['byProduct/' + pid] = inv.byProduct[pid]; });
+        _up['deductedOrders/' + orderId] = inv.deductedOrders[orderId];
+        if (inv.workedMeatDeductions[orderId]) _up['workedMeatDeductions/' + orderId] = inv.workedMeatDeductions[orderId];
+        DB_REF.child('inventory').update(_up).catch(e => console.error('재고 저장 실패:', e));
+      }
+    }
     return { ok:true, deductedProducts, workedMeat: perOrderMappings.length };
   } catch(e) {
     console.warn('inventoryAutoApplyOneOrder error:', e);
@@ -22330,6 +22375,7 @@ function initApp(data) {
   cleanupAllFavoriteDuplicates();   // ⭐ (2026-08-12) 즐겨찾기 짝 중복 자동 정리 (동시 편집 race 대응)
   cleanupGhostOrders();   // ⭐ (2026-08-28 밤작업D) 유령 주문 자동 청소 — 부분 저장 실패 잔재 제거
   try { setTimeout(function(){ if (typeof _integrityBannerCheck === 'function') _integrityBannerCheck(); }, 4000); } catch(_){}   // ⭐ (밤작업#387)
+  try { setTimeout(function(){ _appVersionAnnounce(); }, 3000); } catch(_){}   // ⭐ (#392) 버전 표시
   // ⭐ (2026-09-02 밤작업#331) 학습맵 키 마이그레이션 · normKey 강화 후 · 기존 키도 재정규화
   //   목적: "week 35" 같은 매주 바뀌는 숫자 제거 · 기존 학습도 새 로직 하에서 즉시 유효
   //   1회성 · settings._bankMapMigrated_v1 플래그로 재실행 방지
@@ -22744,7 +22790,25 @@ if (FIREBASE_READY && DB_REF) {
 
     // 다른 기기에서 업데이트 — 자기가 방금 저장한 게 아니면 반영
     if (!isSelf) {
+      window._atmDeferredRemote = null;
       _handleRemoteUpdate(data);
+    } else {
+      // ⭐ (2026-10-15 #392) 자기 저장 직후 8초 안에 온 변경 · 버리지 않고 8초 지난 뒤 최신 것 반영
+      //   원인: 그동안 버려서 다른 기기 변경(계근완료·발행)을 다음 변경 때까지 모름 → 오래된 화면·덮어쓰기
+      window._atmDeferredRemote = data;
+      const _wait = Math.max(200, SELF_WRITE_WINDOW_MS - (Date.now() - _lastSaveTime) + 100);
+      clearTimeout(window._atmDeferredTimer);
+      window._atmDeferredTimer = setTimeout(function _applyDeferred() {
+        const d = window._atmDeferredRemote;
+        if (!d) return;
+        const left = SELF_WRITE_WINDOW_MS - (Date.now() - _lastSaveTime);
+        if (left > 0) { window._atmDeferredTimer = setTimeout(_applyDeferred, left + 100); return; }
+        if (window._atmIssuingInvoice || window._backupInProgress) { window._atmDeferredTimer = setTimeout(_applyDeferred, 1000); return; }   // 발행·백업 중엔 미룸
+        window._atmDeferredRemote = null;
+        window._atmQuietRemote = true;   // 조용히 반영 (자기 저장 메아리일 수 있음 · 알림 pill 안 띄움)
+        try { _handleRemoteUpdate(d); } catch(e) { console.warn('지연 반영 오류:', e); }
+        finally { window._atmQuietRemote = false; }
+      }, _wait);
     }
   });
 
@@ -22819,7 +22883,9 @@ if (FIREBASE_READY && DB_REF) {
             const idx = data.orders.findIndex(function(o){ return o && o.id === rid; });
             if (idx >= 0 && data.orders[idx]) {
               const srv = data.orders[idx];
-              if (srv.status !== 'invoiced' || srv.invoiceNo !== info.invoiceNo) {
+              // ⭐ (2026-10-15 #392) 배송완료(delivered)는 발행보다 진행된 정상 상태 · 되돌리지 않음
+              //   (발행 직후 60초 안에 [배송완료 처리] 하면 '발행됨'으로 되돌아가던 문제)
+              if ((srv.status !== 'invoiced' && srv.status !== 'delivered') || srv.invoiceNo !== info.invoiceNo) {
                 console.warn('[발행 보호] 리스너 덮어쓰기 방어:', rid, '· 서버:', srv.status, srv.invoiceNo, '→ 로컬:', info.invoiceNo);
                 srv.status = info.status;
                 srv.invoiceNo = info.invoiceNo;
@@ -22922,7 +22988,7 @@ if (FIREBASE_READY && DB_REF) {
       //   Firebase race 로 유입된 중복 짝을 즉시 청소 (사용자 안 눌러도 됨).
       try { if (typeof cleanupAllFavoriteDuplicates === 'function') cleanupAllFavoriteDuplicates(); } catch(_){}
     }
-    showSyncBanner(editing);
+    if (!window._atmQuietRemote) showSyncBanner(editing);
   }
 } else {
   // Firebase 미설정 — localStorage 단독 모드
