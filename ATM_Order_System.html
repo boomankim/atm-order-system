@@ -2069,7 +2069,7 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 392;
+const APP_VERSION = 393;
 const APP_VERSION_DATE = '16/10';
 function _appVerBadge() {
   let latest = 0;
@@ -9414,7 +9414,7 @@ function _renderWeighLockedView(order, cust) {
   const msg = isInv
     ? '🔒 <b>이미 인보이스가 발행된 주문입니다</b>' + (order.invoiceNo ? ' (#' + esc(order.invoiceNo) + ')' : '')
       + '<br>창고에서는 수정할 수 없습니다. 변경이 필요하면 <b>사무실에 인보이스 수정</b>을 요청하세요.'
-    : '✅ <b>이미 계근 완료된 주문입니다</b><br>잘못 눌렀거나 고칠 것이 있으면 <b>[↩ 계근 다시 열기]</b>를 누르세요. (인보이스 발행 전까지만 가능)';
+    : '✅ <b>이미 계근 완료된 주문입니다</b><br>무게를 고칠 것이 있으면 <b>사무실에 알려 주세요</b> (사무실 인보이스 준비 화면에서 수정).';
   app.innerHTML = '<h2 class="page-title">⚖️ ' + esc(order.orderNo || '')
     + ' <span style="font-size:20px; color:var(--brand-dark); margin-left:10px;">🏪 ' + esc(cust ? cust.name : '-') + '</span></h2>'
     + '<div class="card">'
@@ -9423,7 +9423,6 @@ function _renderWeighLockedView(order, cust) {
     + '">' + msg + '</div>'
     + '<table class="t"><thead><tr><th>품목</th><th>주문</th><th class="num">계근 중량</th></tr></thead><tbody>' + rows + '</tbody></table>'
     + '<div class="btn-row" style="margin-top:14px;">'
-    + (isInv ? '' : '<button class="btn" style="background:#E68A00; color:#fff;" onclick="reopenWeighing(\'' + order.id + '\')">↩ 계근 다시 열기</button>')
     + '<button class="btn secondary" onclick="location.hash=\'#warehouse\'">목록으로</button>'
     + '</div></div>';
 }
@@ -9455,14 +9454,13 @@ function _renderWeighedReopenList() {
   });
   if (!list.length) { el.innerHTML = ''; return; }
   let h = '<h3 style="margin:18px 0 8px;">✅ 계근 완료 · 사무실 발행 대기 (' + list.length + '건)'
-    + ' <span style="font-weight:400; font-size:12px; color:var(--muted);">— 잘못 눌렀으면 [↩ 다시 열기] (발행 전까지만)</span></h3>'
-    + '<table class="t"><thead><tr><th>주문번호</th><th>거래처</th><th>계근 완료</th><th class="act"></th></tr></thead><tbody>';
+    + ' <span style="font-weight:400; font-size:12px; color:var(--muted);">— 무게 수정은 사무실에서</span></h3>'
+    + '<table class="t"><thead><tr><th>주문번호</th><th>거래처</th><th>계근 완료</th></tr></thead><tbody>';
   list.forEach(function(o) {
     const c = DB.customers.find(function(x) { return x.id === o.customerId; });
     let t = '';
     try { t = o.weighedAt ? new Date(o.weighedAt).toLocaleString('ko-KR', { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit' }) : '-'; } catch(_) { t = '-'; }
-    h += '<tr><td><b>' + (o.orderNo || o.id.slice(0, 8)) + '</b></td><td>' + (c ? c.name : '-') + '</td><td>' + t + '</td>'
-      + '<td class="act"><button class="btn sm" style="background:#E68A00; color:#fff;" onclick="reopenWeighing(\'' + o.id + '\')">↩ 다시 열기</button></td></tr>';
+    h += '<tr><td><b>' + (o.orderNo || o.id.slice(0, 8)) + '</b></td><td>' + (c ? c.name : '-') + '</td><td>' + t + '</td></tr>';
   });
   h += '</tbody></table>';
   el.innerHTML = h;
@@ -9648,7 +9646,7 @@ async function completeWeighing(orderId) {
     }
     if (result === 'already') {
       _applyServerStatusToLocal(o, srvSnap);
-      alert('ℹ 이미 다른 기기에서 계근 완료된 주문입니다.\n고칠 것이 있으면 [↩ 계근 다시 열기] 를 사용하세요.');
+      alert('ℹ 이미 다른 기기에서 계근 완료된 주문입니다.\n무게 수정은 사무실에 요청하세요.');
       location.hash = '#warehouse';
       return;
     }
@@ -9672,6 +9670,9 @@ async function completeWeighing(orderId) {
 }
 // ⭐ (밤작업#387) 계근 다시 열기 · 인보이스 발행 전까지만 · 서버 상태 확인 (트랜잭션)
 window.reopenWeighing = async function(orderId) {
+  // ⭐ (2026-10-16 #393) [다시 열기] 기능 폐지 · 발행 직전 동시 클릭 충돌 방지 · 무게 수정은 사무실 인보이스 준비 화면에서
+  alert('계근 다시 열기는 사용하지 않습니다.\n무게 수정은 사무실에 요청하세요 (인보이스 준비 화면에서 수정).');
+  return;
   const o = DB.orders.find(x => x.id === orderId);
   if (!o) return;
   if (_weighLocked(o)) { _weighLockedAlert(o); return; }
