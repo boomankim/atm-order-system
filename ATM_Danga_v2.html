@@ -155,7 +155,7 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
 <body>
 
 <div class="topbar">
-  <h1>매입단가</h1>
+  <h1>매입단가 <span id="appVer" style="font-size:11px;font-weight:600;color:var(--muted);vertical-align:2px;"></span></h1>
   <span class="conn" id="connState">연결 중…</span>
 </div>
 
@@ -330,6 +330,9 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
 
 <script>
 /* ============================ 설정/상수 ============================ */
+// 앱 버전 — 수정해서 배포할 때마다 여기 한 곳만 올리면 화면 상단에 표시됨
+const APP_VER = 'v2.6 (2026-10-21)';
+document.addEventListener('DOMContentLoaded', ()=>{ const el=document.getElementById('appVer'); if(el) el.textContent=APP_VER; });
 const firebaseConfig = {
   apiKey:            "AIzaSyCsrsbrCeWyc9AU5en8vP9NkSwYN3xwNAA",
   databaseURL:       "https://atm-order-system-default-rtdb.asia-southeast1.firebasedatabase.app",
