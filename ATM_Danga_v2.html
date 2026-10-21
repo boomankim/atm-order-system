@@ -236,18 +236,11 @@ input.meta{padding:11px;border:none;background:var(--bg);border-radius:12px;}
   <div class="card">
     <h2>매칭 학습 현황</h2>
     <div class="statgrid">
-      <div class="stat g"><div class="v" id="stAuto">–</div><div class="l">자동 매칭률</div></div>
+      <div class="stat g"><div class="v" id="stAuto">–</div><div class="l">자동 매칭률 (30일)</div></div>
       <div class="stat y"><div class="v" id="stDict">–</div><div class="l">학습된 별칭</div></div>
       <div class="stat r"><div class="v" id="stHold">–</div><div class="l">보류 라인</div></div>
     </div>
     <div class="muted" style="margin-top:10px;" id="learnAdvice"></div>
-  </div>
-  <!-- (2026-10-20) 주간 자동 매칭 · 연동 착수 시점 판단용 -->
-  <div class="card">
-    <h2>주간 자동 매칭 <span class="muted small" style="font-weight:400;">· 오더 시스템 연동 착수 기준: 매칭 100%</span></h2>
-    <div id="weekNow" style="font-size:22px;font-weight:800;margin:4px 0 2px;">–</div>
-    <div id="weekStreak" class="muted small"></div>
-    <div id="weekTable" style="margin-top:10px;overflow-x:auto;"></div>
   </div>
   <div class="card">
     <h2>별칭 사전</h2>
@@ -474,9 +467,16 @@ function aliasKeyOf(line){
     return 'c_'+safeKey(c);
   return 'd_'+safeKey(normText(line.rawDesc).replace(/ /g,'_'));
 }
+// 품명 기준 키 — 일부 매입처(SunPork, King River 등)는 '코드'가 품목코드가 아니라
+// 매번 바뀌는 로트/배치 번호라서, 코드 키가 빗나가면 품명 키로 한 번 더 찾는다
+function descKeyOf(line){
+  const t=normText(line.rawDesc);
+  return t ? 'd_'+safeKey(t.replace(/ /g,'_')) : null;
+}
 function lookupAlias(supplierKey, line){
   const d = ALIAS[supplierKey]; if(!d) return null;
-  const e = d[aliasKeyOf(line)];
+  let e = d[aliasKeyOf(line)];
+  if(!e){ const dk=descKeyOf(line); if(dk) e=d[dk]; }
   if(!e) return null;
   return MASTER.find(p=>p.id===e.productId) ? e.productId : null;
 }
@@ -1237,16 +1237,20 @@ $('#btnSaveInv').addEventListener('click', async ()=>{
   const invNo=$('#invNo').value.trim();
   const btn=$('#btnSaveInv'); btn.disabled=true;
   try{
-    // ① 별칭 학습 (추천/직접선택 확정분)
+    // ① 별칭 학습 — 코드 키와 품명 키를 둘 다 저장해, 다음에 코드(로트번호)가
+    //    바뀌어도 품명으로, 품명이 조금 달라져도 코드로 자동 매칭되게 한다
     const learn={};
     CURRENT.lines.forEach(l=>{
       // 품명·코드가 없는 수기 입력 줄은 별칭 학습에서 제외 (빈 별칭 방지)
-      if(l.productId && l.matchType!=='auto' && (l.rawCode || normText(l.rawDesc))){
-        const ak=aliasKeyOf(l);
-        learn['aliasDict/'+sup+'/'+ak] = {
+      if(l.productId && (l.rawCode || normText(l.rawDesc))){
+        const entry = {
           productId:l.productId, sample:(l.rawDesc||'').slice(0,120),
           rawCode:l.rawCode||'', updatedAt:Date.now()
         };
+        const ak=aliasKeyOf(l);
+        learn['aliasDict/'+sup+'/'+ak] = entry;
+        const dk=descKeyOf(l);
+        if(dk && dk!==ak) learn['aliasDict/'+sup+'/'+dk] = entry;
       }
     });
     // ② 인보이스 저장
@@ -1428,43 +1432,14 @@ $('#priceList').addEventListener('click', e=>{
   tr.after(det);
 });
 
-// (2026-10-20) 주간 자동 매칭 집계 · 등록한 날(createdAt) 기준 · 월요일 시작 주
-function _wkStart(ms){ const d=new Date(ms); d.setHours(0,0,0,0); const dow=(d.getDay()+6)%7; d.setDate(d.getDate()-dow); return d; }
-function _dmy(d){ return String(d.getDate()).padStart(2,'0')+'/'+String(d.getMonth()+1).padStart(2,'0'); }
-function renderWeekly(arr){
-  const W={}; let lastManual=0;
-  arr.forEach(v=>{
-    const t=v.createdAt || (v.date? Date.parse(v.date+'T12:00:00') : 0); if(!t) return;
-    const k=_wkStart(t).getTime(); const w=W[k]||(W[k]={tot:0,auto:0,manual:0});
-    (v.lines||[]).forEach(l=>{ w.tot++; if(l.matchType==='auto') w.auto++; else { w.manual++; if(t>lastManual) lastManual=t; } });
-  });
-  const thisWk=_wkStart(Date.now()).getTime();
-  const rows=[]; for(let i=0;i<8;i++){ const d=new Date(thisWk); d.setDate(d.getDate()-7*i); rows.push(d); }
-  const pct=w=> w&&w.tot ? Math.floor(w.auto/w.tot*1000)/10 : null;   // 내림 · 99.96% 를 100% 로 올리지 않음
-  const cur=W[thisWk];
-  $('#weekNow').innerHTML = cur&&cur.tot
-    ? '이번 주 자동 매칭 '+cur.auto+'/'+cur.tot+'줄 <span style="color:'+(cur.auto===cur.tot?'var(--green)':'#B26B00')+';">('+pct(cur)+'%)</span>'
-    : '이번 주 자동 매칭 – (아직 등록 없음)';
-  // 연속 100% 주 (등록이 있는 주만 셈 · 이번 주 포함)
-  let streak=0; for(const d of rows){ const w=W[d.getTime()]; if(!w||!w.tot) continue; if(w.auto===w.tot) streak++; else break; }
-  $('#weekStreak').textContent = '연속 100% 주: '+streak+'주'
-    + (lastManual ? ' · 마지막 수동 매칭: '+new Date(lastManual).toLocaleDateString('en-AU',{day:'2-digit',month:'2-digit',year:'numeric'}) : ' · 수동 매칭 기록 없음')
-    + (streak>=4 ? ' · ✅ 한 달 연속 100% — 연동 착수 가능' : '');
-  let h='<table style="width:100%;border-collapse:collapse;font-size:13px;"><thead><tr style="text-align:left;color:#888;"><th style="padding:4px 6px;">주</th><th style="padding:4px 6px;text-align:right;">자동</th><th style="padding:4px 6px;text-align:right;">수동·보류</th><th style="padding:4px 6px;text-align:right;">매칭률</th></tr></thead><tbody>';
-  rows.forEach((d,i)=>{ const w=W[d.getTime()]; const e=new Date(d); e.setDate(e.getDate()+6);
-    const p=pct(w); const ok=w&&w.tot&&w.auto===w.tot;
-    h+='<tr style="border-top:1px solid #eee;"><td style="padding:5px 6px;white-space:nowrap;">'+_dmy(d)+'~'+_dmy(e)+(i===0?' (이번 주)':'')+'</td>'
-      +'<td style="padding:5px 6px;text-align:right;">'+(w&&w.tot? w.auto+'/'+w.tot : '–')+'</td>'
-      +'<td style="padding:5px 6px;text-align:right;">'+(w&&w.tot? w.manual : '–')+'</td>'
-      +'<td style="padding:5px 6px;text-align:right;font-weight:800;color:'+(p==null?'#999':ok?'var(--green)':'#B26B00')+';">'+(p==null?'–':p+'%')+(ok?' ✓':'')+'</td></tr>'; });
-  h+='</tbody></table><div class="muted small" style="margin-top:6px;">자동 = 사진만 올렸는데 품목이 알아서 맞은 줄 · 수동·보류 = 직접 고르거나 보류한 줄. 인보이스를 등록한 날 기준.</div>';
-  $('#weekTable').innerHTML=h;
-}
 function renderLearn(){
   const arr=invArr();
-  try{ renderWeekly(arr); }catch(e){ console.warn('주간 매칭 표시 오류', e); }
+  // 자동 매칭률은 최근 30일 기준으로 계산 (옛날 학습 초기 기록이 수치를 끌어내리지 않게)
+  const cd=new Date(); cd.setDate(cd.getDate()-30);
+  const cutoff30=cd.getFullYear()+'-'+String(cd.getMonth()+1).padStart(2,'0')+'-'+String(cd.getDate()).padStart(2,'0');
   let tot=0, auto=0, hold=0;
-  arr.forEach(v=>(v.lines||[]).forEach(l=>{ tot++; if(l.matchType==='auto')auto++; if(!l.productId)hold++; }));
+  arr.forEach(v=>{ if((v.date||'')<cutoff30) return;
+    (v.lines||[]).forEach(l=>{ tot++; if(l.matchType==='auto')auto++; if(!l.productId)hold++; }); });
   const dictN=Object.values(ALIAS).reduce((t,d)=>t+Object.keys(d||{}).length,0);
   $('#stAuto').textContent = tot? Math.round(auto/tot*100)+'%' : '–';
   $('#stDict').textContent = dictN;
