@@ -2069,8 +2069,8 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 393;
-const APP_VERSION_DATE = '16/10';
+const APP_VERSION = 394;
+const APP_VERSION_DATE = '22/10';
 function _appVerBadge() {
   let latest = 0;
   try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
@@ -21143,8 +21143,8 @@ function inventoryRenderSummary() {
                       const nb = (b.p && b.p.name || '').toString();
                       return na.localeCompare(nb, ['ko', 'en'], { sensitivity: 'base', numeric: true });
                     }).map(({p, e}) => `
-                      <tr>
-                        <td></td>
+                      <tr style="cursor:pointer;" title="눌러서 출고 상위 업체 · 주별/월별 출고 보기" onclick="inventoryShowProductOutbound('${p.id}')">
+                        <td style="color:var(--muted); font-size:11px;">🔍</td>
                         <td>${p.name}</td>
                         <td class="num">${inventoryFmt(e.prev)}</td>
                         <td class="num" style="color:var(--ok);">${inventoryFmt(e.receivedToday)}</td>
@@ -21162,6 +21162,99 @@ function inventoryRenderSummary() {
     </table>
   `;
 }
+
+// ⭐ (2026-10-22 #394) 재고현황 · 품목별 출고 보기 (읽기 전용)
+//   출처: 배송완료 주문의 인보이스 품목 · 날짜 = 배송완료일(로컬) · 박스·팩만 (작업중량 제외)
+//   취소·미출고·계근없음 줄 제외 · 반품(음수)은 차감 · 재고 누계와 무관 · 아무것도 저장하지 않음
+function _invOutCollect(pid) {
+  const lines = [];
+  (DB.orders || []).forEach(o => {
+    if (!o || o.status !== 'delivered') return;
+    const d = toLocalISODate(o.deliveredAt || o.invoicedAt || '');
+    if (!d) return;
+    getInvoiceItems(o).forEach(it => {
+      if (!it || it.productId !== pid || it._status === 'cancelled') return;
+      if (it.unit !== '박스' && it.unit !== '팩') return;
+      const q = +it.quantity || 0;
+      if (!q) return;
+      lines.push({ d, cid: o.customerId, unit: it.unit, q });
+    });
+  });
+  return lines;
+}
+function _invOutFmt(box, pack) {
+  const r = n => (Math.round(n * 10) / 10).toString();
+  const a = [];
+  if (box) a.push(r(box) + '박스');
+  if (pack) a.push(r(pack) + '팩');
+  return a.length ? a.join(' · ') : '–';
+}
+window.inventoryShowProductOutbound = function(pid, period) {
+  const p = (DB.products || []).find(x => x.id === pid);
+  if (!p) return;
+  period = period || '4w';
+  const today = todayLocalISO();
+  const iso = d => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  const dmy = s => s.slice(8, 10) + '/' + s.slice(5, 7);
+  const lines = _invOutCollect(pid);
+  // ① 상위 5개 업체 (기간 선택)
+  let from;
+  const t0 = new Date(today + 'T00:00:00');
+  if (period === 'month') from = today.slice(0, 8) + '01';
+  else if (period === '12m') { const d = new Date(t0); d.setMonth(d.getMonth() - 12); d.setDate(d.getDate() + 1); from = iso(d); }
+  else { const d = new Date(t0); d.setDate(d.getDate() - 27); from = iso(d); }
+  const byC = {};
+  lines.filter(l => l.d >= from && l.d <= today).forEach(l => {
+    const c = byC[l.cid] || (byC[l.cid] = { box: 0, pack: 0 });
+    if (l.unit === '박스') c.box += l.q; else c.pack += l.q;
+  });
+  const rank = Object.keys(byC).map(cid => ({ cid, ...byC[cid] }))
+    .filter(r => r.box > 0 || r.pack > 0)
+    .sort((a, b) => (b.box - a.box) || (b.pack - a.pack));
+  const top = rank.slice(0, 5), rest = rank.slice(5);
+  const restBox = rest.reduce((s, r) => s + r.box, 0), restPack = rest.reduce((s, r) => s + r.pack, 0);
+  const totBox = rank.reduce((s, r) => s + r.box, 0), totPack = rank.reduce((s, r) => s + r.pack, 0);
+  const cname = cid => { const c = (DB.customers || []).find(x => x.id === cid); return c ? c.name : '(거래처 없음)'; };
+  const esc = x => String(x == null ? '' : x).replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  // ② 주별 (최근 12주 · 월~일)
+  const wk0 = new Date(t0); wk0.setDate(wk0.getDate() - ((wk0.getDay() + 6) % 7));
+  const weeks = [];
+  for (let i = 0; i < 12; i++) { const s = new Date(wk0); s.setDate(s.getDate() - 7 * i); const e = new Date(s); e.setDate(e.getDate() + 6); weeks.push({ s: iso(s), e: iso(e), box: 0, pack: 0 }); }
+  // ③ 월별 (최근 12개월)
+  const months = [];
+  for (let i = 0; i < 12; i++) { const d = new Date(t0.getFullYear(), t0.getMonth() - i, 1); months.push({ k: d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0'), box: 0, pack: 0 }); }
+  lines.forEach(l => {
+    const w = weeks.find(w => l.d >= w.s && l.d <= w.e);
+    if (w) { if (l.unit === '박스') w.box += l.q; else w.pack += l.q; }
+    const m = months.find(m => l.d.slice(0, 7) === m.k);
+    if (m) { if (l.unit === '박스') m.box += l.q; else m.pack += l.q; }
+  });
+  const btn = (k, lbl) => '<button class="btn sm' + (period === k ? '' : ' secondary') + '" onclick="closeModal(); inventoryShowProductOutbound(\'' + pid + '\', \'' + k + '\')">' + lbl + '</button>';
+  const th = 'style="text-align:left; padding:4px 6px; color:var(--muted); font-weight:600;"';
+  const td = 'style="padding:4px 6px; border-top:1px solid var(--line);"';
+  const tdn = 'style="padding:4px 6px; border-top:1px solid var(--line); text-align:right; white-space:nowrap;"';
+  let h = '<div style="max-height:80vh; overflow-y:auto;">'
+    + '<h3 style="margin:0 0 4px;">📦 ' + esc(p.name) + (p.brand ? ' <small style="color:var(--muted);">· ' + esc(p.brand) + '</small>' : '') + '</h3>'
+    + '<div style="font-size:11px; color:var(--muted); margin-bottom:10px;">배송완료 인보이스 기준 · 박스·팩만 · 반품 차감 · 재고 숫자와 무관</div>'
+    + '<div style="display:flex; gap:6px; flex-wrap:wrap; margin-bottom:8px;">' + btn('4w', '최근 4주') + btn('month', '이번 달') + btn('12m', '최근 12개월') + '</div>'
+    + '<div style="font-weight:800; margin:6px 0 4px;">출고 상위 5개 업체 <small style="font-weight:400; color:var(--muted);">(' + (period === '12m' ? dmy(from) + '/' + from.slice(2, 4) : dmy(from)) + '~' + dmy(today) + ' · 합계 ' + _invOutFmt(totBox, totPack) + ')</small></div>';
+  if (!top.length) h += '<div style="padding:10px; color:var(--muted); font-size:13px;">이 기간 출고 기록이 없습니다.</div>';
+  else {
+    h += '<table style="width:100%; border-collapse:collapse; font-size:13px;">';
+    top.forEach((r, i) => { h += '<tr><td ' + td + '><b>' + (i + 1) + '.</b> ' + esc(cname(r.cid)) + '</td><td ' + tdn + '><b>' + _invOutFmt(r.box, r.pack) + '</b></td></tr>'; });
+    if (rest.length) h += '<tr><td style="padding:4px 6px; border-top:1px solid var(--line); color:var(--muted);">기타 ' + rest.length + '곳</td><td ' + tdn + '>' + _invOutFmt(restBox, restPack) + '</td></tr>';
+    h += '</table>';
+  }
+  h += '<div style="display:flex; gap:14px; flex-wrap:wrap; margin-top:14px;">'
+    + '<div style="flex:1; min-width:220px;"><div style="font-weight:800; margin-bottom:4px;">주별 출고 (최근 12주)</div><table style="width:100%; border-collapse:collapse; font-size:12.5px;"><tr><th ' + th + '>주</th><th ' + th + ' style="text-align:right;">출고</th></tr>'
+    + weeks.map((w, i) => '<tr><td ' + td + '>' + dmy(w.s) + '~' + dmy(w.e) + (i === 0 ? ' <small style="color:var(--muted);">이번 주</small>' : '') + '</td><td ' + tdn + '>' + _invOutFmt(w.box, w.pack) + '</td></tr>').join('')
+    + '</table></div>'
+    + '<div style="flex:1; min-width:200px;"><div style="font-weight:800; margin-bottom:4px;">월별 출고 (최근 12개월)</div><table style="width:100%; border-collapse:collapse; font-size:12.5px;"><tr><th ' + th + '>월</th><th ' + th + ' style="text-align:right;">출고</th></tr>'
+    + months.map((m, i) => '<tr><td ' + td + '>' + m.k.slice(5) + '/' + m.k.slice(0, 4) + (i === 0 ? ' <small style="color:var(--muted);">이번 달</small>' : '') + '</td><td ' + tdn + '>' + _invOutFmt(m.box, m.pack) + '</td></tr>').join('')
+    + '</table></div></div>'
+    + '<div class="btn-row" style="margin-top:14px;"><button class="btn secondary" onclick="closeModal()">닫기</button></div></div>';
+  openModal(h);
+};
 
 window.inventoryToggleDetail = function(cat) {
   const row = document.getElementById('invCatRow_' + cat);
