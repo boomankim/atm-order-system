@@ -2069,7 +2069,7 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 394;
+const APP_VERSION = 395;
 const APP_VERSION_DATE = '22/10';
 function _appVerBadge() {
   let latest = 0;
@@ -22886,25 +22886,34 @@ if (FIREBASE_READY && DB_REF) {
     if (!isSelf) {
       window._atmDeferredRemote = null;
       _handleRemoteUpdate(data);
+      // ⭐ (2026-10-22 #395) 입력 중이라 반영 못 한 변경 · 버리지 않고 입력이 끝나면 자동 반영
+      if (_isUserEditing()) { window._atmDeferredRemote = data; _atmScheduleDeferred(1000); }
     } else {
       // ⭐ (2026-10-15 #392) 자기 저장 직후 8초 안에 온 변경 · 버리지 않고 8초 지난 뒤 최신 것 반영
       //   원인: 그동안 버려서 다른 기기 변경(계근완료·발행)을 다음 변경 때까지 모름 → 오래된 화면·덮어쓰기
       window._atmDeferredRemote = data;
-      const _wait = Math.max(200, SELF_WRITE_WINDOW_MS - (Date.now() - _lastSaveTime) + 100);
-      clearTimeout(window._atmDeferredTimer);
-      window._atmDeferredTimer = setTimeout(function _applyDeferred() {
-        const d = window._atmDeferredRemote;
-        if (!d) return;
-        const left = SELF_WRITE_WINDOW_MS - (Date.now() - _lastSaveTime);
-        if (left > 0) { window._atmDeferredTimer = setTimeout(_applyDeferred, left + 100); return; }
-        if (window._atmIssuingInvoice || window._backupInProgress) { window._atmDeferredTimer = setTimeout(_applyDeferred, 1000); return; }   // 발행·백업 중엔 미룸
-        window._atmDeferredRemote = null;
-        window._atmQuietRemote = true;   // 조용히 반영 (자기 저장 메아리일 수 있음 · 알림 pill 안 띄움)
-        try { _handleRemoteUpdate(d); } catch(e) { console.warn('지연 반영 오류:', e); }
-        finally { window._atmQuietRemote = false; }
-      }, _wait);
+      _atmScheduleDeferred(Math.max(200, SELF_WRITE_WINDOW_MS - (Date.now() - _lastSaveTime) + 100));
     }
   });
+
+  // 미뤄 둔 최신 변경 반영 · 자기 저장 8초 · 발행/백업 중 · 입력 중이면 계속 미룸 (#392 · #395)
+  function _atmScheduleDeferred(ms) {
+    clearTimeout(window._atmDeferredTimer);
+    window._atmDeferredTimer = setTimeout(function _applyDeferred() {
+      const d = window._atmDeferredRemote;
+      if (!d) return;
+      const left = SELF_WRITE_WINDOW_MS - (Date.now() - _lastSaveTime);
+      if (left > 0) { window._atmDeferredTimer = setTimeout(_applyDeferred, left + 100); return; }
+      if (window._atmIssuingInvoice || window._backupInProgress) { window._atmDeferredTimer = setTimeout(_applyDeferred, 1000); return; }   // 발행·백업 중엔 미룸
+      if (_isUserEditing()) { window._atmDeferredTimer = setTimeout(_applyDeferred, 1000); return; }   // 입력 중엔 미룸 (#395)
+      window._atmDeferredRemote = null;
+      window._atmQuietRemote = true;   // 조용히 반영 (알림 pill 안 띄움)
+      try { _handleRemoteUpdate(d); } catch(e) { console.warn('지연 반영 오류:', e); }
+      finally { window._atmQuietRemote = false; }
+      // 입력 중에 떴던 빨간 알림은 이제 반영됐으니 치움
+      try { const _b = document.getElementById('sync-banner'); if (_b) _b.remove(); } catch(_){}
+    }, ms);
+  }
 
   // ⭐ (2026-07-28) 완전 자동 재렌더 비활성화 정책
   //   - 자동 재렌더 X → 스크롤·클릭 위치 절대 안 튐
