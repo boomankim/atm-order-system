@@ -622,7 +622,8 @@ function saveLocalDB() {
 }
 function getInvoiceItems(o) {
   // 항상 배열 반환 — items/invoiceItems 가 누락된 손상 데이터에서도 .forEach 가 터지지 않도록 방어
-  const arr = (o && (o.invoiceItems || o.items)) || [];
+  let arr = (o && (o.invoiceItems || o.items)) || [];
+  if (!Array.isArray(arr) && o && Array.isArray(o.items)) arr = o.items;   // (#396) 깨진 invoiceItems → 계근 품목으로
   if (!Array.isArray(arr)) return [];
   // ⭐ (2026-10-02 밤작업#384) 배열 안의 null 구멍 제거.
   //   Firebase 배열은 중간 원소가 지워지면 null 로 돌아온다. 실데이터에 3건 존재
@@ -1294,7 +1295,7 @@ function _saveByIdSafe(entityType, entityId, mutator, opLabel) {
       }
       return;
     }
-    const update = mutator(serverIdx);
+    const update = mutator(serverIdx, serverList);
     if (!update || Object.keys(update).length === 0) return;
     DB_REF.update(update).catch(e => {
       console.error('❌ [' + opLabel + '] Firebase update 실패:', e);
@@ -1315,7 +1316,18 @@ function saveOrderItemField(orderId, listKey, itemIdx, field) {
   if (!o || !o[listKey] || !o[listKey][itemIdx]) return;
   saveLocalDB();
   const value = o[listKey][itemIdx][field];
-  _saveByIdSafe('orders', orderId, (serverIdx) => {
+  _saveByIdSafe('orders', orderId, (serverIdx, serverList) => {
+    // ⭐ (2026-11-03 #396) 서버에 그 줄이 없으면 (목록이 없거나 짧음) 필드 한 칸만 쓰면 깨진 목록이 생김
+    //   → 이 기기에 보이는 목록 전체를 저장 (COKCO 흰 화면 사고 재발 방지)
+    try {
+      const so = serverList ? serverList[serverIdx] : null;
+      const sl = so ? so[listKey] : null;
+      if (!sl || !sl[itemIdx]) {
+        const whole = JSON.parse(JSON.stringify(o[listKey]));
+        try { auditLogAdd('🛠 품목 목록 전체 저장 (서버에 ' + (itemIdx + 1) + '번째 줄 없음): ' + (o.orderNo || orderId) + ' · ' + listKey); } catch(_){}
+        return { ['orders/' + serverIdx + '/' + listKey]: whole };
+      }
+    } catch (eS) { console.warn('줄 확인 오류:', eS); }
     const path = 'orders/' + serverIdx + '/' + listKey + '/' + itemIdx + '/' + field;
     const update = {};
     update[path] = (value === undefined ? null : value);
@@ -2069,8 +2081,8 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 395;
-const APP_VERSION_DATE = '22/10';
+const APP_VERSION = 396;
+const APP_VERSION_DATE = '03/11';
 function _appVerBadge() {
   let latest = 0;
   try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
@@ -13995,7 +14007,7 @@ function viewInvoicePrep(params) {
   // 최초 생성 시 거래처 맞춤단가(customP) 무조건 우선 적용 → 다음 인보이스 단가 자동 인식.
   let _prepAutoCount = 0;
   if (!o.invoiceItems) {
-    o.invoiceItems = o.items.map(function(it) {
+    o.invoiceItems = (Array.isArray(o.items) ? o.items : []).filter(function(it){ return it && it.productId; }).map(function(it) {   // (#396) 빈 칸·조각 줄 제외
       var newIt = Object.assign({}, it, {_source: 'original'});
       var p = DB.products.find(function(x) { return x.id === it.productId; });
       var customP = customerCustomPrice(cust, it.productId, it.notes);
@@ -22433,6 +22445,40 @@ function _coerceArrayFields(obj) {
       obj[k] = Object.values(v).filter(function(x) { return x !== null && x !== undefined; });
     }
   });
+  // ⭐ (2026-11-03 #396) 주문 품목 목록(items/invoiceItems)이 배열이 아닌 깨진 데이터 방어
+  //   사고: COKCO 4081 · invoiceItems = {"6":{notes}} (메모 한 칸만 저장) → 인보이스 준비 흰 화면
+  //   items: 객체면 번호 순서대로 배열로 변환 / invoiceItems: 객체이거나 품목 없는 줄이 섞이면 깨진 것으로 보고 이 기기에서만 무시
+  //   (서버는 건드리지 않음 · 준비 화면을 열면 계근 품목으로 새 목록이 다시 만들어져 저장됨)
+  try {
+    (Array.isArray(obj.orders) ? obj.orders : []).forEach(function(o) {
+      if (!o || typeof o !== 'object') return;
+      ['items', 'invoiceItems'].forEach(function(k) {
+        var v = o[k];
+        if (v == null || Array.isArray(v)) return;
+        if (typeof v !== 'object') { delete o[k]; return; }
+        // 번호(칸 위치)는 그대로 유지 · 빈 칸은 null (서버 줄 번호와 어긋나지 않게)
+        var arr = [];
+        Object.keys(v).forEach(function(x){ if (/^\d+$/.test(x)) arr[Number(x)] = v[x]; });
+        for (var ii = 0; ii < arr.length; ii++) if (arr[ii] === undefined) arr[ii] = null;
+        o[k] = arr;
+      });
+      if (Array.isArray(o.invoiceItems)) {
+        var good = o.invoiceItems.filter(function(x){ return !!x; });
+        var orphan = good.filter(function(x){ return !x.productId; });
+        if (orphan.length) {
+          if (orphan.length === good.length) {
+            // 품목 있는 줄이 하나도 없음 = 깨진 목록 (COKCO 경우) → 무시하고 계근 품목 사용
+            console.warn('[#396] 깨진 인보이스 품목 목록 무시:', o.orderNo, JSON.stringify(o.invoiceItems).slice(0, 200));
+            delete o.invoiceItems;
+          } else {
+            // 정상 줄 + 품목 없는 조각 줄 → 조각 줄만 빈 칸 처리 (줄 번호 유지)
+            console.warn('[#396] 품목 없는 줄 무시:', o.orderNo, JSON.stringify(orphan).slice(0, 200));
+            o.invoiceItems = o.invoiceItems.map(function(x){ return (x && !x.productId) ? null : x; });
+          }
+        }
+      }
+    });
+  } catch (eC) { console.warn('품목 목록 정리 오류:', eC); }
 }
 function initApp(data) {
   if (data) {
