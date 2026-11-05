@@ -23,6 +23,38 @@
 <link rel="icon" type="image/png" sizes="192x192" href="icon-192.png">
 <link rel="icon" type="image/png" sizes="64x64" href="favicon-64.png">
 <link rel="shortcut icon" href="favicon-64.png">
+<!-- ⭐ (2026-11-05 #397) 브라우저 작은 저장칸(localStorage ~5MB) 가득 참 방지 · Firebase SDK 보다 먼저 실행
+     사고: 오피스 매니저 PC Chrome · 저장칸 가득 → Firebase 가 연결 중 작은 값 저장 실패(QuotaExceededError) → 백지 화면 -->
+<script>
+(function _atmStorageGuard(){
+  try {
+    // ① 안 쓰는 옛 키 삭제 (매출일보 자동 기록 · 옛 버전 DB 사본)
+    ['atm_daily_sales_log', 'atm_order_system_v2', 'atm_order_system_v1'].forEach(function(k){
+      try { localStorage.removeItem(k); } catch(_){}
+    });
+    // ② 저장칸이 가득 차서 저장 실패하면: DB 사본(큰 저장소로 옮겨짐) 지우고 한 번 더 · 그래도 안 되면 Firebase 값은 조용히 건너뜀
+    var _orig = Storage.prototype.setItem;
+    Storage.prototype.setItem = function(k, v) {
+      try { return _orig.call(this, k, v); }
+      catch (e) {
+        var isQuota = e && (e.name === 'QuotaExceededError' || e.code === 22 || e.code === 1014);
+        if (!isQuota) throw e;
+        try {
+          if (this === window.localStorage) {
+            ['atm_order_system_v3', 'atm_daily_sales_log'].forEach(function(x){ if (x !== k) { try { localStorage.removeItem(x); } catch(_){} } });
+          }
+        } catch(_){}
+        try { return _orig.call(this, k, v); }
+        catch (e2) {
+          console.warn('[#397 저장공간] 가득 참 · 저장 건너뜀:', k);
+          if (String(k).indexOf('firebase:') === 0) return;   // Firebase 연결은 절대 멈추지 않게
+          throw e2;
+        }
+      }
+    };
+  } catch(_){}
+})();
+</script>
 <!-- Firebase SDK (compat v9) -->
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
 <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
@@ -599,27 +631,97 @@ if (FIREBASE_READY) {
 }
 
 // -------- localStorage helpers (cache / fallback) --------
+// ⭐ (2026-11-05 #397) DB 사본은 큰 저장소(IndexedDB)에 저장 · 작은 저장칸(localStorage)은 비움
+//   (서버 Firebase 가 진짜 데이터 · 이 사본은 서버가 비었을 때 대비용)
+const _ATM_IDB_NAME = 'atm_order_cache', _ATM_IDB_STORE = 'kv';
+window._atmIdbCache = null;        // 시작할 때 미리 읽어둔 사본
+function _atmIdbOpen() {
+  return new Promise(function(res, rej) {
+    try {
+      if (!window.indexedDB) return rej(new Error('no indexedDB'));
+      const rq = indexedDB.open(_ATM_IDB_NAME, 1);
+      rq.onupgradeneeded = function() { try { rq.result.createObjectStore(_ATM_IDB_STORE); } catch(_){} };
+      rq.onsuccess = function() { res(rq.result); };
+      rq.onerror = function() { rej(rq.error); };
+    } catch (e) { rej(e); }
+  });
+}
+function _atmIdbPut(key, val) {
+  return _atmIdbOpen().then(function(db) {
+    return new Promise(function(res, rej) {
+      const tx = db.transaction(_ATM_IDB_STORE, 'readwrite');
+      tx.objectStore(_ATM_IDB_STORE).put(val, key);
+      tx.oncomplete = function() { db.close(); res(); };
+      tx.onerror = function() { db.close(); rej(tx.error); };
+    });
+  });
+}
+function _atmIdbGet(key) {
+  return _atmIdbOpen().then(function(db) {
+    return new Promise(function(res, rej) {
+      const tx = db.transaction(_ATM_IDB_STORE, 'readonly');
+      const rq = tx.objectStore(_ATM_IDB_STORE).get(key);
+      rq.onsuccess = function() { db.close(); res(rq.result); };
+      rq.onerror = function() { db.close(); rej(rq.error); };
+    });
+  });
+}
+// 시작 시: 작은 저장칸의 옛 사본 → 큰 저장소로 옮기고 작은 저장칸에서 삭제 · 큰 저장소 사본 미리 읽기
+(function _atmCacheMigrate() {
+  let legacy = null;
+  try { legacy = localStorage.getItem(STORAGE_KEY); } catch(_){}
+  if (legacy) {
+    try { window._atmIdbCache = JSON.parse(legacy); } catch(_){}
+    _atmIdbPut('db', legacy).then(function() {
+      try { localStorage.removeItem(STORAGE_KEY); } catch(_){}
+      console.info('[#397] DB 사본 → 큰 저장소(IndexedDB) 이전 완료');
+    }).catch(function(e) {
+      console.warn('[#397] 큰 저장소 이전 실패 · 작은 저장칸 사본 삭제:', e);
+      try { localStorage.removeItem(STORAGE_KEY); } catch(_){}
+    });
+  } else {
+    _atmIdbGet('db').then(function(raw) {
+      if (raw && !window._atmIdbCache) { try { window._atmIdbCache = JSON.parse(raw); } catch(_){} }
+    }).catch(function(){});
+  }
+})();
 function loadLocalDB() {
   try {
     const raw = localStorage.getItem(STORAGE_KEY);
     if (raw) return JSON.parse(raw);
   } catch (e) { console.warn('localStorage read failed', e); }
+  if (window._atmIdbCache) return JSON.parse(JSON.stringify(window._atmIdbCache));
   for (const oldKey of OLD_STORAGE_KEYS) {
     try {
       const raw = localStorage.getItem(oldKey);
       if (raw) {
         const db = JSON.parse(raw);
         if (db.company) db.company.gstRate = 0;
-        localStorage.setItem(STORAGE_KEY, JSON.stringify(db));
+        try { localStorage.removeItem(oldKey); } catch(_){}   // (#397) 옛 키 정리 · 사본은 큰 저장소로
         return db;
       }
     } catch (e) {}
   }
   return null;
 }
-function saveLocalDB() {
-  try { localStorage.setItem(STORAGE_KEY, JSON.stringify(DB)); } catch(e) {}
+// (#397) 큰 저장소에 저장 · 자주 불리므로 1.5초 모아서 한 번만 (화면 멈춤 방지)
+let _atmSaveLocalTimer = null;
+function _atmFlushLocalDB() {
+  if (_atmSaveLocalTimer) { clearTimeout(_atmSaveLocalTimer); _atmSaveLocalTimer = null; }
+  try {
+    if (!DB) return;
+    const raw = JSON.stringify(DB);
+    window._atmIdbCache = null;   // 메모리 이중 보관 안 함 (필요하면 DB 가 최신)
+    _atmIdbPut('db', raw).catch(function(e) { console.warn('[#397] 사본 저장 실패 (화면·서버 저장은 정상):', e); });
+  } catch (e) {}
 }
+function saveLocalDB() {
+  if (_atmSaveLocalTimer) return;
+  _atmSaveLocalTimer = setTimeout(_atmFlushLocalDB, 1500);
+}
+try {
+  document.addEventListener('visibilitychange', function() { if (document.visibilityState === 'hidden' && _atmSaveLocalTimer) _atmFlushLocalDB(); });
+} catch(_){}
 function getInvoiceItems(o) {
   // 항상 배열 반환 — items/invoiceItems 가 누락된 손상 데이터에서도 .forEach 가 터지지 않도록 방어
   let arr = (o && (o.invoiceItems || o.items)) || [];
@@ -2081,8 +2183,8 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 396;
-const APP_VERSION_DATE = '03/11';
+const APP_VERSION = 397;
+const APP_VERSION_DATE = '05/11';
 function _appVerBadge() {
   let latest = 0;
   try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
@@ -11347,7 +11449,7 @@ window.renderDailyReport = function() {
   if (dateLbl) dateLbl.textContent = formatDateDMY(dateISO);
   // 오늘 날짜 스냅샷만 자동 저장 (과거/미래 일자 조회는 저장 안 함)
   const todayISO = todayLocalISO();
-  if (dateISO === todayISO) saveDailySalesSnapshot(dateISO, rows);
+  // (2026-11-05 #397) 자동 기록 중단 · 쓰기만 하고 아무도 읽지 않던 기록이 저장칸을 채움 (매니저 PC 백지 사고)
   // 저장 폴더 정보 표시 (비동기)
   refreshDailyReportFolderInfo(dateISO);
 };
