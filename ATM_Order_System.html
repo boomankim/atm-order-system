@@ -2183,7 +2183,7 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 397;
+const APP_VERSION = 398;
 const APP_VERSION_DATE = '05/11';
 function _appVerBadge() {
   let latest = 0;
@@ -9999,7 +9999,12 @@ function viewOffice() {
   const _allIds = new Set(all.map(o => o.id));
   const _waitList = DB.orders.filter(o => o && o.status === 'invoiced')
     .sort((a, b) => String(a.deliveryDate || '').localeCompare(String(b.deliveryDate || '')) || String(a.invoiceNo || '').localeCompare(String(b.invoiceNo || '')));
-  const _issuedRows = _waitList.concat(all.filter(o => o.status !== 'invoiced'));
+  // ⭐ (2026-11-05 #398) 아래 목록 = 오늘 배송완료 (발행일 상관없이) · 매출일보와 같은 기준 (deliveredAt → invoicedAt → orderDate)
+  const _deliveredToday = DB.orders.filter(o => o && o.status === 'delivered'
+    && toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '') === todayISO);
+  const _sumNet = arr => arr.reduce((s, o) => { try { return s + (computeTotalsWithCredits(o).net || 0); } catch(_) { return s; } }, 0);
+  const _waitTotal = _sumNet(_waitList), _delivTotal = _sumNet(_deliveredToday);
+  const _issuedRows = _waitList.concat(_deliveredToday);
   const _shipDue = _waitList.filter(o => (o.deliveryDate || todayISO) <= todayISO);
   const _shipLater = _waitList.filter(o => (o.deliveryDate || todayISO) > todayISO);
   // ⭐ (2026-07-07) 백업 경고 배너 — 어제 백업 안 했으면 오늘 표시.
@@ -10163,11 +10168,9 @@ function viewOffice() {
     </div>
     <div class="card">
       <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; flex-wrap:wrap; gap:8px;">
-        <h3 style="margin:0;">오늘 인보이스 발행 완료 (${all.length}건)
-          ${(() => {
-            const todayTotal = all.reduce((sum, o) => sum + (computeTotalsWithCredits(o).net || 0), 0);
-            return all.length > 0 ? '<span style="font-weight:800; font-size:15px; color:var(--brand-dark); margin-left:10px;">총 $' + fmtMoney(todayTotal) + '</span>' : '';
-          })()}
+        <h3 style="margin:0;">오늘 인보이스 발행 완료
+          <span style="font-weight:800; font-size:14px; color:#E65100; margin-left:10px;">📦 배송대기 ${_waitList.length}건${_waitList.length ? ' · $' + fmtMoney(_waitTotal) : ''}</span>
+          <span style="font-weight:800; font-size:14px; color:var(--brand-dark); margin-left:10px;">✅ 오늘 배송완료 ${_deliveredToday.length}건${_deliveredToday.length ? ' · $' + fmtMoney(_delivTotal) : ''}</span>
           <span style="font-weight:400; font-size:12px; color:var(--muted); margin-left:6px;">— 이전 발행은 📊 주문 이력에서 확인</span>
         </h3>
         <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">${renderDailyCloseButton()}${(() => {
@@ -10177,25 +10180,31 @@ function viewOffice() {
             return `<button class="btn sm" style="background:#2E7D32; color:#fff; padding:8px 14px; font-size:13px; font-weight:700;" onclick="batchMarkDelivered()" title="배송일이 오늘인 배송대기 ${_shipDue.length}건을 배송완료로 변경 + 재고 자동 차감">🚚 일괄 배송완료 ${_shipDue.length}건</button>` + later;
           } else if (later) {
             return later;
-          } else if (all.length > 0) {
+          } else if (_deliveredToday.length > 0) {
             return `<span style="font-size:12px; color:var(--ok); font-weight:600;">✅ 모두 배송완료됨</span>`;
           }
           return '';
         })()}</div>
       </div>
-      ${_issuedRows.length === 0 ? `<div class="empty">오늘 발행된 인보이스가 없습니다.</div>` : `
+      ${_issuedRows.length === 0 ? `<div class="empty">배송대기·오늘 배송완료 인보이스가 없습니다.</div>` : `
       <table class="t">
         <thead><tr><th>인보이스#</th><th>주문번호</th><th>거래처</th><th class="num">금액</th><th>상태</th><th class="act"></th></tr></thead>
         <tbody>
-          ${_issuedRows.map(o => {
+          ${_issuedRows.map((o, _ri) => {
             const c = DB.customers.find(x=>x.id===o.customerId);
+            // (#398) 구역 제목 줄: 배송대기 / 오늘 배송완료 (매출일보 매출액과 같은 금액)
+            const _sec = (_ri === 0 && _waitList.length)
+              ? `<tr><td colspan="6" style="background:#FFF3E0; color:#E65100; font-weight:800; font-size:13px; padding:6px 10px;">📦 배송대기 ${_waitList.length}건 · 총 $${fmtMoney(_waitTotal)}</td></tr>`
+              : (_ri === _waitList.length
+                  ? `<tr><td colspan="6" style="background:#E8F5E9; color:#2E7D32; font-weight:800; font-size:13px; padding:6px 10px;">✅ 오늘 배송완료 ${_deliveredToday.length}건 · 총 $${fmtMoney(_delivTotal)} <span style="font-weight:400; font-size:11px; color:var(--muted);">(= 매출일보 매출액 · 발행일 상관없이)</span></td></tr>`
+                  : '');
             const _wait = o.status === 'invoiced';
             const _dd = o.deliveryDate || todayISO;
             const _ddTxt = _dd === todayISO ? '오늘' : (_dd < todayISO ? '지연 ' + formatDateDMY(_dd) : formatDateDMY(_dd));
             const _stCell = _wait
               ? `<span class="pill" style="background:${_dd > todayISO ? '#E3F2FD' : '#FFF3E0'}; color:${_dd > todayISO ? '#1565C0' : '#E65100'}; font-weight:700;">배송대기 · ${_ddTxt}</span>`
               : `<span class="pill ${o.status}">${statusLabel(o.status)}</span>`;
-            return `<tr${_wait ? ' style="background:#FFFDF5;"' : ''}>
+            return _sec + `<tr${_wait ? ' style="background:#FFFDF5;"' : ''}>
               <td><b>${o.invoiceNo||'-'}</b></td>
               <td>${o.orderNo || '-'}</td>
               <td>${c?c.name:'-'}</td>
