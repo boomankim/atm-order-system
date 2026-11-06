@@ -722,8 +722,65 @@ function saveLocalDB() {
 try {
   document.addEventListener('visibilitychange', function() { if (document.visibilityState === 'hidden' && _atmSaveLocalTimer) _atmFlushLocalDB(); });
 } catch(_){}
+// ⭐ (2026-11-06 #399) 병합 = 인보이스만 합침 · 각 주문서(items)는 그대로
+//   새 방식: 원본 status='merged' · mergedIntoId · mergeMode='invoice' / 대상 mergedFromIds · mergeMode='invoice' · invoiceItems 에 원본 품목(_mergedFrom)
+//   옛 방식(v398 이전): 대상 items 에 원본 품목이 복사돼 있음 (mergeMode 없음)
+function _atmMergedSources(o) {
+  if (!o || o.mergeMode !== 'invoice' || !Array.isArray(o.mergedFromIds)) return [];
+  return o.mergedFromIds.map(function(id){ return (DB.orders || []).find(function(x){ return x && x.id === id; }); })
+    .filter(function(s){ return s && s.status === 'merged' && s.mergedIntoId === o.id && s.mergeMode === 'invoice'; });
+}
+// 대상 주문이 삭제될 때: 병합된 원본을 계근완료로 되돌림 (품목이 사라지지 않게)
+function _atmReleaseMergedSources(o, why) {
+  let n = 0;
+  (DB.orders || []).forEach(function(src) {
+    if (!src || src.status !== 'merged' || src.mergedIntoId !== o.id) return;
+    src.status = 'weighed'; src.mergedIntoId = null; src.mergeMode = null;
+    try { saveEntityFields('orders', src.id, { status: 'weighed', mergedIntoId: null, mergeMode: null }); } catch(_){}
+    n++;
+  });
+  if (n) { try { auditLogAdd('🔗 병합 풀림 (' + why + '): 원본 ' + n + '건 → 계근완료로 복귀 · 대상 ' + (o.orderNo || o.id)); } catch(_){} }
+  return n;
+}
+// 인보이스 품목 기본 목록 = 이 주문서 품목 + (새 방식) 병합된 원본 주문서 품목
+function _atmBaseInvoiceLines(o) {
+  const out = (Array.isArray(o && o.items) ? o.items : []).filter(function(it){ return it && it.productId; })
+    .map(function(it){ return Object.assign({}, it, { _source: 'original' }); });
+  _atmMergedSources(o).forEach(function(src) {
+    const useInv = Array.isArray(src.invoiceItems) && src.invoiceItems.some(function(x){ return x && x.productId; });
+    (useInv ? src.invoiceItems : (src.items || [])).forEach(function(it) {
+      if (it && it.productId) out.push(Object.assign({}, it, { _source: it._source === 'added' ? 'added' : 'original', _mergedFrom: src.orderNo || src.id }));
+    });
+  });
+  return out;
+}
+// 주문서 품목 집계(작업 현황 등)에 넣을지: 옛 방식 병합 원본은 품목이 대상에 복사돼 있으므로 제외
+function _atmItemsCountable(o) { return !!o && !(o.status === 'merged' && o.mergeMode !== 'invoice'); }
+// 병합 표시 (원본: → 대상 · 대상: ← 원본들)
+function _atmMergeTagHTML(o) {
+  try {
+    if (!o) return '';
+    if (o.status === 'merged' && o.mergedIntoId) {
+      const t = (DB.orders || []).find(function(x){ return x && x.id === o.mergedIntoId; });
+      return '<span style="margin-left:6px; padding:1px 7px; background:#6A1B9A; color:#fff; border-radius:8px; font-size:10px; font-weight:700; white-space:nowrap;">🔗 병합됨 → '
+        + (t ? (t.orderNo || '') + (t.invoiceNo ? ' · 인보이스 #' + t.invoiceNo : '') : '(대상 없음)') + '</span>';
+    }
+    if (Array.isArray(o.mergedFromIds) && o.mergedFromIds.length) {
+      const names = o.mergedFromIds.map(function(id){ const s = (DB.orders || []).find(function(x){ return x && x.id === id; }); return s ? (s.orderNo || '').slice(-4) : '?'; });
+      return '<span style="margin-left:6px; padding:1px 7px; background:#EDE7F6; color:#4A148C; border-radius:8px; font-size:10px; font-weight:700; white-space:nowrap;">🔗 병합 ← ' + names.join(', ') + '</span>';
+    }
+  } catch(_){}
+  return '';
+}
+function _atmLocalHHMM(iso) {
+  try { const d = new Date(iso); if (isNaN(d)) return ''; return String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0'); } catch(_) { return ''; }
+}
 function getInvoiceItems(o) {
   // 항상 배열 반환 — items/invoiceItems 가 누락된 손상 데이터에서도 .forEach 가 터지지 않도록 방어
+  // (#399) 새 방식 병합 대상인데 인보이스 품목이 아직 없으면 → 원본 주문서 품목까지 포함
+  if (o && !Array.isArray(o.invoiceItems) && o.mergeMode === 'invoice' && Array.isArray(o.mergedFromIds) && o.mergedFromIds.length) {
+    try { return _atmBaseInvoiceLines(o); } catch(_){}
+  }
   let arr = (o && (o.invoiceItems || o.items)) || [];
   if (!Array.isArray(arr) && o && Array.isArray(o.items)) arr = o.items;   // (#396) 깨진 invoiceItems → 계근 품목으로
   if (!Array.isArray(arr)) return [];
@@ -2183,8 +2240,8 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 398;
-const APP_VERSION_DATE = '05/11';
+const APP_VERSION = 399;
+const APP_VERSION_DATE = '06/11';
 function _appVerBadge() {
   let latest = 0;
   try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
@@ -2472,6 +2529,7 @@ function renderProcessingToday() {
   if (window._todayWorkView === 'prod') {
     const prodGroups = { today: {}, tomorrow: {} };
     DB.orders.forEach(function(o) {
+      if (!_atmItemsCountable(o)) return;   // (#399) 옛 방식 병합 원본은 이중 집계 방지
       const dDate = (o.deliveryDate || '').slice(0,10);
       let bucket;
       if (dDate === today) bucket = 'today';
@@ -2536,6 +2594,7 @@ function renderProcessingToday() {
   if (window._todayWorkView === 'all') {
     const bucketOrdersAll = { today: [], tomorrow: [] };
     DB.orders.forEach(o => {
+      if (!_atmItemsCountable(o)) return;   // (#399)
       const dDate = (o.deliveryDate || '').slice(0,10);
       let bucket;
       if (dDate === today) bucket = 'today';
@@ -2569,11 +2628,11 @@ function renderProcessingToday() {
       entries.forEach((e, idx) => {
         const o = e.order;
         const c = DB.customers.find(x => x.id === o.customerId);
-        const timeStr = (o.createdAt || '').slice(11,16);
+        const timeStr = _atmLocalHHMM(o.createdAt);   // (#399) 시드니 시간 (예전: UTC)
         html += ''
           + '<div style="margin-bottom:8px; padding:8px 12px; background:#FBF8F4; border-radius:6px; border-left:3px solid ' + color + '; page-break-inside:avoid;">'
           +   '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">'
-          +     '<b style="font-size:13px; color:var(--brand-dark);">' + (idx+1) + '. 🏪 ' + (c ? c.name : '(거래처 없음)') + '</b>'
+          +     '<b style="font-size:13px; color:var(--brand-dark);">' + (idx+1) + '. 🏪 ' + (c ? c.name : '(거래처 없음)') + '</b>' + _atmMergeTagHTML(o)
           +     '<span style="font-size:10px; color:var(--muted);">📥 ' + timeStr + ' · #' + (o.orderNo || '') + '</span>'
           +   '</div>'
           +   '<div style="padding-left:14px;">'
@@ -2624,6 +2683,7 @@ function renderProcessingToday() {
   //   - 오늘/내일 2섹션 유지
   const bucketOrders = { today: [], tomorrow: [] };
   DB.orders.forEach(o => {
+    if (!_atmItemsCountable(o)) return;   // (#399)
     const dDate = (o.deliveryDate || '').slice(0,10);
     let bucket;
     if (dDate === today) bucket = 'today';
@@ -2660,11 +2720,11 @@ function renderProcessingToday() {
     entries.forEach((e, idx) => {
       const o = e.order;
       const c = DB.customers.find(x => x.id === o.customerId);
-      const timeStr = (o.createdAt || '').slice(11,16);
+      const timeStr = _atmLocalHHMM(o.createdAt);   // (#399) 시드니 시간 (예전: UTC)
       html += ''
         + '<div style="margin-bottom:8px; padding:8px 12px; background:#FBF8F4; border-radius:6px; border-left:3px solid ' + color + '; page-break-inside:avoid;">'
         +   '<div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:4px;">'
-        +     '<b style="font-size:13px; color:var(--brand-dark);">' + (idx+1) + '. 🏪 ' + (c ? c.name : '(거래처 없음)') + '</b>'
+        +     '<b style="font-size:13px; color:var(--brand-dark);">' + (idx+1) + '. 🏪 ' + (c ? c.name : '(거래처 없음)') + '</b>' + _atmMergeTagHTML(o)
         +     '<span style="font-size:10px; color:var(--muted);">📥 ' + timeStr + ' · #' + (o.orderNo || '') + '</span>'
         +   '</div>'
         +   '<div style="padding-left:14px;">'
@@ -4102,6 +4162,7 @@ async function ordAdmDeleteOne(oid) {
   // ⭐ (2026-09-30 밤작업#374) 붙은 크레딧 사전 고지
   if (!confirm(`주문 ${orderNo} 을(를) 삭제할까요?\n복구할 수 없습니다.\n` + _creditReleaseNotice(oid))) return;
   _releaseCreditsForOrders(oid, '관리자 개별 삭제 · ' + orderNo);
+  try { _atmReleaseMergedSources(o, '대상 주문 삭제 · 관리자'); } catch(_){}   // (#399)
   DB.orders = DB.orders.filter(x => x.id !== oid);
   // Phase 2 동시성: 트랜잭션으로 안전 삭제
   removeEntityFromFirebase('orders', oid);
@@ -10152,7 +10213,7 @@ function viewOffice() {
             return `<tr style="cursor:pointer; ${_rowBg}" onclick="location.hash='#invoicePrep?id=${o.id}'">
               <td><b style="color:var(--brand);">${o.orderNo}</b>${_dupWarn}</td>
               <td><b>${c?c.name:'-'}</b>${_colorBadge}${_isMergeable ? '<span style="margin-left:6px; padding:1px 6px; background:#E68A00; color:#fff; border-radius:8px; font-size:10px; font-weight:700;">중복</span>' : ''}${c&&c.contact?`<br><small style="color:var(--muted);">${c.contact} · ${c.phone||''}</small>`:''}</td>
-              <td>${Array.isArray(o.items) ? o.items.length : 0}개</td>
+              <td>${getInvoiceItems(o).filter(x => x && x._status !== 'cancelled').length}개${Array.isArray(o.mergedFromIds) && o.mergedFromIds.length ? _atmMergeTagHTML(o) : ''}</td>
               <td class="num">${totals.totalKg.toFixed(1)} kg</td>
               <td class="num">$${fmtMoney(totals.grand)}</td>
               <td style="cursor:pointer;" title="클릭하면 배송일 변경" onmouseover="this.style.background='#FFF7E0';" onmouseout="this.style.background='';" onclick="event.stopPropagation(); officeEditDeliveryDate('${o.id}');">${renderDeliveryBadge(o.deliveryDate)}<span style="font-size:10px; color:var(--muted); margin-left:4px;">✏️</span></td>
@@ -13807,16 +13868,19 @@ function renderHistoryResults() {
   const byStatus = {};
   const byProduct = {};
   orders.forEach(o => {
+    // ⭐ (2026-11-06 #399) 병합된 원본은 금액·품목을 대상 인보이스에서 셈 (이중 계산 방지)
+    if (o && o.status === 'merged') { byStatus[o.status] = (byStatus[o.status] || 0) + 1; return; }
     // ⭐ (2026-09-29 밤작업#368) 주문이력 금액은 크레딧 차감 후(net) 기준.
     //   매출일보·스테이트먼트(#166/#167)와 같은 금액이 나와야 한다.
     const t = computeTotalsWithCredits(o);
     totalKg += t.totalKg;
     totalRevenue += t.net;
-    totalItems += o.items.length;
+    const _lines = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled');   // (#399) 인보이스 품목 기준 (취소 줄 제외)
+    totalItems += _lines.length;
     byCust[o.customerId] = (byCust[o.customerId] || 0) + t.net;
     byStatus[o.status] = (byStatus[o.status] || 0) + 1;
     const _cust = DB.customers.find(c => c.id === o.customerId);
-    o.items.forEach(it => {
+    _lines.forEach(it => {
       if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
       if (it.actualWeightKg == null) return;
       const p = DB.products.find(x => x.id === it.productId);
@@ -13897,13 +13961,14 @@ function renderHistoryResults() {
                 const c = DB.customers.find(x => x.id === o.customerId);
                 // ⭐ (2026-09-29 밤작업#368) 크레딧 차감 후(net) 금액 표시
                 const t = computeTotalsWithCredits(o);
-                return `<tr>
+                const _mg = o.status === 'merged';   // (#399) 병합 원본: 금액은 대상 인보이스에
+                return `<tr${_mg ? ' style="background:#F7F3FB;"' : ''}>
                   <td>${toLocalISODate(o.orderDate)}</td>
-                  <td><b>${o.orderNo||o.id.slice(0,8)}</b></td>
+                  <td><b>${o.orderNo||o.id.slice(0,8)}</b>${_atmMergeTagHTML(o)}</td>
                   <td>${c ? c.name : '-'}</td>
-                  <td>${Array.isArray(o.items) ? o.items.length : 0}개</td>
-                  <td class="num">${t.totalKg.toFixed(1)}</td>
-                  <td class="num"${t.creditSum > 0.001 ? ' title="Subtotal+GST $'+fmtMoney(t.grand)+' − 크레딧 $'+fmtMoney(t.creditSum)+'"' : ''}>${t.net < -0.001 ? '-$' + fmtMoney(Math.abs(t.net)) : '$' + fmtMoney(t.net)}${t.creditSum > 0.001 ? ' <span style="color:#C0392B;font-size:10px;">CR</span>' : ''}</td>
+                  <td>${Array.isArray(o.items) ? o.items.filter(Boolean).length : 0}개</td>
+                  <td class="num">${_mg ? '-' : t.totalKg.toFixed(1)}</td>
+                  ${_mg ? '<td class="num" style="color:var(--muted); font-size:11px;">대상 인보이스에 포함</td>' : `<td class="num"${t.creditSum > 0.001 ? ' title="Subtotal+GST $'+fmtMoney(t.grand)+' − 크레딧 $'+fmtMoney(t.creditSum)+'"' : ''}>${t.net < -0.001 ? '-$' + fmtMoney(Math.abs(t.net)) : '$' + fmtMoney(t.net)}${t.creditSum > 0.001 ? ' <span style="color:#C0392B;font-size:10px;">CR</span>' : ''}</td>`}
                   <td><span class="pill ${o.status||''}">${statusLabel(o.status||'')}</span></td>
                   <td>${o.invoiceNo || '-'}</td>
                   <td class="act">
@@ -14030,7 +14095,11 @@ function exportHistoryCSV(detailed) {
     rows.push(['주문일','주문번호','거래처코드','거래처','상태','인보이스번호','발행일','품목','브랜드','분류','주문단위','주문수량','실측중량_kg','단가_per_kg','금액_GST포함','품목요청사항']);
     orders.forEach(o => {
       const c = DB.customers.find(x => x.id === o.customerId);
-      o.items.forEach(it => {
+      // ⭐ (2026-11-06 #399) 병합 원본은 대상 인보이스 줄로 나옴 (이중 금액 방지) · 발행된 주문은 인보이스 품목(취소 줄 제외) 기준
+      if (o.status === 'merged') return;
+      const _csvLines = (o.status === 'invoiced' || o.status === 'delivered' || Array.isArray(o.invoiceItems))
+        ? getInvoiceItems(o).filter(it => it && it._status !== 'cancelled') : (o.items || []);
+      _csvLines.forEach(it => {
         if (!it) return;   // ⭐ (밤작업#384) null 구멍 방어
         const p = DB.products.find(x => x.id === it.productId);
         const price = lineUnitPrice(it, p, c);
@@ -14062,17 +14131,19 @@ function exportHistoryCSV(detailed) {
     orders.forEach(o => {
       const c = DB.customers.find(x => x.id === o.customerId);
       const t = computeTotalsWithCredits(o);
+      const _mg = o.status === 'merged';   // (#399) 병합 원본 금액 0 · 대상 인보이스에 포함
+      const _tg = _mg ? (DB.orders.find(x => x && x.id === o.mergedIntoId) || {}) : null;
       rows.push([
         toLocalISODate(o.orderDate),
         o.orderNo,
         c ? c.code : '',
         c ? c.name : '',
-        o.items.length,
-        t.totalKg.toFixed(2),
-        t.grand.toFixed(2),
-        t.creditSum.toFixed(2),
-        t.net.toFixed(2),
-        statusLabel(o.status),
+        Array.isArray(o.items) ? o.items.filter(Boolean).length : 0,
+        _mg ? '0.00' : t.totalKg.toFixed(2),
+        _mg ? '0.00' : t.grand.toFixed(2),
+        _mg ? '0.00' : t.creditSum.toFixed(2),
+        _mg ? '0.00' : t.net.toFixed(2),
+        _mg ? '병합됨 → ' + (_tg.orderNo || '') + (_tg.invoiceNo ? ' #' + _tg.invoiceNo : '') : statusLabel(o.status),
         o.invoiceNo || '',
         o.deliveryDate || '',
         (o.deliveryNotes || '').replace(/[\r\n]+/g, ' ')
@@ -14118,8 +14189,8 @@ function viewInvoicePrep(params) {
   // 최초 생성 시 거래처 맞춤단가(customP) 무조건 우선 적용 → 다음 인보이스 단가 자동 인식.
   let _prepAutoCount = 0;
   if (!o.invoiceItems) {
-    o.invoiceItems = (Array.isArray(o.items) ? o.items : []).filter(function(it){ return it && it.productId; }).map(function(it) {   // (#396) 빈 칸·조각 줄 제외
-      var newIt = Object.assign({}, it, {_source: 'original'});
+    o.invoiceItems = _atmBaseInvoiceLines(o).map(function(it) {   // (#396) 빈 칸·조각 줄 제외 · (#399) 병합 원본 품목 포함
+      var newIt = Object.assign({}, it);
       var p = DB.products.find(function(x) { return x.id === it.productId; });
       var customP = customerCustomPrice(cust, it.productId, it.notes);
       // ⭐ 신규 주문: 항상 거래처 맞춤단가 우선 (라인의 기존 lineUnitPrice 무시).
@@ -14452,9 +14523,7 @@ function addInvoiceItem(orderId, productId, note) {
   var p = DB.products.find(function(x){ return x.id === productId; });
   if (!o || !p) return;
   if (!o.invoiceItems) {
-    o.invoiceItems = o.items.map(function(it){
-      return Object.assign({}, it, {_source: 'original'});
-    });
+    o.invoiceItems = _atmBaseInvoiceLines(o);   // (#399) 병합 원본 품목 포함
   }
   // 신규 추가 라인도 거래처 맞춤 단가 우선 (빈 요청사항 짝의 기본값 사용)
   var custForAdd = DB.customers.find(function(x){ return x.id === o.customerId; });
@@ -14735,6 +14804,7 @@ window.deleteOrderFromPrep = function(orderId) {
         + custName + ' · ' + new Date().toISOString());
     }
   } catch(_){}
+  try { _atmReleaseMergedSources(o, '대상 주문 삭제 · 인보이스 준비'); } catch(_){}   // (#399)
   DB.orders = DB.orders.filter(x => x.id !== orderId);
   removeEntityFromFirebase('orders', orderId);
   saveLocalDB();
@@ -14900,6 +14970,20 @@ async function _issueInvoiceInner(orderId) {
     saveLocalDB();
     try { auditLogAdd('⚠ 무게 없는 품목 제외 후 발행: ' + (o.orderNo || o.id) + ' · ' + _names.replace(/\n/g, ' ')); } catch(_){}
   }
+  // ⭐ (2026-11-06 #399) 똑같은 줄(품목·요청사항·무게·수량)이 두 번 있으면 경고 · 중복 병합 · 중복 입력 안전망
+  try {
+    const _dl = getInvoiceItems(o).filter(it => it && it._status !== 'cancelled' && it.actualWeightKg != null);
+    const _seen = {}, _dups = [];
+    _dl.forEach(it => {
+      const k = [it.productId, (it.notes || '').trim(), it.actualWeightKg, it.quantity, it.unit].join('|');
+      if (_seen[k]) { const p = DB.products.find(x => x.id === it.productId); _dups.push('· ' + (p ? p.name : '(품목)') + ' ' + it.actualWeightKg + 'kg'); }
+      _seen[k] = true;
+    });
+    if (_dups.length) {
+      if (!confirm('⚠ 똑같은 줄이 두 번 있습니다 (' + _dups.length + '줄)\n\n' + _dups.join('\n') + '\n\n중복이면 [취소] 후 해당 줄을 ❌ 취소하세요.\n정말 같은 품목을 두 번 보내는 경우만 [확인].')) return;
+      try { auditLogAdd('⚠ 같은 줄 2번 경고 후 발행: ' + (o.orderNo || o.id) + ' · ' + _dups.join(' ')); } catch(_){}
+    }
+  } catch(_){}
   if (!confirm(`인보이스를 발행합니다.\n총액: $${fmtMoney(t.grand)} (GST 포함)\n\n발행 후에는 단가 수정이 불가합니다. 진행할까요?`)) return;
 
   // ⭐ (2026-09-08 밤작업#339 · Layer C) 사전 검증 · 서버에 이미 invoiceNo 배정됐는지 확인
@@ -16191,50 +16275,135 @@ window.unapplyCreditFromPrep = function(cnId, orderId) {
 //   방식 A: 사무실 리스트에서 [🔗 병합] 클릭.
 //   옵션 2: 2번째(가장 나중) 주문에 items 병합, 첫번째들은 status='merged'+mergedIntoId.
 //   크레딧 자동 이전 (cn.orderId 를 새 target 으로), 요청사항 존치(합쳐서 표시).
+// ⭐ (2026-11-06 #399) 병합 = 인보이스만 합침 · 주문서(items)는 각각 그대로
+//   사고: 그집고기 4178→4210 두 번 병합 (09:29:10 / 09:29:25 · 다른 화면에 [병합] 버튼이 남아 있었음)
+//   대책: ① 두 번 누름 잠금 ② 서버에서 다시 확인 ③ 원본마다 트랜잭션으로 먼저 잡기 (한 화면만 성공) ④ 기기 표시 기록
 window.mergeOrdersInGroup = async function(customerId, deliveryDate) {
-  // ⭐ (2026-09-08 밤작업#339 · Layer A) invoiceNo 있는 주문은 병합 대상에서도 제외
-  const group = DB.orders.filter(o => o.status === 'weighed' && !o.invoiceNo && o.customerId === customerId && o.deliveryDate === deliveryDate);
+  if (window._atmMergeBusy) { alert('⏳ 병합 진행 중입니다. 잠시만 기다려 주세요.'); return; }
+  window._atmMergeBusy = true;
+  try { await _atmMergeOrdersInGroup(customerId, deliveryDate); }
+  catch (e) { console.warn('병합 오류:', e); alert('❌ 병합 중 오류: ' + (e && e.message || e) + '\n화면을 새로고침 후 확인해 주세요.'); }
+  finally { window._atmMergeBusy = false; }
+};
+async function _atmReadServerOrders() {
+  if (typeof DB_REF === 'undefined' || !DB_REF) return null;
+  const snap = await DB_REF.child('orders').once('value');
+  const v = snap.val();
+  if (!v || typeof v !== 'object') return null;
+  const map = {};
+  Object.keys(v).forEach(function(k) { const x = v[k]; if (x && x.id) map[x.id] = { idx: Number(k), o: x }; });
+  return map;
+}
+function _atmApplyServerOrder(local, srvO) {
+  ['status', 'mergedIntoId', 'mergeMode', 'mergedFromIds', 'invoiceNo', 'invoicedAt', 'items', 'invoiceItems', 'deliveryNotes'].forEach(function(k) {
+    if (srvO[k] === undefined || srvO[k] === null) delete local[k];
+    else local[k] = JSON.parse(JSON.stringify(srvO[k]));
+  });
+  ['items', 'invoiceItems'].forEach(function(k) {
+    const v = local[k];
+    if (v && typeof v === 'object' && !Array.isArray(v)) { const arr = []; Object.keys(v).forEach(function(x){ if (/^\d+$/.test(x)) arr[Number(x)] = v[x]; }); for (let i = 0; i < arr.length; i++) if (arr[i] === undefined) arr[i] = null; local[k] = arr; }
+  });
+  if (Array.isArray(local.mergedFromIds) === false && local.mergedFromIds && typeof local.mergedFromIds === 'object') local.mergedFromIds = Object.values(local.mergedFromIds);
+}
+function _atmMergeCheck(group, srvMap) {
+  for (const o of group) {
+    const s = srvMap[o.id];
+    if (!s) return { ok: false, why: (o.orderNo || o.id) + ' · 서버에 없음' };
+    const so = s.o;
+    if (so.mergedIntoId || so.status === 'merged') return { ok: false, why: (o.orderNo || o.id) + ' · 이미 병합됨' };
+    if (so.invoiceNo) return { ok: false, why: (o.orderNo || o.id) + ' · 이미 발행됨 #' + so.invoiceNo };
+    if (so.status !== 'weighed') return { ok: false, why: (o.orderNo || o.id) + ' · 상태 ' + statusLabel(so.status) };
+  }
+  return { ok: true };
+}
+async function _atmMergeRefreshAndStop(group, why) {
+  try {
+    const m = await _atmReadServerOrders();
+    if (m) group.forEach(function(o){ if (m[o.id]) _atmApplyServerOrder(o, m[o.id].o); });
+    saveLocalDB();
+  } catch(_){}
+  alert('ℹ 이미 다른 화면에서 처리된 주문입니다.\n\n' + why + '\n\n병합하지 않고 화면을 최신으로 다시 그립니다.');
+  try { auditLogAdd('🔗 병합 중단 (이미 처리됨): ' + why + ' · ' + _whoTag() + ' · ' + _deviceTag()); } catch(_){}
+  route();
+}
+async function _atmMergeOrdersInGroup(customerId, deliveryDate) {
+  const group = DB.orders.filter(o => o && o.status === 'weighed' && !o.invoiceNo && !o.mergedIntoId && o.customerId === customerId && o.deliveryDate === deliveryDate);
   if (group.length < 2) { alert('병합할 주문이 부족합니다 (2건 이상 필요).'); return; }
-  // orderDate 기준 오래된 것 → 최신 순 정렬 (최신 것이 target)
+  const online = (typeof DB_REF !== 'undefined' && !!DB_REF);
+  // 1) 서버에서 다시 확인 · 최신 값으로
+  if (online) {
+    const m1 = await _atmReadServerOrders();
+    if (m1) {
+      const c1 = _atmMergeCheck(group, m1);
+      if (!c1.ok) return _atmMergeRefreshAndStop(group, c1.why);
+      group.forEach(function(o){ _atmApplyServerOrder(o, m1[o.id].o); });
+    }
+  }
   group.sort((a,b) => (a.orderDate||'').localeCompare(b.orderDate||''));
-  const target = group[group.length - 1];   // 마지막(가장 나중)
-  const sources = group.slice(0, -1);       // 나머지 (병합될 원본들)
+  const target = group[group.length - 1];
+  const sources = group.slice(0, -1);
   const cust = DB.customers.find(c => c.id === customerId);
   const custName = cust ? cust.name : '(?)';
-  const msg = '📋 주문 병합 확인\n\n' +
+  const cnt = o => (Array.isArray(o.items) ? o.items.filter(Boolean).length : 0);
+  const msg = '📋 주문 병합 확인 (인보이스만 합침)\n\n' +
     '거래처: ' + custName + '\n' +
     '배송일: ' + deliveryDate + '\n' +
     '병합 대상 주문 ' + group.length + '건:\n' +
-    group.map(o => '  · ' + o.orderNo + ' (' + o.items.length + '건, ' + new Date(o.orderDate).toLocaleTimeString('ko-KR') + ')').join('\n') + '\n\n' +
-    '👉 최종 주문 ' + target.orderNo + ' (가장 나중)에 모두 병합됩니다.\n' +
-    '   나머지 ' + sources.length + '건은 "병합됨" 상태로 남아 이력에만 보입니다.\n\n' +
+    group.map(o => '  · ' + o.orderNo + ' (' + cnt(o) + '품목, ' + new Date(o.orderDate).toLocaleTimeString('ko-KR') + ')').join('\n') + '\n\n' +
+    '👉 인보이스는 ' + target.orderNo + ' 하나로 발행됩니다.\n' +
+    '   주문서는 각각 그대로 남고, 나머지 ' + sources.length + '건은 "병합됨"으로 표시됩니다.\n\n' +
     '계속하시겠습니까?';
   if (!confirm(msg)) return;
-  // items 병합
-  const combinedItems = target.items.slice();
-  sources.forEach(src => {
-    (src.items || []).forEach(it => { if (it) combinedItems.push(Object.assign({}, it)); });   // ⭐ (밤작업#384) null 구멍 방어
-  });
-  target.items = combinedItems;
-  // invoiceItems 도 있으면 병합 (이미 편집됐을 수도)
-  if (target.invoiceItems) {
-    const combinedInv = target.invoiceItems.slice();
-    sources.forEach(src => {
-      const items = src.invoiceItems || src.items || [];
-      items.forEach(it => combinedInv.push(Object.assign({}, it)));
-    });
-    target.invoiceItems = combinedInv;
+  // 2) 확인창 사이 다른 화면이 먼저 병합했을 수 있음 → 다시 확인 + 원본마다 트랜잭션으로 먼저 잡기
+  if (online) {
+    const m2 = await _atmReadServerOrders();
+    if (m2) {
+      const c2 = _atmMergeCheck(group, m2);
+      if (!c2.ok) return _atmMergeRefreshAndStop(group, c2.why);
+      const claimed = [];
+      _lastSaveTime = Date.now();
+      for (const src of sources) {
+        const path = 'orders/' + m2[src.id].idx + '/mergedIntoId';
+        let committed = false;
+        try {
+          const r = await DB_REF.child(path).transaction(function(cur) { return cur ? undefined : target.id; });
+          committed = !!(r && r.committed);
+        } catch (eT) { console.warn('병합 잡기 실패:', eT); }
+        if (!committed) {
+          for (const cp of claimed) { try { await DB_REF.child(cp).set(null); } catch(_){} }
+          return _atmMergeRefreshAndStop(group, (src.orderNo || src.id) + ' · 다른 화면에서 방금 병합함');
+        }
+        claimed.push(path);
+      }
+    }
   }
-  // 요청사항 병합 (deliveryNotes)
+  // 3) 인보이스 품목 = 대상(이미 있으면 그대로) + 원본 품목 (_mergedFrom 표시) · 주문서 items 는 안 바꿈
+  const priceOf = function(it) {
+    if (it.lineUnitPrice != null) return it.lineUnitPrice;
+    const cp = customerCustomPrice(cust, it.productId, it.notes);
+    if (cp != null) return cp;
+    const p = DB.products.find(x => x.id === it.productId);
+    return p ? p.priceKg : 0;
+  };
+  const hasInv = Array.isArray(target.invoiceItems) && target.invoiceItems.some(x => x && x.productId);
+  const inv = hasInv
+    ? target.invoiceItems.filter(Boolean).map(x => Object.assign({}, x))
+    : (target.items || []).filter(it => it && it.productId).map(it => Object.assign({}, it, { _source: 'original' }));
+  sources.forEach(src => {
+    const useInv = Array.isArray(src.invoiceItems) && src.invoiceItems.some(x => x && x.productId);
+    (useInv ? src.invoiceItems : (src.items || [])).forEach(it => {
+      if (it && it.productId) inv.push(Object.assign({}, it, { _source: it._source === 'added' ? 'added' : 'original', _mergedFrom: src.orderNo || src.id }));
+    });
+  });
+  inv.forEach(it => { if (it.lineUnitPrice == null) it.lineUnitPrice = priceOf(it); });
+  target.invoiceItems = inv;
   const notesArr = group.map(o => o.deliveryNotes).filter(Boolean);
   if (notesArr.length > 0) target.deliveryNotes = notesArr.join(' | ');
-  target.mergedFromIds = sources.map(s => s.id);
-  // 원본들 병합됨 처리
-  sources.forEach(src => {
-    src.status = 'merged';
-    src.mergedIntoId = target.id;
-  });
-  // 크레딧 노트도 target 으로 이전 (cn.orderId 변경)
+  const prevFrom = Array.isArray(target.mergedFromIds) ? target.mergedFromIds : [];
+  target.mergedFromIds = prevFrom.concat(sources.map(s => s.id)).filter((x, i, a) => a.indexOf(x) === i);
+  target.mergeMode = 'invoice';
+  sources.forEach(src => { src.status = 'merged'; src.mergedIntoId = target.id; src.mergeMode = 'invoice'; });
+  // 크레딧 노트도 target 으로 이전
   (DB.creditNotes || []).forEach(cn => {
     if (sources.some(s => s.id === cn.orderId)) {
       cn.orderId = target.id;
@@ -16245,23 +16414,22 @@ window.mergeOrdersInGroup = async function(customerId, deliveryDate) {
       try { saveEntityField('creditNotes', cn.id, 'appliedToOrderId'); } catch(_){}
     }
   });
-  // 저장
   try {
     saveEntityFields('orders', target.id, {
-      items: target.items,
-      invoiceItems: target.invoiceItems || null,
+      invoiceItems: target.invoiceItems,
       deliveryNotes: target.deliveryNotes || '',
-      mergedFromIds: target.mergedFromIds
+      mergedFromIds: target.mergedFromIds,
+      mergeMode: 'invoice'
     });
     sources.forEach(src => {
-      saveEntityFields('orders', src.id, { status: 'merged', mergedIntoId: target.id });
+      saveEntityFields('orders', src.id, { status: 'merged', mergedIntoId: target.id, mergeMode: 'invoice' });
     });
     saveLocalDB();
   } catch(e) { console.warn('병합 저장 실패:', e); alert('저장 중 오류: ' + e.message); return; }
-  try { auditLogAdd('주문 병합: ' + custName + ' (' + sources.map(s => s.orderNo).join(', ') + ' → ' + target.orderNo + ')'); } catch(_){}
-  alert('✅ 병합 완료: ' + target.orderNo + ' (총 ' + target.items.length + '건 품목)');
+  try { auditLogAdd('주문 병합: ' + custName + ' (' + sources.map(s => s.orderNo).join(', ') + ' → ' + target.orderNo + ') · 인보이스만 · ' + _whoTag() + ' · ' + _deviceTag()); } catch(_){}
+  alert('✅ 병합 완료: ' + target.orderNo + '\n인보이스 품목 ' + inv.length + '줄 · 주문서는 각각 그대로');
   route();
-};
+}
 
 // ⭐ (2026-08-04) 크레딧 적용 취소 — 보스 비번 필요
 window.unapplyCredit = async function(cnId, orderId) {
@@ -16841,7 +17009,8 @@ function viewOrderDetail(params) {
       weighing: '⚖️ 작업장에서 품목을 챙기고 있습니다.',
       weighed: '✅ 계근이 완료되어 사무실에서 인보이스를 준비 중입니다.',
       invoiced: '📋 인보이스가 발행되었습니다. 곧 배송됩니다.',
-      delivered: '🚚 배송이 완료되었습니다. 이용해주셔서 감사합니다!'
+      delivered: '🚚 배송이 완료되었습니다. 이용해주셔서 감사합니다!',
+      merged: '📋 같은 날 다른 주문과 함께 인보이스 하나로 발행됩니다.'
     }[o.status] || '';
 
     app.innerHTML = `
@@ -16886,7 +17055,7 @@ function viewOrderDetail(params) {
   // === Staff view (full info with prices and actions) ===
   const totals = computeTotals(o);
   app.innerHTML = `
-    <h2 class="page-title">📄 ${o.orderNo}
+    <h2 class="page-title">📄 ${o.orderNo}${_atmMergeTagHTML(o)}
       <span class="sub">${cust ? cust.name : ''}</span></h2>
     <div class="card">
       <div class="btn-row" style="margin-bottom:10px; align-items:center;">
@@ -18887,7 +19056,7 @@ function inventoryRelearnBoxKg(force) {
   }
   const per = {};
   (DB.orders || []).forEach(function(o) {
-    if (!o) return;
+    if (!o || o.status === 'merged') return;   // (#399) 병합 원본 품목은 대상 인보이스에 있음
     const src = (o.invoiceItems && o.invoiceItems.length) ? o.invoiceItems : (o.items || []);
     if (!Array.isArray(src)) return;
     src.forEach(function(it) {
@@ -23087,7 +23256,7 @@ if (FIREBASE_READY && DB_REF) {
       //   대상 필드: status, invoiceNo, invoicedAt, deliveredAt, weighedAt, items (계근 데이터)
       //   오늘 4개 거래처 사고 · 동서 유령 · 같은 race · 원천 봉쇄
       try {
-        const STATUS_ORDER = { 'new': 0, 'weighing': 1, 'weighed': 2, 'invoiced': 3, 'delivered': 4 };
+        const STATUS_ORDER = { 'new': 0, 'weighing': 1, 'weighed': 2, 'invoiced': 3, 'delivered': 4, 'merged': 5 };   // (#399) 병합됨 = 최종 상태 · 서버 '병합됨'은 항상 받음 (중복 병합 사고)
         if (data && Array.isArray(data.orders) && Array.isArray(DB.orders)) {
           // 로컬 id → order 인덱스 · O(1) 조회
           const localById = {};
