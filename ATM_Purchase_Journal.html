@@ -286,6 +286,7 @@
   <div class="grp">
     <button id="openPurchasePanel" class="primary">💰 매입 등록</button>
     <button id="openPaymentPanel" class="success">💵 지급 등록</button>
+    <button id="openDueBtn" title="결제 예정 · 은행 화면 위에 띄워 두는 작은 창" style="background:#7c3aed; color:#fff; border-color:#7c3aed;">💳 결제 예정</button>
   </div>
   <div class="grp">
     <button id="addVendor" class="ghost">＋ 업체 추가</button>
@@ -354,6 +355,15 @@
       <div class="field"><label>매입일 *</label><input type="date" id="purchDate"></div>
       <div class="field"><label>인보이스 # *</label><input type="text" id="purchInvNo" placeholder="예: 353908"></div>
       <div class="field"><label>금액 ($) *</label><input type="text" inputmode="decimal" id="purchAmount" placeholder="0.00" oninput="formatMoneyInput(this)"></div>
+    </div>
+    <!-- ⭐ (2026-11-13) 인보이스 발행일 · 결제일 = 발행일 + 업체 결제텀 -->
+    <div id="purchIssueBox" style="margin-top:10px; padding:10px 12px; border:2px solid #7c3aed; border-radius:8px; background:#f5f3ff; display:flex; flex-wrap:wrap; align-items:center; gap:8px;">
+      <label for="purchIssueDay" style="font-weight:700; color:#5b21b6; font-size:13px;">인보이스 발행일 *</label>
+      <input id="purchIssueDay" inputmode="numeric" maxlength="2" placeholder="일" autocomplete="off" oninput="onIssueDayInput()" style="width:64px; font-size:18px; text-align:center; font-weight:700;">
+      <span style="font-size:12px; color:var(--muted);">종이에 적힌 날짜의 "일" 숫자만</span>
+      <button type="button" class="sm" onclick="setIssueSameDay()">같은 날</button>
+      <input type="date" id="purchIssueCal" onchange="onIssueCalPick(this.value)" title="오래된 인보이스 · 달력에서 고르기" style="width:auto; padding:3px 6px; font-size:12px;">
+      <div id="purchIssuePv" style="flex-basis:100%; font-size:13px; min-height:18px;"></div>
     </div>
     <div class="grid-3" style="margin-top:10px;">
       <div class="field" style="grid-column:span 3;"><label>비고</label><input type="text" id="purchNote" placeholder="선택 입력"></div>
@@ -479,6 +489,7 @@
     <div class="form-row"><label>담당자 연락처</label><input id="vfMgrPhone" placeholder="예: 010-0000-0000"></div>
     <div class="form-row"><label>이메일</label><input id="vfEmail" type="email" placeholder="예: name@example.com"></div>
     <div class="form-row"><label>이월잔액 (미지급 초기값)</label><input id="vfOpening" type="text" inputmode="decimal" placeholder="0.00"></div>
+    <div class="form-row"><label>결제텀 (인보이스 발행 후 N일 · 보스 비번)</label><input id="vfTerm" type="text" inputmode="numeric" placeholder="예: 14 · 비우면 미설정"></div>
     <div class="modal-actions">
       <button id="vfDelete" class="danger left" style="display:none;">업체 삭제</button>
       <button id="vfCancel">취소</button>
@@ -797,6 +808,7 @@ function saveFirebase(){
 function saveAll(){
   saveLocal();
   saveFirebase();
+  try { renderDueWindow(); } catch(_){}   // (2026-11-13) 결제 예정 창 바로 갱신
 }
 
 // Firebase 초기 로드 + 실시간 구독
@@ -813,6 +825,7 @@ function subscribeFirebase(){
     if (lRemote > lLocal) {
       store = remote;
       saveLocal();
+      try { renderDueWindow(); } catch(_){}
       // 조용히 재렌더링 (사용자가 편집 중이 아니면)
       const panelOpen = document.querySelector('.panel.open');
       if (!panelOpen) {
@@ -827,6 +840,246 @@ function subscribeFirebase(){
   });
 }
 
+
+// ==========================================================================
+// ⭐ (2026-11-13) 결제텀 · 인보이스 발행일 · 결제 예정 창
+//   결제일 = 인보이스 발행일(issueDate · 없으면 매입일로 추정) + 업체 결제텀(payTermDays, 일)
+//   결제 예정 창: Chrome/Edge 는 항상 위에 떠 있는 작은 창(Document Picture-in-Picture) · 안 되면 일반 팝업
+// ==========================================================================
+function _parseISO(s){ const a = String(s).split('-').map(Number); return new Date(a[0], a[1]-1, a[2]); }
+function _daysBetween(a, b){ return Math.round((_parseISO(a) - _parseISO(b)) / 86400000); }   // a - b (일)
+const _WD = ['일','월','화','수','목','금','토'];
+function _dmy(s){ const d = _parseISO(s); const z = n => String(n).padStart(2,'0'); return z(d.getDate()) + '/' + z(d.getMonth()+1) + '(' + _WD[d.getDay()] + ')'; }
+function purchaseIssueDate(p){ return p.issueDate || p.date; }
+function purchaseDueDate(p){
+  const v = findVendorById(p.vendorId);
+  if (!v || v.payTermDays == null || v.payTermDays === '') return null;
+  return shiftDate(purchaseIssueDate(p), Number(v.payTermDays));
+}
+function dueLabel(due){ const k = _daysBetween(due, todayLocalISO()); return k < 0 ? '연체 ' + (-k) + '일' : (k === 0 ? '오늘' : 'D-' + k); }
+
+// ----- 매입 입력: 발행일 "일" 숫자 → 매입일에서 가장 가까운 지난 날짜 -----
+let _purchIssueDate = null;
+function _resolveIssueDay(day, buyISO){
+  const b = _parseISO(buyISO);
+  for (let back = 0; back < 3; back++) {
+    const d = new Date(b.getFullYear(), b.getMonth() - back, day);
+    if (d.getDate() !== day) continue;
+    if (d <= b) { const z = n => String(n).padStart(2,'0'); return d.getFullYear() + '-' + z(d.getMonth()+1) + '-' + z(d.getDate()); }
+  }
+  return null;
+}
+function renderIssuePreview(msg){
+  const pv = document.getElementById('purchIssuePv');
+  if (!pv) return;
+  if (msg) { pv.innerHTML = '<span style="color:#dc2626; font-weight:700;">' + msg + '</span>'; return; }
+  if (!_purchIssueDate) { pv.innerHTML = '<span style="color:var(--muted);">숫자를 치면 발행일과 결제일이 여기 나옵니다.</span>'; return; }
+  const buy = document.getElementById('purchDate').value || CURRENT_DATE;
+  const gap = _daysBetween(buy, _purchIssueDate);
+  const vid = document.getElementById('purchVendor').value;
+  const v = findVendorById(vid);
+  let h = '발행 <b>' + _dmy(_purchIssueDate) + '</b>' + (gap ? ' · 매입일보다 ' + gap + '일 전' : ' · 매입일과 같은 날');
+  if (v && v.payTermDays != null && v.payTermDays !== '') {
+    const due = shiftDate(_purchIssueDate, Number(v.payTermDays));
+    h += ' → 결제 <b>' + _dmy(due) + '</b> · ' + dueLabel(due) + ' <small style="color:var(--muted);">(결제텀 ' + v.payTermDays + '일)</small>';
+  } else if (vid) {
+    h += ' → <span style="color:#b45309; font-weight:700;">결제텀 미설정</span> <small style="color:var(--muted);">(업체 이름 클릭 → 결제텀)</small>';
+  }
+  if (gap > 14) h += ' <span style="color:#dc2626; font-weight:700;">· 14일 넘게 전 · 날짜 확인</span>';
+  pv.innerHTML = h;
+}
+window.onIssueDayInput = function(){
+  const el = document.getElementById('purchIssueDay');
+  if (!el) return;
+  const v = String(el.value || '').replace(/\D/g, '');
+  if (el.value !== v) el.value = v;
+  el.classList.remove('required-empty');
+  document.getElementById('purchIssueCal').value = '';
+  if (!v) { _purchIssueDate = null; return renderIssuePreview(); }
+  const n = Number(v);
+  if (n < 1 || n > 31) { _purchIssueDate = null; return renderIssuePreview('1~31 사이 숫자'); }
+  const buy = document.getElementById('purchDate').value || CURRENT_DATE;
+  const r = _resolveIssueDay(n, buy);
+  if (!r) { _purchIssueDate = null; return renderIssuePreview('그 날짜를 찾을 수 없음 · 달력으로 고르세요'); }
+  _purchIssueDate = r; renderIssuePreview();
+};
+window.setIssueSameDay = function(){
+  const buy = document.getElementById('purchDate').value || CURRENT_DATE;
+  document.getElementById('purchIssueDay').value = String(_parseISO(buy).getDate());
+  document.getElementById('purchIssueCal').value = '';
+  document.getElementById('purchIssueDay').classList.remove('required-empty');
+  _purchIssueDate = buy; renderIssuePreview();
+};
+window.onIssueCalPick = function(val){
+  if (!val) return;
+  document.getElementById('purchIssueDay').value = String(_parseISO(val).getDate());
+  document.getElementById('purchIssueDay').classList.remove('required-empty');
+  _purchIssueDate = val; renderIssuePreview();
+};
+// 업체 바뀌면 결제일 미리보기 갱신
+document.addEventListener('change', function(e){ if (e.target && e.target.id === 'purchVendor') { try { renderIssuePreview(); } catch(_){} } });
+
+// ----- 업체 이력 창: 결제텀 저장 (보스 비번) -----
+window.saveVendorTerm = async function(){
+  const v = findVendorById(_historyState.vendorId);
+  if (!v) return;
+  const raw = (document.getElementById('histTerm').value || '').trim();
+  let n = null;
+  if (raw) {
+    n = parseInt(raw, 10);
+    if (!Number.isFinite(n) || n < 0 || n > 180) { alert('결제텀은 0~180 사이 숫자(일)로 넣어 주세요.'); return; }
+  }
+  const old = (v.payTermDays == null || v.payTermDays === '') ? null : Number(v.payTermDays);
+  if (old === n) { showToast('변경 없음'); return; }
+  const ok = await verifyBossPassword('결제텀 변경 · ' + v.name + ' · ' + (old == null ? '미설정' : old + '일') + ' → ' + (n == null ? '미설정' : n + '일'));
+  if (!ok) { document.getElementById('histTerm').value = old == null ? '' : old; return; }
+  updateVendor(v.id, { payTermDays: n });
+  try { mainAuditLogAdd('💳 결제텀 변경: ' + v.name + ' · ' + (old == null ? '미설정' : old + '일') + ' → ' + (n == null ? '미설정' : n + '일')); } catch(_){}
+  showToast('💳 결제텀 저장됨 · ' + v.name + ' · ' + (n == null ? '미설정' : n + '일'));
+  renderVendorHistoryContent();
+  try { renderDueWindow(); } catch(_){}
+};
+
+// ----- 결제 예정 창 -----
+let _dueWin = null, _dueUndo = null, _duePayArm = null;
+const _DUE_CSS = [
+  '*{box-sizing:border-box}',
+  'body{margin:0;font-family:"Malgun Gothic","Apple SD Gothic Neo",system-ui,sans-serif;font-size:14px;color:#111827;background:#f8fafc}',
+  '.hd{position:sticky;top:0;background:#4c1d95;color:#fff;padding:8px 12px;display:flex;justify-content:space-between;align-items:baseline;gap:8px;z-index:2}',
+  '.hd b{font-size:15px}.hd .t{font-family:Consolas,monospace;font-weight:700}',
+  '.sub{font-size:11px;color:#6b7280;padding:4px 12px}',
+  '.g{margin:6px 8px 10px}',
+  '.gh{display:flex;justify-content:space-between;font-weight:700;font-size:13px;padding:4px 8px;border-radius:6px}',
+  '.g-over .gh{background:#fee2e2;color:#b91c1c}.g-today .gh{background:#ffedd5;color:#c2410c}.g-soon .gh{background:#dbeafe;color:#1d4ed8}.g-later .gh{background:#e5e7eb;color:#374151}.g-none .gh{background:#fef3c7;color:#92400e}',
+  '.it{background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:7px 8px;margin-top:5px}',
+  '.r1{display:flex;justify-content:space-between;gap:6px}.v{font-weight:700;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.d{font-size:12px;color:#6b7280;white-space:nowrap}',
+  '.r2{font-size:11px;color:#6b7280;margin-top:1px}.est{color:#b45309;font-weight:700}',
+  '.r3{display:flex;gap:6px;margin-top:5px;flex-wrap:wrap;align-items:center}',
+  '.cp{font-family:Consolas,monospace;font-size:13px;border:1px dashed #9ca3af;background:#f9fafb;border-radius:5px;padding:3px 8px;cursor:pointer}',
+  '.cp:hover{border-color:#7c3aed;color:#7c3aed}.cp.ok{border-color:#059669;color:#059669}',
+  '.pay{margin-left:auto;border:1px solid #d1d5db;background:#fff;border-radius:5px;padding:3px 8px;font-size:12px;font-weight:700;cursor:pointer}',
+  '.pay.arm{background:#059669;color:#fff;border-color:#059669}',
+  '.undo{position:sticky;bottom:0;background:#ecfdf5;border-top:1px solid #a7f3d0;padding:6px 10px;font-size:12px;display:flex;gap:8px;align-items:center}',
+  '.undo button{border:1px solid #059669;background:#fff;color:#059669;border-radius:4px;font-size:12px;padding:2px 8px;cursor:pointer}',
+  '[hidden]{display:none!important}',
+  '.empty{padding:16px;color:#6b7280;text-align:center}'
+].join('\n');
+function _dueItems(){
+  const out = [];
+  (store.purchases || []).forEach(function(p){
+    const unpaid = computePurchaseUnpaid(p);
+    if (unpaid <= 0.005) return;
+    const v = findVendorById(p.vendorId);
+    out.push({ p: p, v: v, unpaid: unpaid, issue: purchaseIssueDate(p), est: !p.issueDate, due: purchaseDueDate(p) });
+  });
+  return out;
+}
+function _dueItemHTML(x){
+  const term = x.v && x.v.payTermDays != null && x.v.payTermDays !== '' ? ' + ' + x.v.payTermDays + '일' : '';
+  const armed = _duePayArm === x.p.id;
+  return '<div class="it"><div class="r1"><span class="v">' + escapeHtml(x.v ? x.v.name : '(업체 미상)') + '</span>'
+    + '<span class="d">' + (x.due ? _dmy(x.due) + ' · ' + dueLabel(x.due) : '') + '</span></div>'
+    + '<div class="r2">발행 ' + _dmy(x.issue) + term + (x.est ? ' <span class="est">· 발행일 추정(매입일)</span>' : '') + '</div>'
+    + '<div class="r3"><button class="cp" data-copy="' + escapeHtml(x.p.invoiceNo || '') + '" title="인보이스 번호 복사">#' + escapeHtml(x.p.invoiceNo || '-') + '</button>'
+    + '<button class="cp" data-copy="' + x.unpaid.toFixed(2) + '" title="금액 복사">$' + fmtMoney(x.unpaid) + '</button>'
+    + '<button class="pay' + (armed ? ' arm' : '') + '" data-pay="' + x.p.id + '">' + (armed ? '한 번 더 누르면 지급 기록' : '✓ 지급 처리') + '</button></div></div>';
+}
+function renderDueWindow(){
+  if (!_dueWin || _dueWin.closed) { _dueWin = null; return; }
+  const doc = _dueWin.document;
+  const box = doc.getElementById('dueBox');
+  if (!box) return;
+  const today = todayLocalISO();
+  const items = _dueItems();
+  const groups = [
+    { k:'over',  lbl:'🔴 연체',  t: d => d < 0 }, { k:'today', lbl:'🟠 오늘', t: d => d === 0 },
+    { k:'soon',  lbl:'D-1', t: d => d === 1 }, { k:'soon', lbl:'D-2', t: d => d === 2 },
+    { k:'soon',  lbl:'D-3', t: d => d === 3 }, { k:'soon', lbl:'D-4', t: d => d === 4 },
+    { k:'later', lbl:'그 이후', t: d => d > 4 }
+  ];
+  let html = '', total = 0;
+  groups.forEach(function(g){
+    const list = items.filter(x => x.due && g.t(_daysBetween(x.due, today)))
+      .sort((a, b) => a.due.localeCompare(b.due) || String(a.v ? a.v.name : '').localeCompare(String(b.v ? b.v.name : '')));
+    if (!list.length) return;
+    const sum = list.reduce((s, x) => s + x.unpaid, 0); total += sum;
+    html += '<div class="g g-' + g.k + '"><div class="gh"><span>' + g.lbl + ' · ' + list.length + '건</span><span>$' + fmtMoney(sum) + '</span></div>' + list.map(_dueItemHTML).join('') + '</div>';
+  });
+  const none = items.filter(x => !x.due).sort((a, b) => String(a.v ? a.v.name : '').localeCompare(String(b.v ? b.v.name : '')) || a.issue.localeCompare(b.issue));
+  if (none.length) {
+    const sum = none.reduce((s, x) => s + x.unpaid, 0); total += sum;
+    html += '<div class="g g-none"><div class="gh"><span>⚙ 결제텀 미설정 · ' + none.length + '건</span><span>$' + fmtMoney(sum) + '</span></div>' + none.map(_dueItemHTML).join('') + '</div>';
+  }
+  doc.getElementById('dueTot').textContent = '$' + fmtMoney(total);
+  doc.getElementById('dueSub').textContent = '오늘 ' + _dmy(today) + ' · 미지급 ' + items.length + '건 · 번호·금액 누르면 복사';
+  box.innerHTML = html || '<div class="empty">✅ 결제할 인보이스가 없습니다.</div>';
+  const u = doc.getElementById('dueUndo');
+  if (_dueUndo) {
+    u.hidden = false;
+    u.innerHTML = '<span>✓ ' + escapeHtml(_dueUndo.label) + ' 지급 기록됨</span><button data-undo="1">되돌리기</button>';
+  } else { u.hidden = true; u.innerHTML = ''; }
+}
+function _dueCopy(btn){
+  const t = btn.getAttribute('data-copy');
+  const done = function(){ const o = btn.textContent; btn.classList.add('ok'); btn.textContent = '복사됨'; setTimeout(function(){ btn.classList.remove('ok'); btn.textContent = o; }, 900); };
+  const fallback = function(){ try { const doc = _dueWin.document; const r = doc.createRange(); r.selectNodeContents(btn); const s = _dueWin.getSelection(); s.removeAllRanges(); s.addRange(r); doc.execCommand('copy'); done(); } catch(_){} };
+  try { (_dueWin.navigator.clipboard || navigator.clipboard).writeText(t).then(done, fallback); } catch(_) { fallback(); }
+}
+function _duePay(pid){
+  const p = (store.purchases || []).find(x => x.id === pid);
+  if (!p) return;
+  if (_duePayArm !== pid) {               // 1번째 누름: 확인 상태 (3초)
+    _duePayArm = pid; renderDueWindow();
+    setTimeout(function(){ if (_duePayArm === pid) { _duePayArm = null; renderDueWindow(); } }, 3000);
+    return;
+  }
+  _duePayArm = null;
+  const unpaid = computePurchaseUnpaid(p);
+  if (unpaid <= 0.005) { renderDueWindow(); return; }
+  const v = findVendorById(p.vendorId);
+  const pay = { vendorId: p.vendorId, date: todayLocalISO(), amount: round2(unpaid), method: 'bank', ref: p.invoiceNo || '', note: '💳 결제 예정 창에서 지급 처리', purchaseId: p.id };
+  addPayment(pay);
+  const label = (v ? v.name : '') + ' #' + (p.invoiceNo || '') + ' $' + fmtMoney(unpaid);
+  try { mainAuditLogAdd('💳 결제 예정 창 지급 처리: ' + label); } catch(_){}
+  _dueUndo = { id: pay.id, label: label };
+  setTimeout(function(){ if (_dueUndo && _dueUndo.id === pay.id) { _dueUndo = null; try { renderDueWindow(); } catch(_){} } }, 20000);
+  renderAll();
+}
+function _dueUndoNow(){
+  if (!_dueUndo) return;
+  const id = _dueUndo.id, label = _dueUndo.label;
+  store.payments = (store.payments || []).filter(x => x.id !== id);
+  saveAll();
+  try { mainAuditLogAdd('💳 결제 예정 창 지급 되돌림: ' + label); } catch(_){}
+  _dueUndo = null;
+  renderAll();
+}
+window.openPayDueWindow = async function(){
+  if (_dueWin && !_dueWin.closed) { try { _dueWin.focus(); } catch(_){} renderDueWindow(); return; }
+  let w = null;
+  try {
+    if (window.documentPictureInPicture && documentPictureInPicture.requestWindow) {
+      w = await documentPictureInPicture.requestWindow({ width: 400, height: 640 });
+    }
+  } catch (e) { console.warn('항상 위 창 실패 · 일반 창으로:', e); w = null; }
+  if (!w) w = window.open('', 'atmPayDue', 'width=420,height=720');
+  if (!w) { alert('창이 차단되었습니다.\n주소창 오른쪽의 팝업 차단 아이콘에서 [허용] 후 다시 눌러 주세요.'); return; }
+  _dueWin = w;
+  const doc = w.document;
+  doc.title = '💳 결제 예정';
+  doc.head.innerHTML = '<meta charset="utf-8"><title>💳 결제 예정</title>';
+  const st = doc.createElement('style'); st.textContent = _DUE_CSS; doc.head.appendChild(st);
+  doc.body.innerHTML = '<div class="hd"><b>💳 결제 예정</b><span class="t" id="dueTot"></span></div><div class="sub" id="dueSub"></div><div id="dueBox"></div><div class="undo" id="dueUndo" hidden></div>';
+  doc.body.addEventListener('click', function(e){
+    const t = e.target.closest ? e.target.closest('[data-copy],[data-pay],[data-undo]') : null;
+    if (!t) return;
+    if (t.hasAttribute('data-copy')) return _dueCopy(t);
+    if (t.hasAttribute('data-pay')) return _duePay(t.getAttribute('data-pay'));
+    if (t.hasAttribute('data-undo')) return _dueUndoNow();
+  });
+  w.addEventListener('pagehide', function(){ _dueWin = null; });
+  renderDueWindow();
+};
 // =========== 데이터 CRUD ===========
 function getVendors(){ return (store.vendors || []).slice().sort(vendorCompare); }
 function findVendorById(id){ return (store.vendors || []).find(function(v){ return v.id === id; }); }
@@ -928,6 +1181,7 @@ function computeVendorRow(vendorId, dateISO){
 let CURRENT_DATE = todayLocalISO();
 
 function renderAll(){
+  try { renderDueWindow(); } catch(_){}
   renderMainTable();
   renderVendorDropdowns();
   document.getElementById('dateInput').value = CURRENT_DATE;
@@ -1099,6 +1353,14 @@ window.savePurchase = function(){
   if (!invNo) { invNoEl.classList.add('required-empty'); invNoEl.focus(); alert('인보이스 # 는 필수입니다.'); return; }
   if (amount === null || Math.abs(amount) < 0.005) { amtEl.classList.add('required-empty'); amtEl.focus(); alert('금액을 입력하세요 (0 아님).'); return; }
   // ⭐ (2026-08-06) 음수 허용 — 과거 항목 취소·조정용. 확인 팝업 없음.
+  // ⭐ (2026-11-13) 인보이스 발행일 (결제일 기준)
+  const issueDate = _purchIssueDate;
+  const _issueEl = document.getElementById('purchIssueDay');
+  if (!issueDate) { _issueEl.classList.add('required-empty'); _issueEl.focus(); alert('📅 인보이스 발행일을 입력하세요.\n\n종이 인보이스에 적힌 날짜의 "일" 숫자만 치면 됩니다.\n(매입일과 같으면 [같은 날])'); return; }
+  if (issueDate > date) { alert('⚠ 발행일(' + issueDate + ')이 매입일(' + date + ')보다 뒤입니다.\n날짜를 확인하세요.'); return; }
+  if (_daysBetween(date, issueDate) > 14) {
+    if (!confirm('⚠ 발행일이 매입일보다 ' + _daysBetween(date, issueDate) + '일 앞입니다.\n\n발행일: ' + issueDate + '\n매입일: ' + date + '\n\n맞으면 [확인]')) return;
+  }
 
   // 중복 확인 (같은 업체 · 같은 인보이스#)
   const dup = (store.purchases || []).find(function(p){ return p.vendorId === vendorId && (p.invoiceNo || '') === invNo; });
@@ -1107,7 +1369,7 @@ window.savePurchase = function(){
   }
 
   addPurchase({
-    vendorId: vendorId, date: date, invoiceNo: invNo, amount: round2(amount), note: note
+    vendorId: vendorId, date: date, issueDate: issueDate, invoiceNo: invNo, amount: round2(amount), note: note
   });
   showToast('💾 매입 등록됨 · $' + fmtMoney(amount));
   clearPurchaseForm();
@@ -1121,6 +1383,7 @@ window.clearPurchaseForm = function(){
   document.getElementById('purchNote').value = '';
   document.getElementById('purchInvNo').classList.remove('required-empty');
   document.getElementById('purchAmount').classList.remove('required-empty');
+  try { _purchIssueDate = null; document.getElementById('purchIssueDay').value = ''; document.getElementById('purchIssueCal').value = ''; document.getElementById('purchIssueDay').classList.remove('required-empty'); renderIssuePreview(); } catch(_){}
 };
 
 // =========== 미지급 인보이스 리스트 (지급 패널) ===========
@@ -1166,12 +1429,14 @@ window.renderUnpaidInvoiceList = function(vendorId){
     return;
   }
   let html = '<table class="hist-table" style="width:100%; border-collapse:collapse;">'
-    + '<thead><tr><th>매입일</th><th>인보이스 #</th><th class="num">원 매입액</th><th class="num">미지급 잔액</th><th class="act"></th></tr></thead><tbody>';
+    + '<thead><tr><th>매입일</th><th>발행일</th><th>결제일</th><th>인보이스 #</th><th class="num">원 매입액</th><th class="num">미지급 잔액</th><th class="act"></th></tr></thead><tbody>';
   list.forEach(function(x){
     const isSel = _selectedPurchaseId === x.p.id;
     const bg = isSel ? 'background:#fef3c7;' : '';
     html += '<tr style="border-bottom:1px solid #f1f5f9;' + bg + '">'
       + '<td>' + escapeHtml(x.p.date) + '</td>'
+      + '<td>' + (x.p.issueDate ? escapeHtml(x.p.issueDate) : '<span style="color:var(--muted);" title="발행일 미입력 · 매입일로 계산">(추정)</span>') + '</td>'
+      + '<td>' + (function(){ const d = purchaseDueDate(x.p); return d ? escapeHtml(d) + ' <small style="color:' + (_daysBetween(d, todayLocalISO()) < 0 ? '#dc2626' : 'var(--muted)') + ';">' + dueLabel(d) + '</small>' : '<small style="color:var(--muted);">결제텀 미설정</small>'; })() + '</td>'
       + '<td><b>' + escapeHtml(x.p.invoiceNo || '') + '</b></td>'
       + '<td class="num">$' + fmtMoney(x.p.amount) + '</td>'
       + '<td class="num" style="font-weight:700; color:#dc2626;">$' + fmtMoney(x.unpaid) + '</td>'
@@ -1360,6 +1625,7 @@ window.togglePanel = function(id){
     if (id === 'purchasePanel') {
       const d = document.getElementById('purchDate');
       if (!d.value) d.value = CURRENT_DATE;
+      try { if (!d._issueHooked) { d.addEventListener('change', onIssueDayInput); d._issueHooked = true; } renderIssuePreview(); } catch(_){}
     } else if (id === 'paymentPanel') {
       const d = document.getElementById('payDate');
       if (!d.value) d.value = CURRENT_DATE;
@@ -1406,7 +1672,7 @@ let _editingVendorId = null;
 function openVendorAdd(){
   _editingVendorId = null;
   document.getElementById('vendorModalTitle').textContent = '＋ 업체 추가';
-  ['vfName','vfPhone','vfManager','vfMgrPhone','vfEmail','vfOpening'].forEach(function(id){
+  ['vfName','vfPhone','vfManager','vfMgrPhone','vfEmail','vfOpening','vfTerm'].forEach(function(id){
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -1416,9 +1682,19 @@ function openVendorAdd(){
 }
 // (2026-08-06) openVendorEdit 제거 — 사용자 요청. 업체 편집 UI 없앰.
 //   업체 추가는 [＋ 업체 추가] 버튼으로 가능. 기존 업체 편집은 백업 JSON 수정으로 대체.
-function saveVendorFromModal(){
+async function saveVendorFromModal(){
   const name = (document.getElementById('vfName').value || '').trim();
   if (!name) { alert('업체명은 필수입니다.'); return; }
+  // ⭐ (2026-11-13) 결제텀 · 넣었으면 보스 비번
+  const _termRaw = (document.getElementById('vfTerm').value || '').trim();
+  let _term = null;
+  if (_termRaw) {
+    _term = parseInt(_termRaw, 10);
+    if (!Number.isFinite(_term) || _term < 0 || _term > 180) { alert('결제텀은 0~180 사이 숫자(일)로 넣어 주세요.'); return; }
+    if (!_editingVendorId && findVendorByName(name)) { alert('같은 이름의 업체가 이미 있습니다.'); return; }
+    const ok = await verifyBossPassword('결제텀 설정 · ' + name + ' · ' + _term + '일');
+    if (!ok) return;
+  }
   const patch = {
     name: name,
     phone: (document.getElementById('vfPhone').value || '').trim(),
@@ -1427,6 +1703,7 @@ function saveVendorFromModal(){
     email: (document.getElementById('vfEmail').value || '').trim(),
     opening: round2(parseMoney(document.getElementById('vfOpening').value) || 0)
   };
+  if (_term != null) patch.payTermDays = _term;
   if (_editingVendorId) {
     updateVendor(_editingVendorId, patch);
     showToast('✎ 업체 정보 저장됨');
@@ -1435,7 +1712,8 @@ function saveVendorFromModal(){
     const dup = findVendorByName(name);
     if (dup) { alert('같은 이름의 업체가 이미 있습니다.'); return; }
     addVendor(patch);
-    showToast('＋ 업체 추가됨: ' + name);
+    if (_term != null) { try { mainAuditLogAdd('💳 결제텀 설정 (업체 추가): ' + name + ' · ' + _term + '일'); } catch(_){} }
+    showToast('＋ 업체 추가됨: ' + name + (_term != null ? ' · 결제텀 ' + _term + '일' : ''));
   }
   closeVendorModal();
   renderAll();
@@ -1583,8 +1861,17 @@ function renderVendorHistoryContent(){
   const periodPayment  = events.filter(function(e){ return e.type === '지급'; }).reduce(function(s,e){ return s + num(e.obj.amount); }, 0);
   const closingBal = openingBal + periodPurchase - periodPayment;
 
+  // ⭐ (2026-11-13) 결제텀 (인보이스 발행 후 N일) · 변경은 보스 비번
+  let html = '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; padding:10px 12px; background:#f5f3ff; border:1px solid #ddd6fe; border-radius:6px;">'
+    + '<label for="histTerm" style="font-size:13px; color:#5b21b6; font-weight:700;">💳 결제텀:</label>'
+    + '<span style="font-size:12px;">인보이스 발행 후</span>'
+    + '<input id="histTerm" inputmode="numeric" value="' + (v.payTermDays != null ? v.payTermDays : '') + '" placeholder="미설정" style="width:70px; padding:4px 6px; font-size:14px; text-align:right; font-weight:700;">'
+    + '<span style="font-size:12px;">일</span>'
+    + '<button class="primary sm" onclick="saveVendorTerm()">저장</button>'
+    + '<small style="color:var(--muted);">🔐 보스 비밀번호 필요 · 비우고 저장하면 미설정</small>'
+    + '</div>';
   // ===== 요약 카드 + 기간 필터 UI =====
-  let html = '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; padding:10px 12px; background:#f8fafc; border-radius:6px;">'
+  html += '<div style="display:flex; gap:8px; align-items:center; flex-wrap:wrap; margin-bottom:10px; padding:10px 12px; background:#f8fafc; border-radius:6px;">'
     + '<label style="font-size:12px; color:var(--muted); font-weight:600;">기간:</label>'
     + '<input type="date" id="histFrom" value="' + from + '" style="padding:4px 6px; font-size:12px;">'
     + '<span>~</span>'
@@ -1611,14 +1898,15 @@ function renderVendorHistoryContent(){
     + '<th class="num">잔액</th>'
     + '</tr></thead><tbody>';
 
-  // 이월 잔액 행
-  html += '<tr style="background:#f1f5f9; color:var(--muted);">'
+  // ⭐ (2026-11-13) 최근 날짜가 맨 위 · 잔액은 시간순으로 계산한 값 그대로 · 기간 시작 잔액은 맨 아래
+  const _openRow = '<tr style="background:#f1f5f9; color:var(--muted);">'
     + '<td>' + from + '</td>'
     + '<td>이월</td>'
     + '<td>기간 시작 잔액</td>'
     + '<td class="num">—</td>'
     + '<td class="num"><b>$' + fmtMoney(openingBal) + '</b></td>'
     + '</tr>';
+  const _rows = [];
 
   if (events.length === 0) {
     html += '<tr><td colspan="5" class="empty-msg" style="text-align:center; padding:16px;">이 기간에 이력 없음</td></tr>';
@@ -1648,15 +1936,16 @@ function renderVendorHistoryContent(){
       }
       const balColor = bal > 0 ? '#dc2626' : (bal < -0.005 ? 'var(--success)' : 'var(--muted)');
       const balDisp = bal < -0.005 ? '-$' + fmtMoney(Math.abs(bal)) : '$' + fmtMoney(bal);
-      html += '<tr style="border-bottom:1px solid #f1f5f9;">'
+      _rows.push('<tr style="border-bottom:1px solid #f1f5f9;">'
         + '<td>' + escapeHtml(p.date) + '</td>'
         + '<td style="text-align:center; font-weight:700; ' + typeStyle + '">' + e.type + '</td>'
         + '<td>' + desc + '</td>'
         + '<td class="num" style="font-weight:600;">' + amtStr + '</td>'
         + '<td class="num" style="color:' + balColor + '; font-weight:700;">' + balDisp + '</td>'
-        + '</tr>';
+        + '</tr>');
     });
   }
+  html += _rows.reverse().join('') + _openRow;
   html += '</tbody></table>';
 
   document.getElementById('historyModalBody').innerHTML = html;
@@ -2284,6 +2573,7 @@ function bindEvents(){
   document.getElementById('openPurchasePanel').addEventListener('click', function(){ togglePanel('purchasePanel'); });
   document.getElementById('openPaymentPanel').addEventListener('click', function(){ togglePanel('paymentPanel'); });
   document.getElementById('addVendor').addEventListener('click', openVendorAdd);
+  document.getElementById('openDueBtn').addEventListener('click', openPayDueWindow);
   document.getElementById('setFolderBtn').addEventListener('click', pickFolder);
   document.getElementById('savePdfBtn').addEventListener('click', savePdfAndBackup);
   document.getElementById('printBtn').addEventListener('click', function(){ window.print(); });
@@ -2307,7 +2597,7 @@ function bindEvents(){
   });
 
   // Enter key on modal
-  ['vfName','vfPhone','vfManager','vfMgrPhone','vfEmail','vfOpening'].forEach(function(id){
+  ['vfName','vfPhone','vfManager','vfMgrPhone','vfEmail','vfOpening','vfTerm'].forEach(function(id){
     const el = document.getElementById(id);
     if (el) el.addEventListener('keydown', function(e){
       if (e.key === 'Enter') saveVendorFromModal();
