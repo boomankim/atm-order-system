@@ -2643,20 +2643,29 @@ async function init(){
     }
   }
 
-  // 폴더 핸들 로드
-  try {
-    _folderHandle = await loadFolderHandle();
-  } catch(e) { _folderHandle = null; }
-
+  // ⭐ (2026-11-24) 화면·서버 연결 먼저 · 저장 폴더(OneDrive) 확인은 나중에 (3초 안에 응답 없으면 건너뜀)
+  //   사고: 폴더 확인에서 응답이 안 와 화면이 빈 채로 멈춤 (오류 없음 · 서버 데이터도 못 받음)
   bindEvents();
   renderAll();
-  updateFolderInfo();
-  loadSignatures();
 
   // Firebase 실시간 구독
   if (DB_REF) {
     subscribeFirebase();
   }
+
+  _folderHandle = null;
+  let _folderDone = false;
+  const _folderP = (async function(){ try { return await loadFolderHandle(); } catch(e) { return null; } })();
+  const _folderRes = await Promise.race([_folderP, new Promise(function(r){ setTimeout(function(){ r('__TIMEOUT__'); }, 3000); })]);
+  if (_folderRes === '__TIMEOUT__') {
+    console.warn('[매입일보] 저장 폴더 응답 없음 (3초) · 화면은 정상 · 응답 오면 자동 연결');
+    try { showToast('📁 저장 폴더 응답 없음 · PDF 저장 때 다시 확인 (입력·지급은 정상)', 5000); } catch(_){}
+    _folderP.then(function(h){ if (!_folderDone && h) { _folderHandle = h; _folderDone = true; try { updateFolderInfo(); } catch(_){} } });
+  } else {
+    _folderHandle = _folderRes; _folderDone = true;
+  }
+  try { updateFolderInfo(); } catch(_){}
+  try { loadSignatures(); } catch(_){}
 }
 
 // DOM ready
