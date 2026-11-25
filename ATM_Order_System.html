@@ -2240,8 +2240,8 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 399;
-const APP_VERSION_DATE = '06/11';
+const APP_VERSION = 400;
+const APP_VERSION_DATE = '25/11';
 function _appVerBadge() {
   let latest = 0;
   try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
@@ -13722,7 +13722,8 @@ function viewHistory(params) {
   const app = document.getElementById('app');
   app.innerHTML = `
     <h2 class="page-title">📊 주문 이력
-      <span class="sub">날짜·거래처·상태 조회 + CSV 내보내기</span>
+      <span style="font-size:13px; font-weight:800; color:#fff; background:#2E7D32; padding:2px 10px; border-radius:10px; vertical-align:middle;">🚚 배송완료 기준</span>
+      <span class="sub">배송완료일·거래처 조회 + CSV 내보내기 · 매출일보와 같은 기준</span>
       <button class="btn sm secondary" style="float:right;" onclick="location.hash='#office'">← 사무실로</button>
     </h2>
 
@@ -13730,11 +13731,11 @@ function viewHistory(params) {
       <h3>필터</h3>
       <div class="grid-3">
         <div class="field">
-          <label>시작일</label>
+          <label>배송완료일 · 시작</label>
           <input type="date" id="histFrom" value="${HISTORY_FILTER.dateFrom}">
         </div>
         <div class="field">
-          <label>종료일</label>
+          <label>배송완료일 · 끝</label>
           <input type="date" id="histTo" value="${HISTORY_FILTER.dateTo}">
         </div>
         <div class="field">
@@ -13765,7 +13766,7 @@ function viewHistory(params) {
             <option value="new" ${HISTORY_FILTER.status==='new'?'selected':''}>신규</option>
             <option value="weighing" ${HISTORY_FILTER.status==='weighing'?'selected':''}>작업중</option>
             <option value="weighed" ${HISTORY_FILTER.status==='weighed'?'selected':''}>계근완료</option>
-            <option value="invoiced" ${HISTORY_FILTER.status==='invoiced'?'selected':''}>인보이스 발행</option>
+            <option value="invoiced" ${HISTORY_FILTER.status==='invoiced'?'selected':''}>인보이스 발행 (배송대기)</option>
             <option value="delivered" ${HISTORY_FILTER.status==='delivered'?'selected':''}>배송완료</option>
           </select>
         </div>
@@ -13799,10 +13800,10 @@ window.renderHistPeriodSummary = function() {
   const scope = cust ? cust.name : '전체 거래처';
   box.innerHTML = renderPeriodSummaryBox({
     title: formatDateDMY(from) + ' ~ ' + formatDateDMY(to) + ' · ' + scope,
-    labelA: '매출 합계', labelB: '입금 합계',
-    a: periodSalesSummary(from, to, cid),
+    labelA: '매출 합계 (배송완료 기준)', labelB: '입금 합계',
+    a: periodSalesSummary(from, to, cid, 'delivered'),
     b: periodPaymentSummary(from, to, cid),
-    note: '이 기간에 발행된 인보이스 · 입금만 집계 (이월 잔액 제외)'
+    note: '매출 = 이 기간에 배송완료된 인보이스 (배송완료 기준 · 매출일보와 같음) · 입금 = 이 기간 입금 (이월 잔액 제외)'
   });
 };
 
@@ -13849,15 +13850,73 @@ function applyHistory() {
   try { renderHistPeriodSummary(); } catch(e) { console.warn('hist summary:', e); }
 }
 
+// ⭐ (2026-11-25 #400) 주문 이력 = 배송완료일 기준 (매출일보와 같은 날짜)
+//   배송완료 인보이스: deliveredAt → invoicedAt → orderDate 의 시드니 날짜
+//   병합된 원본: 대상 주문이 배송완료면 그 날짜 (금액은 대상 인보이스에 포함 · 합계 제외)
+//   배송 전(신규·작업중·계근완료·발행) 주문은 합계 제외 · "배송 전" 줄에 따로
+const _HIST_PRE_STATUS = ['new', 'weighing', 'weighed', 'invoiced'];
+function _histDelivDate(o) {
+  if (!o) return null;
+  if (o.status === 'delivered') return toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '') || null;
+  if (o.status === 'merged' && o.mergedIntoId) {
+    const t = (DB.orders || []).find(x => x && x.id === o.mergedIntoId);
+    if (t && t.status === 'delivered') return toLocalISODate(t.deliveredAt || t.invoicedAt || t.orderDate || '') || null;
+  }
+  return null;
+}
 function getFilteredHistory() {
+  const f = HISTORY_FILTER || {};
+  if (f.status && f.status !== 'delivered') return [];   // 배송 전 상태를 고르면 위 "배송 전" 줄에서 봄
   return DB.orders.filter(o => {
-    const date = toLocalISODate(o.orderDate);
-    if (HISTORY_FILTER.dateFrom && date && date < HISTORY_FILTER.dateFrom) return false;
-    if (HISTORY_FILTER.dateTo && date && date > HISTORY_FILTER.dateTo) return false;
-    if (HISTORY_FILTER.customerId && o.customerId !== HISTORY_FILTER.customerId) return false;
-    if (HISTORY_FILTER.status && o.status !== HISTORY_FILTER.status) return false;
+    if (!o || !o.id) return false;
+    const date = _histDelivDate(o);
+    if (!date) return false;
+    if (f.dateFrom && date < f.dateFrom) return false;
+    if (f.dateTo && date > f.dateTo) return false;
+    if (f.customerId && o.customerId !== f.customerId) return false;
     return true;
-  }).sort((a,b) => (b.orderDate||'').localeCompare(a.orderDate||''));
+  }).sort((a,b) => (_histDelivDate(b)||'').localeCompare(_histDelivDate(a)||'') || String(b.invoiceNo||'').localeCompare(String(a.invoiceNo||'')));
+}
+// 배송 전 주문 (합계 제외) · 희망배송일이 기간 안 (없으면 주문일)
+function getPendingHistory() {
+  const f = HISTORY_FILTER || {};
+  if (f.status === 'delivered') return [];
+  return DB.orders.filter(o => {
+    if (!o || !o.id) return false;
+    let pre = _HIST_PRE_STATUS.indexOf(o.status) >= 0;
+    if (o.status === 'merged' && !_histDelivDate(o)) pre = true;
+    if (!pre) return false;
+    if (f.status && o.status !== f.status) return false;
+    const d = (o.deliveryDate || '').slice(0, 10) || toLocalISODate(o.orderDate || '');
+    if (f.dateFrom && d && d < f.dateFrom) return false;
+    if (f.dateTo && d && d > f.dateTo) return false;
+    if (f.customerId && o.customerId !== f.customerId) return false;
+    return true;
+  }).sort((a,b) => String(a.deliveryDate||'').localeCompare(String(b.deliveryDate||'')) || String(a.orderNo||'').localeCompare(String(b.orderNo||'')));
+}
+function _histPendingHTML(list) {
+  if (!list.length) return '';
+  let sum = 0;
+  list.forEach(o => { if (o.status !== 'merged') { try { sum += computeTotalsWithCredits(o).net || 0; } catch(_){} } });
+  const open = (HISTORY_FILTER && HISTORY_FILTER.status && HISTORY_FILTER.status !== 'delivered') ? ' open' : '';
+  return '<details class="card"' + open + ' style="background:#FFFBF2; border-left:4px solid #E6A700;">'
+    + '<summary style="cursor:pointer; font-weight:700; color:#8A5A00;">🚚 배송 전 ' + list.length + '건 · 합계 제외'
+    + ' <span style="font-weight:400; font-size:12px; color:var(--muted);">(현재 금액 $' + fmtMoney(sum) + ' · 희망배송일 기준 · 배송완료되면 그날 매출로 들어감)</span></summary>'
+    + '<div style="overflow-x:auto; margin-top:8px;"><table class="t" style="font-size:12px;">'
+    + '<thead><tr><th>희망배송일</th><th>주문번호</th><th>거래처</th><th>상태</th><th class="num">금액</th><th>인보이스</th><th class="act"></th></tr></thead><tbody>'
+    + list.map(o => {
+        const c = DB.customers.find(x => x.id === o.customerId);
+        let amt = '';
+        try { amt = o.status === 'merged' ? '<span style="color:var(--muted);">대상에 포함</span>' : '$' + fmtMoney(computeTotalsWithCredits(o).net); } catch(_){}
+        return '<tr><td>' + (o.deliveryDate ? formatDateDMY(o.deliveryDate) : '-') + '</td>'
+          + '<td><b>' + (o.orderNo || o.id.slice(0, 8)) + '</b>' + _atmMergeTagHTML(o) + '</td>'
+          + '<td>' + (c ? c.name : '-') + '</td>'
+          + '<td><span class="pill ' + (o.status || '') + '">' + statusLabel(o.status || '') + '</span></td>'
+          + '<td class="num">' + amt + '</td>'
+          + '<td>' + (o.invoiceNo || '-') + '</td>'
+          + '<td class="act"><button class="btn sm secondary" onclick="location.hash=\'#' + ((o.status === 'invoiced') ? 'invoice' : 'orderDetail') + '?id=' + o.id + '\'">보기</button></td></tr>';
+      }).join('')
+    + '</tbody></table></div></details>';
 }
 
 function renderHistoryResults() {
@@ -13895,15 +13954,15 @@ function renderHistoryResults() {
   const div = document.getElementById('historyResults');
   div.innerHTML = `
     <div class="card">
-      <h3>📈 요약 ${HISTORY_FILTER.dateFrom} ~ ${HISTORY_FILTER.dateTo}</h3>
+      <h3>📈 요약 ${HISTORY_FILTER.dateFrom} ~ ${HISTORY_FILTER.dateTo} <span style="font-size:12px; font-weight:700; color:#2E7D32;">· 배송완료 기준</span></h3>
       <div class="grid-3" style="gap:10px;">
         <div style="background:#FFF5E0; padding:16px; border-radius:8px; text-align:center;">
-          <div style="font-size:30px; font-weight:800; color:var(--brand-dark);">${orders.length}</div>
-          <div style="font-size:12px; color:var(--muted);">조회 주문 건수</div>
+          <div style="font-size:30px; font-weight:800; color:var(--brand-dark);">${orders.filter(o => o.status === 'delivered').length}</div>
+          <div style="font-size:12px; color:var(--muted);">배송완료 인보이스 건수</div>
         </div>
         <div style="background:#DFF0E1; padding:16px; border-radius:8px; text-align:center;">
           <div style="font-size:24px; font-weight:800; color:var(--ok);">$${fmtMoney(totalRevenue)}</div>
-          <div style="font-size:12px; color:var(--muted);">총 매출 (GST 포함, 계근완료분만 집계)</div>
+          <div style="font-size:12px; color:var(--muted);">총 매출 (GST 포함 · 크레딧 차감 · 배송완료 기준)</div>
         </div>
         <div style="background:#F0E5D8; padding:16px; border-radius:8px; text-align:center;">
           <div style="font-size:24px; font-weight:800; color:var(--brand);">${totalKg.toFixed(1)} kg</div>
@@ -13939,18 +13998,19 @@ function renderHistoryResults() {
       </div>
     </div>
 
+    ${_histPendingHTML(getPendingHistory())}
     <div class="card">
-      <h3>📋 주문 목록 (${orders.length}건)
+      <h3>📋 배송완료 목록 (${orders.length}건)
         <span style="float:right;">
           <button class="btn sm success" onclick="exportHistoryCSV(false)">📊 요약 CSV</button>
           <button class="btn sm success" onclick="exportHistoryCSV(true)">📦 라인별 CSV</button>
         </span>
       </h3>
-      ${orders.length === 0 ? `<div class="empty"><div class="icon">📭</div>조건에 맞는 주문이 없습니다.</div>` : `
+      ${orders.length === 0 ? `<div class="empty"><div class="icon">📭</div>${(HISTORY_FILTER.status && HISTORY_FILTER.status !== 'delivered') ? '배송 전 상태는 위 "🚚 배송 전" 줄에서 확인하세요.' : '이 기간에 배송완료된 인보이스가 없습니다.'}</div>` : `
         <div style="overflow-x:auto;">
           <table class="t" style="font-size:12px;">
             <thead><tr>
-              <th>주문일</th><th>주문번호</th><th>거래처</th><th>품목</th>
+              <th>배송완료일</th><th>주문번호</th><th>거래처</th><th>품목</th>
               <th class="num">중량</th><th class="num">금액</th>
               <th>상태</th><th>인보이스</th><th class="act"></th>
             </tr></thead>
@@ -13963,7 +14023,7 @@ function renderHistoryResults() {
                 const t = computeTotalsWithCredits(o);
                 const _mg = o.status === 'merged';   // (#399) 병합 원본: 금액은 대상 인보이스에
                 return `<tr${_mg ? ' style="background:#F7F3FB;"' : ''}>
-                  <td>${toLocalISODate(o.orderDate)}</td>
+                  <td>${_histDelivDate(o) || '-'}</td>
                   <td><b>${o.orderNo||o.id.slice(0,8)}</b>${_atmMergeTagHTML(o)}</td>
                   <td>${c ? c.name : '-'}</td>
                   <td>${Array.isArray(o.items) ? o.items.filter(Boolean).length : 0}개</td>
@@ -14092,7 +14152,7 @@ function exportHistoryCSV(detailed) {
   if (orders.length === 0) return alert('내보낼 데이터가 없습니다.');
   const rows = [];
   if (detailed) {
-    rows.push(['주문일','주문번호','거래처코드','거래처','상태','인보이스번호','발행일','품목','브랜드','분류','주문단위','주문수량','실측중량_kg','단가_per_kg','금액_GST포함','품목요청사항']);
+    rows.push(['배송완료일','주문일','주문번호','거래처코드','거래처','상태','인보이스번호','발행일','품목','브랜드','분류','주문단위','주문수량','실측중량_kg','단가_per_kg','금액_GST포함','품목요청사항']);
     orders.forEach(o => {
       const c = DB.customers.find(x => x.id === o.customerId);
       // ⭐ (2026-11-06 #399) 병합 원본은 대상 인보이스 줄로 나옴 (이중 금액 방지) · 발행된 주문은 인보이스 품목(취소 줄 제외) 기준
@@ -14106,6 +14166,7 @@ function exportHistoryCSV(detailed) {
         const w = it.actualWeightKg;
         const amt = (w != null) ? w * price : '';
         rows.push([
+          _histDelivDate(o) || '',
           toLocalISODate(o.orderDate),
           o.orderNo,
           c ? c.code : '',
@@ -14127,13 +14188,14 @@ function exportHistoryCSV(detailed) {
     });
   } else {
     // ⭐ (2026-09-29 밤작업#368) 크레딧 3열 구조 — 내부 대조용
-    rows.push(['주문일','주문번호','거래처코드','거래처','품목수','총중량_kg','인보이스금액_GST포함','크레딧적용액','청구금액_크레딧차감후','상태','인보이스번호','희망배송일','배송요청사항']);
+    rows.push(['배송완료일','주문일','주문번호','거래처코드','거래처','품목수','총중량_kg','인보이스금액_GST포함','크레딧적용액','청구금액_크레딧차감후','상태','인보이스번호','희망배송일','배송요청사항']);
     orders.forEach(o => {
       const c = DB.customers.find(x => x.id === o.customerId);
       const t = computeTotalsWithCredits(o);
       const _mg = o.status === 'merged';   // (#399) 병합 원본 금액 0 · 대상 인보이스에 포함
       const _tg = _mg ? (DB.orders.find(x => x && x.id === o.mergedIntoId) || {}) : null;
       rows.push([
+        _histDelivDate(o) || '',
         toLocalISODate(o.orderDate),
         o.orderNo,
         c ? c.code : '',
@@ -15997,13 +16059,17 @@ function getCreditNotesForOrder(orderId) {
 
 // 기간 내 매출(인보이스) 합계 — 크레딧 차감 후(net) 기준. #166/#368 과 동일.
 //   cid 를 주면 그 거래처만, 안 주면 전 거래처 합산.
-function periodSalesSummary(dateFrom, dateTo, cid) {
+function periodSalesSummary(dateFrom, dateTo, cid, basis) {
+  // (2026-11-25 #400) basis 'delivered' = 배송완료일 기준 (주문 이력) · 없으면 발행일 기준 (스테이트먼트)
   let sum = 0, count = 0;
   (DB.orders || []).forEach(function(o) {
     if (!o || !o.id) return;
-    if (['invoiced', 'delivered'].indexOf(o.status) < 0) return;
+    if (basis === 'delivered') { if (o.status !== 'delivered') return; }
+    else if (['invoiced', 'delivered'].indexOf(o.status) < 0) return;
     if (cid && o.customerId !== cid) return;
-    const d = toLocalISODate(o.invoicedAt || o.orderDate || '');
+    const d = basis === 'delivered'
+      ? toLocalISODate(o.deliveredAt || o.invoicedAt || o.orderDate || '')
+      : toLocalISODate(o.invoicedAt || o.orderDate || '');
     if (!d || d < dateFrom || d > dateTo) return;
     let net = 0;
     try { net = computeTotalsWithCredits(o).net || 0; } catch(_) {}
