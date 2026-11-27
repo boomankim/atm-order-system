@@ -1381,6 +1381,100 @@ function _updateOrdersHighWaterMark() {
     _lastKnownGoodOrdersCount = Math.max(_lastKnownGoodOrdersCount, DB.orders.length);
   }
 }
+// ⭐ (2026-11-28 밤작업#407) 재고 저장 · 바뀐 재고 항목만 서버에 저장 (saveDB 전체 10MB 덮어쓰기 대신)
+//   이유: saveDB 는 DB 전체를 set → 느리고(10MB) · 아직 못 받은 다른 기기의 주문·계근·발행을 옛 값으로 덮어쓸 위험
+//   방법: 마지막으로 서버에서 받은 재고(기준)와 지금 재고를 비교 → 바뀐 곳만 update
+//         inventory/<항목> 과 inventory/<항목>/<품목·주문·날짜> 두 단계까지 나눠서 보냄
+//         (예: 입고 3품목 → inventory/byProduct/<3개 품목> + inventory/txnLog)
+//   기준이 없으면(서버에서 받은 적 없음) · 재고 부분만 통째로 저장 (예전보다 범위 좁음)
+const _atmSnapOf = new WeakMap();     // 리스너 data 객체 → 그 때의 Firebase 스냅샷
+window._atmInvBaseSnap = null;        // 지금 DB 가 온 스냅샷 (불변)
+window._atmInvBaseMap = null;         // 기준 (경로 → JSON) · 저장 후엔 저장한 값으로 갱신
+function _atmInvSetBaseFromData(data) {
+  try { window._atmInvBaseSnap = (data && _atmSnapOf.get(data)) || null; } catch(_) { window._atmInvBaseSnap = null; }
+  window._atmInvBaseMap = null;
+}
+function _atmInvFlatten(inv) {
+  // { 'byProduct': '__obj__', 'byProduct/p001': '{...}', 'lastResetDate': '"2026-11-28"', 'txnLog': '[...]' }
+  const m = {};
+  if (!inv || typeof inv !== 'object') return m;
+  Object.keys(inv).forEach(function(k) {
+    const v = inv[k];
+    if (v === undefined) return;
+    if (v && typeof v === 'object' && !Array.isArray(v)) {
+      m[k] = '__obj__';
+      Object.keys(v).forEach(function(kk) { if (v[kk] !== undefined) m[k + '/' + kk] = JSON.stringify(v[kk]); });
+    } else {
+      m[k] = JSON.stringify(v);
+    }
+  });
+  return m;
+}
+function _atmInvBaseGet() {
+  if (window._atmInvBaseMap) return window._atmInvBaseMap;
+  const s = window._atmInvBaseSnap;
+  if (!s) return null;
+  try {
+    const inv = s.child('inventory').val();
+    window._atmInvBaseMap = _atmInvFlatten(inv || {});
+    return window._atmInvBaseMap;
+  } catch (e) { console.warn('[#407] 재고 기준 만들기 실패:', e); return null; }
+}
+function saveInventoryDB(opLabel) {
+  _lastSaveTime = Date.now();
+  if (window._atmTabLock && window._atmTabLock.isSecondary) {
+    console.warn('[Tab Lock] 보조 탭 · 재고 저장 · 차단 · Firebase 저장 안 함');
+    try { saveLocalDB(); } catch(_){}
+    return;
+  }
+  try { saveLocalDB(); } catch(_){}
+  if (!DB_REF) return;
+  const inv = DB.inventory || {};
+  const now = _atmInvFlatten(inv);
+  const base = _atmInvBaseGet();
+  if (!base) {
+    // 기준 없음 · 재고 부분만 통째로 (주문·입금 등은 안 건드림)
+    console.warn('[#407] 재고 기준 없음 · 재고 전체 저장 [' + (opLabel || '') + ']');
+    DB_REF.child('inventory').set(JSON.parse(JSON.stringify(inv))).catch(function(e) { console.error('재고 저장 오류:', e); });
+    window._atmInvBaseMap = now;
+    return;
+  }
+  const up = {};
+  const whole = {};   // 통째로 보내는 1단계 항목 (하위 경로와 겹치지 않게)
+  const top = {};
+  Object.keys(now).forEach(function(p) { if (p.indexOf('/') < 0) top[p] = 1; });
+  Object.keys(base).forEach(function(p) { if (p.indexOf('/') < 0) top[p] = 1; });
+  Object.keys(top).forEach(function(k) {
+    const n = now[k], b = base[k];
+    if (n === undefined && b === undefined) return;
+    if (n === undefined) { up['inventory/' + k] = null; whole[k] = 1; return; }          // 항목 삭제
+    if (n !== '__obj__' || b !== '__obj__') {                                             // 값(배열·글자·숫자) 이거나 형태가 바뀜
+      if (n !== b) { up['inventory/' + k] = JSON.parse(JSON.stringify(inv[k])); whole[k] = 1; }
+      return;
+    }
+    // 둘 다 객체 · 하위 단위로 비교
+    const pre = k + '/';
+    const seen = {};
+    Object.keys(now).forEach(function(p) {
+      if (p.indexOf(pre) !== 0) return;
+      seen[p] = 1;
+      if (now[p] !== base[p]) up['inventory/' + p] = JSON.parse(now[p]);
+    });
+    Object.keys(base).forEach(function(p) {
+      if (p.indexOf(pre) !== 0 || seen[p]) return;
+      up['inventory/' + p] = null;                                                         // 하위 삭제 (예: 30일 지난 작업육 기록)
+    });
+  });
+  const n = Object.keys(up).length;
+  window._atmInvBaseMap = now;
+  if (!n) { console.info('[#407] 재고 저장 · 바뀐 곳 없음 [' + (opLabel || '') + ']'); return; }
+  console.info('[#407] 재고 저장 [' + (opLabel || '') + '] · ' + n + '곳 · ' + Object.keys(up).slice(0, 6).join(', ') + (n > 6 ? ' …' : ''));
+  DB_REF.update(up).catch(function(e) {
+    console.error('재고 저장 오류:', e);
+    window._atmInvBaseMap = null;   // 다음 저장 때 스냅샷 기준으로 다시 비교
+  });
+}
+
 function saveDB() {
   _lastSaveTime = Date.now();
   // ⭐ (2026-09-22 밤작업#349) Tab Lock · 보조 탭은 · Firebase 저장 금지
@@ -2266,8 +2360,8 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 406;
-const APP_VERSION_DATE = '27/11';
+const APP_VERSION = 407;
+const APP_VERSION_DATE = '28/11';
 function _appVerBadge() {
   let latest = 0;
   try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
@@ -19434,7 +19528,7 @@ window.inventorySetBoxKgManual = function(pid, kgOrNull) {
     DB.inventory.boxKgManual[pid] = v;
     try { auditLogAdd('⚖️ 박스중량 수동 지정: ' + nm + ' → ' + v + 'kg' + (before ? ' (이전 ' + before + 'kg)' : '')); } catch(_){}
   }
-  saveDB();
+  saveInventoryDB('박스중량 수동');   // (#407) 재고만 저장
   if (typeof DB_REF !== 'undefined' && DB_REF) {
     try {
       _lastSaveTime = Date.now();
@@ -19990,7 +20084,7 @@ function inventoryRolloverIfNeeded() {
     }
   } catch (eW) { console.warn('[#401] 작업육 차감 기록 정리 실패:', eW); }
   inv.lastResetDate = today;
-  saveDB();
+  saveInventoryDB('날짜 넘김');   // (#407) 재고만 저장
 }
 
 // 품목 항목 초기화 (없으면 생성)
@@ -20596,7 +20690,7 @@ window.inventoryReceiveFromReturn = function(orderId, itemIdx, pid, absQty, unit
   const e = inventoryEnsureProduct(pid);
   e.receivedToday = (e.receivedToday || 0) + boxToAdd;
   e.stock = (e.stock || 0) + boxToAdd;
-  saveDB();
+  saveInventoryDB('반품 입고');   // (#407) 재고만 저장
 
   // 처리완료 마킹
   if (!DB.inventory) DB.inventory = {};
@@ -20661,7 +20755,7 @@ window.inventoryReceiveFromReturnKey = function(returnKey, pid, absQty, unit, ab
   const e = inventoryEnsureProduct(pid);
   e.receivedToday = (e.receivedToday || 0) + boxToAdd;
   e.stock = (e.stock || 0) + boxToAdd;
-  saveDB();
+  saveInventoryDB('반품 입고(키)');   // (#407) 재고만 저장
   if (!DB.inventory) DB.inventory = {};
   if (!DB.inventory.returnsProcessed) DB.inventory.returnsProcessed = {};
   DB.inventory.returnsProcessed[returnKey] = new Date().toISOString();
@@ -21348,7 +21442,7 @@ window.inventoryApplyStocktakeBulk = function() {
     autoZeroPids: autoZero ? zeroChanges.map(function(z){ return z.pid; }) : [],
   };
   DB.inventory.stocktakeHistory[dateISO] = entry;
-  saveDB();
+  saveInventoryDB('실사 일괄');   // (#407) 재고만 저장
   // Firebase patch (전체 map 덮어쓰기 방지)
   if (typeof DB_REF !== 'undefined' && DB_REF) {
     try {
@@ -22033,7 +22127,7 @@ window.applyManualWorkedMeatDeduction = function(orderId, itemIdx) {
   const rememberFlag = learn && learn.checked;
   const result = _wmDeductOne(orderId, itemIdx, rawPid, rememberFlag);
   if (!result.ok) { alert(result.error); return; }
-  saveDB();
+  saveInventoryDB('작업육 수동 차감');   // (#407) 재고만 저장
   inventoryRenderSummary();
   inventoryRenderOutgoing();
   showToast('🔻 작업육 수동 차감 완료 (' + result.msg + ')');
@@ -22054,7 +22148,7 @@ window.applyAllManualWorkedMeatDeductions = function() {
     if (r.ok) success++;
     else failed.push(item.workedName + ' — ' + r.error);
   });
-  saveDB();
+  saveInventoryDB('작업육 일괄 차감');   // (#407) 재고만 저장
   inventoryRenderSummary();
   inventoryRenderOutgoing();
   let msg = '✅ 일괄 차감 완료: ' + success + '건 성공';
@@ -22344,7 +22438,7 @@ window.inventoryApplyAllToday = function() {
   pendingOrderIds.forEach(oid => { deducted[oid] = stamp; });
   inv.deductedOrders = deducted;
 
-  saveDB();
+  saveInventoryDB('출고 일괄 차감');   // (#407) 재고만 저장
   // 화면 즉시 갱신 (카테고리 현황 + 출고 목록)
   inventoryRenderSummary();
   inventoryRenderOutgoing();
@@ -22507,7 +22601,7 @@ window.inventoryAddReceiptBulk = function() {
       if (DB.inventory.txnLog.length > 500) DB.inventory.txnLog.splice(0, DB.inventory.txnLog.length - 500);
     } catch(_){}
   });
-  saveDB();
+  saveInventoryDB('입고 등록');   // (#407) 재고만 저장
   try { auditLogAdd('재고 다품목 입고 · ' + valid.length + '건 · ' + results.map(function(r){ return r.name + ' ' + r.qty + r.unit; }).join(', ').slice(0, 300)); } catch(_){}
   try { if (typeof renderInventoryTxnLog === 'function') renderInventoryTxnLog(window._invTxnFilter || 'all'); } catch(_){}
   inventoryRenderSummary();
@@ -22650,7 +22744,7 @@ window.inventoryAddOutboundBulk = function() {
       if (DB.inventory.txnLog.length > 500) DB.inventory.txnLog.splice(0, DB.inventory.txnLog.length - 500);
     } catch(_){}
   });
-  saveDB();
+  saveInventoryDB('출고 등록');   // (#407) 재고만 저장
   inventoryRenderSummary();
   inventoryRenderOutgoing();
   cats.forEach(function(cut){
@@ -23070,6 +23164,7 @@ function initApp(data) {
   if (data) {
     _coerceArrayFields(data);
     DB = data;
+    _atmInvSetBaseFromData(data);   // (#407)
     // ⭐ (2026-09-22 밤작업#346) 초기 로드 · high-water mark 설정
     _updateOrdersHighWaterMark();
   } else {
@@ -23509,6 +23604,7 @@ if (FIREBASE_READY && DB_REF) {
     window._atmLastValueAt = Date.now();   // (#401) 재연결 후 최신 내용 도착 확인용
     const isSelf = (Date.now() - _lastSaveTime) < SELF_WRITE_WINDOW_MS;
     const data = snapshot.val();
+    try { if (data && typeof data === 'object') _atmSnapOf.set(data, snapshot); } catch(_){}   // (#407) 재고 저장 기준
 
     if (_firstLoad) {
       _firstLoad = false;
@@ -23718,6 +23814,7 @@ if (FIREBASE_READY && DB_REF) {
       // ⭐ (2026-09-22 밤작업#345) Firebase 스냅샷 · 배열 필드 강제 변환 (리스너 업데이트 시)
       _coerceArrayFields(data);
       DB = data;
+      _atmInvSetBaseFromData(data);   // (#407)
       // ⭐ (2026-09-22 밤작업#346) 리스너 업데이트 · high-water mark 갱신
       _updateOrdersHighWaterMark();
       saveLocalDB();
