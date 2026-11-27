@@ -559,7 +559,27 @@
   <button class="util" onclick="importAll()">📂 복원</button>
 </nav>
 
-<main id="app"></main>
+<main id="app"><div id="atmBootLoading" style="max-width:420px;margin:18vh auto 0;padding:28px 24px;text-align:center;background:#fff;border:1px solid #E3DED5;border-radius:14px;box-shadow:0 4px 16px rgba(0,0,0,0.06);font-family:inherit;">
+  <div style="font-size:30px;line-height:1;margin-bottom:10px;">📦</div>
+  <div style="font-size:16px;font-weight:800;color:#2E5C8A;">데이터 불러오는 중… <span id="atmBootSec">0</span>초</div>
+  <div id="atmBootHint" style="margin-top:8px;font-size:12.5px;color:#777;">처음 열 때는 주문 전체를 받아서 시간이 조금 걸립니다</div>
+</div></main>
+<script>
+/* ⭐ (2026-11-27 밤작업#401) 처음 열 때 빈 화면 대신 "불러오는 중 n초" · 화면이 그려지면 자동으로 사라짐 */
+(function(){
+  var t0 = window._atmBootT0 = Date.now();
+  var iv = setInterval(function(){
+    var box = document.getElementById('atmBootLoading');
+    if (!box) { clearInterval(iv); return; }
+    var s = Math.floor((Date.now() - t0) / 1000);
+    var el = document.getElementById('atmBootSec'); if (el) el.textContent = s;
+    if (s >= 25) {
+      var h = document.getElementById('atmBootHint');
+      if (h && !h._warned) { h._warned = 1; h.innerHTML = '<b style="color:#C0392B;">평소보다 오래 걸립니다</b> · 인터넷 연결을 확인하고 오른쪽 아래 ↻ 를 눌러 주세요'; }
+    }
+  }, 1000);
+})();
+</script>
 
 <script>
 // =========================================================================
@@ -2240,8 +2260,8 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 400;
-const APP_VERSION_DATE = '25/11';
+const APP_VERSION = 401;
+const APP_VERSION_DATE = '27/11';
 function _appVerBadge() {
   let latest = 0;
   try { latest = +((DB && DB.settings && DB.settings.appLatestVersion) || 0); } catch(_){}
@@ -4308,8 +4328,8 @@ async function auditLogAdd(text) {
       DB_REF.child('auditLog').transaction(function(currentList) {
         if (!Array.isArray(currentList)) currentList = [];
         currentList.push(entry);
-        // 5000건 초과 시 오래된 것 삭제 (성능 보호)
-        if (currentList.length > 5000) currentList = currentList.slice(-5000);
+        // ⭐ (2026-11-27 밤작업#401) 상한 5000 → 1500 · 기록 1건마다 목록 전체를 주고받아서 (600KB → 약 180KB)
+        if (currentList.length > 1500) currentList = currentList.slice(-1500);
         return currentList;
       }, function(error) {
         if (error) console.warn('감사 로그 저장 실패:', error);
@@ -15231,7 +15251,7 @@ async function _issueInvoiceInner(orderId) {
         }
       } catch(e){ console.warn('❌ customPrices save failed:', e); }
     }
-    console.log('[issueInvoice] 거래처 맞춤 단가 저장:', cust.name, '라인 수:', savedPriceCount, 'customPrices:', JSON.parse(JSON.stringify(cust.customPrices)));
+    console.log('[issueInvoice] 거래처 맞춤 단가 저장:', cust.name, '라인 수:', savedPriceCount, 'customPrices:', JSON.parse(JSON.stringify(cust.customPrices || {})));   // (#401) 맞춤단가 없는 거래처 · 발행 중단 방지
   }
 
   // ⭐ (2026-08-04) 3-bis) 사용자가 체크한 크레딧 노트를 이 인보이스에 적용
@@ -19749,6 +19769,24 @@ function inventoryRolloverIfNeeded() {
   });
   // 어제 차감한 주문 기록은 유지 (다른 날 추적용)할 필요 없으니 정리
   inv.deductedOrders = {};
+  // ⭐ (2026-11-27 밤작업#401) 작업육 수동 차감 기록 · 마지막 기록이 30일 지난 주문은 정리
+  //   이 기록은 "오늘 배송완료 주문"의 중복 차감 확인에만 쓰임 → 옛 기록은 필요 없음 · 그동안 계속 쌓이기만 했음
+  try {
+    const wmd = inv.workedMeatDeductions;
+    if (wmd && typeof wmd === 'object') {
+      const cut = new Date(today + 'T00:00:00');
+      cut.setDate(cut.getDate() - 30);
+      const cutISO = cut.toISOString();
+      let removed = 0;
+      Object.keys(wmd).forEach(function(oid) {
+        const arr = Array.isArray(wmd[oid]) ? wmd[oid] : Object.values(wmd[oid] || {});
+        let last = '';
+        arr.forEach(function(d) { if (d && d.at && String(d.at) > last) last = String(d.at); });
+        if (last && last < cutISO) { delete wmd[oid]; removed++; }
+      });
+      if (removed) console.info('[#401] 작업육 차감 기록 30일 지난 ' + removed + '건 정리');
+    }
+  } catch (eW) { console.warn('[#401] 작업육 차감 기록 정리 실패:', eW); }
   inv.lastResetDate = today;
   saveDB();
 }
@@ -23176,10 +23214,11 @@ async function autoSaveInvoice(orderId) {
 if (FIREBASE_READY && DB_REF) {
   // 로딩 화면 표시 후 Firebase 데이터 수신 대기
   document.getElementById('app').innerHTML = `
-    <div style="text-align:center; padding:80px 20px; color:var(--muted);">
+    <div id="atmBootLoading" style="text-align:center; padding:80px 20px; color:var(--muted);">
       <div style="font-size:56px;">🥩</div>
       <div style="margin-top:16px; font-size:16px; font-weight:700; color:var(--brand-dark);">ALL THAT MEAT</div>
-      <div style="margin-top:8px; font-size:13px;">실시간 연결 중... / Connecting...</div>
+      <div style="margin-top:8px; font-size:13px;">데이터 불러오는 중… <b id="atmBootSec">${Math.floor((Date.now() - (window._atmBootT0 || Date.now())) / 1000)}</b>초 / Loading...</div>
+      <div id="atmBootHint" style="margin-top:6px; font-size:12px;">처음 열 때는 주문 전체를 받아서 시간이 조금 걸립니다</div>
     </div>`;
 
   // ⭐ (2026-07-28) 정책 변경 — 모든 화면에서 자동 재렌더 완전 비활성화.
@@ -23265,6 +23304,7 @@ if (FIREBASE_READY && DB_REF) {
   // 느린 네트워크에서 3초를 넘기면 자기 저장도 외부 업데이트로 오인됨.
   const SELF_WRITE_WINDOW_MS = 8000;
   DB_REF.on('value', snapshot => {
+    window._atmLastValueAt = Date.now();   // (#401) 재연결 후 최신 내용 도착 확인용
     const isSelf = (Date.now() - _lastSaveTime) < SELF_WRITE_WINDOW_MS;
     const data = snapshot.val();
 
@@ -23826,6 +23866,7 @@ if (FIREBASE_READY && DB_REF) {
           const ok = snap.val() === true;
           if (ok) {
             _connOk = true;
+            window._atmConnectedAt = Date.now();   // (#401) 재연결 확인용
             if (_connWarnTimer) { clearTimeout(_connWarnTimer); _connWarnTimer = null; }
             setDotState('ok');
           } else {
@@ -23843,45 +23884,122 @@ if (FIREBASE_READY && DB_REF) {
       }
     } catch (e) { console.warn('[HUD] conn watch fail:', e); }
 
-    // visibilitychange · 오래 백그라운드였으면 자동 새로고침 유도
-    //   30초+ 백그라운드 → 리스너 죽었을 가능성 높음
-    //   90초+ 백그라운드 → 무조건 새로고침 (편집 중이면 확인)
-    let _hiddenAt = 0;
+    // ⭐ (2026-11-27 밤작업#401) 창 복귀 · 새로고침 대신 "재연결"
+    //   기존(#334): 90초+ 숨김 → 페이지 전체 새로고침 → 서버 데이터 전체(10MB+, 매달 증가)를 다시 받음
+    //              → 화면 내렸다 올릴 때마다 점점 느려짐
+    //   변경: 30초+ 숨김 → 서버 연결만 끊었다 다시 이음 (바뀐 내용만 받음) · 받은 뒤 지금 화면만 다시 그림
+    //         · 8초 안에 연결 안 되면 그때만 새로고침 (입력 중·백업 중·발행 중이면 새로고침 안 하고 ↻ 강조)
+    //         · 날짜가 바뀌었으면(밤새 켜둔 경우) 하루 한 번 새로고침 (오늘 기준 화면·재고 롤오버 정리)
+    let _hiddenAt = 0, _hiddenDay = '';
+    let _reconnBusy = false;
+    function _localDay() { const d = new Date(); return d.getFullYear() + '-' + (d.getMonth() + 1) + '-' + d.getDate(); }
+    function _reconnPill(text, kind) {
+      let p = document.getElementById('atm-reconn-pill');
+      if (!text) { if (p) p.remove(); return; }
+      if (!p) {
+        p = document.createElement('div');
+        p.id = 'atm-reconn-pill';
+        document.body.appendChild(p);
+      }
+      const bg = kind === 'ok' ? '#27AE60' : kind === 'bad' ? '#C0392B' : '#2E5C8A';
+      p.style.cssText = 'position:fixed;top:10px;left:50%;transform:translateX(-50%);z-index:99999;'
+        + 'background:' + bg + ';color:#fff;font-size:13px;font-weight:700;padding:7px 16px;border-radius:99px;'
+        + 'box-shadow:0 3px 12px rgba(0,0,0,0.25);pointer-events:none;white-space:nowrap;max-width:92vw;overflow:hidden;text-overflow:ellipsis;';
+      p.textContent = text;
+    }
+    function _isBlockedForReload() {
+      if (window._backupInProgress || window._atmIssuingInvoice) return true;
+      try { if (typeof _isUserEditing === 'function' && _isUserEditing()) return true; } catch(_) {}
+      return false;
+    }
+    function _reloadWithPill(msg) {
+      _reconnPill(msg || '다시 불러오는 중…', 'info');
+      _doReload(false);
+    }
+    window._atmReconnect = function _atmReconnect(awayMs) {
+      if (_reconnBusy) return;
+      if (typeof firebase === 'undefined' || !firebase.database) return;
+      _reconnBusy = true;
+      const prevQuiet = window._atmQuietRemote;
+      window._atmQuietRemote = true;          // 재연결 중 들어온 변경은 "데이터 업데이트됨" 알림 대신 화면 다시 그리기로 처리
+      _reconnPill('🔄 서버와 다시 연결 중…', 'info');
+      const t0 = Date.now();
+      try {
+        firebase.database().goOffline();
+        setTimeout(() => { try { firebase.database().goOnline(); } catch(_) {} }, 100);
+      } catch(_) {}
+      const finish = () => { _reconnBusy = false; window._atmQuietRemote = prevQuiet; };
+      const hiddenAbort = () => {
+        if (document.visibilityState !== 'hidden') return false;
+        finish(); _reconnPill(''); console.info('[#401] 재연결 중 창이 다시 숨겨짐 · 다음 복귀 때 다시 확인');
+        return true;
+      };
+      (function waitConn() {
+        if (hiddenAbort()) return;
+        const connected = (window._atmConnectedAt || 0) > t0 && _connOk === true;
+        if (connected) {
+          // 연결됨 · 바뀐 내용 도착 잠깐 기다림 (변경 없으면 아무것도 안 옴)
+          _reconnPill('🔄 최신 내용 받는 중…', 'info');
+          const tc = Date.now();
+          (function waitValue() {
+            if (hiddenAbort()) return;
+            const got = (window._atmLastValueAt || 0) > t0;
+            const waited = Date.now() - tc;
+            if (!got && waited < 2500) { setTimeout(waitValue, 150); return; }
+            if (got && waited < 600) { setTimeout(waitValue, 150); return; }   // 연달아 오는 변경 잠깐 모음
+            finish();
+            if (got) {
+              const sb = document.getElementById('sync-banner'); if (sb) sb.remove();
+              let editing = false;
+              try { editing = (typeof _isUserEditing === 'function') && _isUserEditing(); } catch(_) {}
+              if (!editing && !window._backupInProgress && !window._atmIssuingInvoice) {
+                try { window._preserveScrollOnce = true; if (typeof route === 'function') route(); } catch (e) { console.warn('[#401] 화면 다시 그리기 실패:', e); }
+              } else {
+                try { if (typeof showSyncBanner === 'function') showSyncBanner(editing); } catch(_) {}
+              }
+            }
+            btn.classList.remove('warn');
+            _reconnPill('✅ 최신 상태', 'ok');
+            setTimeout(() => { const p = document.getElementById('atm-reconn-pill'); if (p && p.textContent === '✅ 최신 상태') p.remove(); }, 1500);
+            console.info('[#401] 재연결 완료 · ' + ((Date.now() - t0) / 1000).toFixed(1) + '초 · 변경 ' + (got ? '있음(화면 갱신)' : '없음') + ' · 숨김 ' + Math.round(awayMs / 1000) + '초');
+          })();
+          return;
+        }
+        if (Date.now() - t0 < 8000) { setTimeout(waitConn, 200); return; }
+        // 8초 안에 연결 안 됨
+        finish();
+        console.warn('[#401] 재연결 8초 실패');
+        if (_isBlockedForReload()) {
+          btn.classList.add('warn');
+          _reconnPill('⚠️ 서버 연결 안 됨 · 입력을 마치고 오른쪽 아래 ↻ 를 눌러 주세요', 'bad');
+          setTimeout(() => { const p = document.getElementById('atm-reconn-pill'); if (p && /연결 안 됨/.test(p.textContent)) p.remove(); }, 8000);
+        } else {
+          _reloadWithPill('⚠️ 연결이 늦어 다시 불러오는 중…');
+        }
+      })();
+    };
     document.addEventListener('visibilitychange', () => {
       if (document.visibilityState === 'hidden') {
         _hiddenAt = Date.now();
+        _hiddenDay = _localDay();
         return;
       }
       if (document.visibilityState !== 'visible' || !_hiddenAt) return;
       const awayMs = Date.now() - _hiddenAt;
+      const dayChanged = _hiddenDay && _hiddenDay !== _localDay();
       _hiddenAt = 0;
-      if (awayMs < 30000) return;   // 30초 미만 · 무시
-      // ⭐ (2026-09-07 밤작업#338) 백업 진행 중 · 자동 새로고침 봉쇄
+      if (awayMs < 30000 && !dayChanged) return;   // 30초 미만 · 무시
+      // ⭐ (2026-09-07 밤작업#338) 백업 진행 중 · 손대지 않음
       if (window._backupInProgress) {
-        console.info('[HUD] 백업 진행 중 · 자동 새로고침 스킵');
+        console.info('[HUD] 백업 진행 중 · 재연결/새로고침 스킵');
         return;
       }
-      // 편집 중이면 새로고침 강제 안 함 · 새로고침 버튼만 강조
-      let editing = false;
-      try { if (typeof _isUserEditing === 'function') editing = _isUserEditing(); } catch(_) {}
-      if (editing) {
-        btn.classList.add('warn');
+      // 날짜가 바뀜 (밤새 켜둔 화면) · 입력 중이 아니면 하루 한 번 새로고침
+      if (dayChanged && !_isBlockedForReload()) {
+        _reloadWithPill('📅 날짜가 바뀌어 다시 불러오는 중…');
         return;
       }
-      if (awayMs > 90000) {
-        // 오래 자리 비웠으면 자동 새로고침
-        _doReload(false);
-      } else {
-        // 30~90초 · 리스너 재점검 시도 · 실패 시 강조
-        try {
-          if (typeof firebase !== 'undefined' && firebase.database) {
-            firebase.database().goOffline();
-            setTimeout(() => firebase.database().goOnline(), 100);
-          }
-        } catch(_) {}
-        // 4초 후에도 연결 안 되면 강조
-        setTimeout(() => { if (_connOk === false) btn.classList.add('warn'); }, 4000);
-      }
+      window._atmReconnect(awayMs);
     });
   })();
 
