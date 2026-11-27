@@ -2213,7 +2213,7 @@ function updateNav() {
     nav.innerHTML = `
       <span class="logo">🥩 ATM</span>
       <button class="tab" data-route="#order?c=${CUSTOMER_MODE}" style="background:#fff; color:var(--brand-dark); font-weight:700; padding:6px 12px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.18);">🛒 주문</button>
-      <button class="tab" data-route="#myOrders">📋 내역</button>
+      <button class="tab" data-route="#myOrders" style="background:#FFD54F; color:#3A1D1D; font-weight:800; padding:6px 12px; border-radius:6px; border:2px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,0.25);" title="내 주문이 접수됐는지 확인 / Check my orders">📋 내역 ✓</button>
       <span class="spacer"></span>
       <span class="cust-name" style="color:rgba(255,255,255,0.9); margin-right:6px; font-size:12px;">👤 ${cust ? cust.name : '거래처'}</span>
       <button class="util" onclick="exitCustomerMode()" style="background:#fff;">Logout</button>
@@ -2260,7 +2260,7 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 401;
+const APP_VERSION = 402;
 const APP_VERSION_DATE = '27/11';
 function _appVerBadge() {
   let latest = 0;
@@ -2358,6 +2358,7 @@ function route() {
     if (_allowed.indexOf(path) < 0) _banner.remove();
   }
   view(params);
+  try { if (typeof renderUnsentBadge === 'function') renderUnsentBadge(); } catch(_){}   // (#402)
   // ⭐ (2026-07-26) B: 원격 업데이트 재렌더 시 스크롤 유지 (플래그 확인)
   if (!window._preserveScrollOnce) {
     window.scrollTo(0, 0);
@@ -2895,6 +2896,11 @@ function renderRecentOrders() {
 }
 function statusLabel(s) {
   return {new:'신규', weighing:'작업중', weighed:'계근완료', invoiced:'인보이스', delivered:'배송완료', merged:'병합됨'}[s] || s;
+}
+// ⭐ (2026-11-27 밤작업#402) 거래처 화면 전용 상태 이름 · 인보이스 발행 → "배송준비" (사무실 화면은 그대로)
+function custStatusLabel(s) {
+  if (s === 'invoiced') return '배송준비';
+  return statusLabel(s);
 }
 
 // =========================================================================
@@ -7805,6 +7811,7 @@ function saveCartDraft(custId, extras) {
     };
     localStorage.setItem(CART_DRAFT_KEY, JSON.stringify(draft));
   } catch(e) { console.warn('cart draft save failed:', e); }
+  try { _atmCartDraftSync(custId, false); } catch(_){}
 }
 function loadCartDraft(custId) {
   try {
@@ -7821,6 +7828,180 @@ function loadCartDraft(custId) {
 }
 function clearCartDraft() {
   try { localStorage.removeItem(CART_DRAFT_KEY); } catch(_){}
+  try { if (CUSTOMER_MODE) _atmCartDraftSync(CUSTOMER_MODE, true); } catch(_){}
+}
+
+// ⭐ (2026-11-27 밤작업#402) 거래처가 담고 안 보낸 주문 · 사무실에서 보이게
+//   서버 별도 칸 atm_cart_drafts/<거래처id> (atm_db 밖 · 주문 데이터·크기에 영향 없음)
+//   거래처 본인 휴대폰(CUSTOMER_MODE)에서만 기록 · 사무실 대리 입력은 기록 안 함
+//   상태: drafting(장바구니에 담는 중) / sending(전송 눌렀는데 서버 확인 전) · 서버 접수 확인되면 삭제
+const ATM_CART_DRAFT_PATH = 'atm_cart_drafts';
+let _atmCartDraftTimer = null;
+function _atmCartDraftKey(custId) { return String(custId || '').replace(/[.#$\[\]\/]/g, '_'); }
+function _atmCartDraftLines(items) {
+  return (items || []).slice(0, 40).map(function(it) {
+    const p = (DB.products || []).find(function(x) { return x && x.id === it.productId; });
+    return { n: (p && p.name) || it.productName || it.productId || '', q: (it.quantity != null ? it.quantity : ''), u: it.unit || '', t: it.notes || '' };
+  });
+}
+function _atmCartDraftSync(custId, immediate) {
+  try {
+    if (!custId || !CUSTOMER_MODE || String(CUSTOMER_MODE) !== String(custId)) return;
+    if (typeof FIREBASE_READY === 'undefined' || !FIREBASE_READY || typeof firebase === 'undefined') return;
+    const run = function() {
+      _atmCartDraftTimer = null;
+      try {
+        const ref = firebase.database().ref(ATM_CART_DRAFT_PATH + '/' + _atmCartDraftKey(custId));
+        const q = pendingQueueRead().filter(function(e) { return e && e.custId === custId && e.order; });
+        let payload = null;
+        if (q.length) {
+          const o = q[q.length - 1].order;
+          payload = { state: 'sending', custId: custId, orderNo: o.orderNo || '', orderId: o.id || '', n: (o.items || []).length, items: _atmCartDraftLines(o.items), updatedAt: Date.now() };
+        } else {
+          const d = loadCartDraft(custId);
+          const cart = (d && Array.isArray(d.cart)) ? d.cart : [];
+          if (cart.length) payload = { state: 'drafting', custId: custId, n: cart.length, items: _atmCartDraftLines(cart), updatedAt: Date.now() };
+        }
+        if (payload) ref.set(JSON.parse(JSON.stringify(payload))).catch(function(e) { console.warn('[#402] 작성 중 기록 실패:', e); });
+        else ref.remove().catch(function(){});
+      } catch (e) { console.warn('[#402] 작성 중 기록 예외:', e); }
+      try { renderUnsentBadge(); } catch(_){}
+    };
+    if (_atmCartDraftTimer) { clearTimeout(_atmCartDraftTimer); _atmCartDraftTimer = null; }
+    if (immediate) run(); else _atmCartDraftTimer = setTimeout(run, 1500);
+  } catch(_){}
+}
+
+// 거래처 화면 · 초록 점 아래 "보내지 않은 주문 있음" (앱 안 표시)
+function renderUnsentBadge() {
+  try {
+    let b = document.getElementById('atm-unsent-badge');
+    if (!CUSTOMER_MODE) { if (b) b.remove(); return; }
+    const cid = CUSTOMER_MODE;
+    const q = pendingQueueRead().filter(function(e) { return e && e.custId === cid; });
+    const d = loadCartDraft(cid);
+    const hasCart = !!(d && Array.isArray(d.cart) && d.cart.length);
+    const route = (location.hash || '').replace(/^#/, '').split('?')[0];
+    const onOrderPage = (route === 'order' || route === 'orderConfirm' || route === 'enter');
+    let target = '';
+    if (q.length) target = '#myOrders';
+    else if (hasCart && !onOrderPage) target = '#order?c=' + cid;
+    if (!target) { if (b) b.remove(); return; }
+    if (!b) {
+      b = document.createElement('button');
+      b.id = 'atm-unsent-badge';
+      b.type = 'button';
+      b.style.cssText = 'position:fixed; top:30px; right:6px; z-index:99998; background:#C0392B; color:#fff; border:2px solid #fff; border-radius:8px; padding:4px 9px; font-size:12px; font-weight:800; line-height:1.25; text-align:center; box-shadow:0 3px 10px rgba(0,0,0,0.3); cursor:pointer; font-family:inherit; animation:atmUnsentPulse 1.4s ease-in-out infinite;';
+      if (!document.getElementById('atm-unsent-anim')) {
+        const st = document.createElement('style'); st.id = 'atm-unsent-anim';
+        st.textContent = '@keyframes atmUnsentPulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.06); } } @media print { #atm-unsent-badge { display:none !important; } }';
+        document.head.appendChild(st);
+      }
+      document.body.appendChild(b);
+    }
+    b.innerHTML = '⚠ 보내지 않은 주문 있음<br><span style="font-size:11px; font-weight:700;">Unsent order</span>';
+    b.onclick = function() { location.hash = target; };
+  } catch(_){}
+}
+window.addEventListener('hashchange', function() { setTimeout(function() { try { renderUnsentBadge(); } catch(_){} }, 50); });
+setInterval(function() { try { renderUnsentBadge(); } catch(_){} }, 30000);
+document.addEventListener('visibilitychange', function() { if (document.visibilityState === 'visible') { try { renderUnsentBadge(); } catch(_){} } });
+
+// 내역 · [다시 보내기]
+async function custResendPending(orderId, btn) {
+  try {
+    const e = pendingQueueRead().find(function(x) { return x && x.id === orderId; });
+    if (!e) { route(); return; }
+    if (btn) { btn.disabled = true; btn.textContent = '보내는 중… / Sending'; }
+    const ok = await pendingQueueSubmit(e);
+    if (ok) {
+      pendingQueueRemove(orderId);
+      try { auditLogAdd('✅ 거래처가 [다시 보내기]로 주문 전송: ' + (e.order && e.order.orderNo)); } catch(_){}
+      alert('✅ 주문이 접수되었습니다.\nOrder received.\n\n' + (e.order && e.order.orderNo || ''));
+    } else {
+      alert('⚠ 아직 보내지 못했습니다. 인터넷 연결을 확인하고 다시 눌러 주세요.\nNot sent yet. Please check the internet and try again.');
+    }
+  } catch (err) { console.warn('[#402] 다시 보내기 실패:', err); }
+  try { renderPendingQueueBanner(); } catch(_){}
+  try { route(); } catch(_){}
+}
+
+// 사무실 · 거래처 작성 중·미전송 목록
+window._atmCartDrafts = null;
+let _atmCartDraftListen = false;
+function _atmCartDraftListenStart() {
+  if (_atmCartDraftListen || CUSTOMER_MODE) return;
+  if (typeof FIREBASE_READY === 'undefined' || !FIREBASE_READY || typeof firebase === 'undefined') return;
+  _atmCartDraftListen = true;
+  try {
+    firebase.database().ref(ATM_CART_DRAFT_PATH).on('value', function(s) {
+      window._atmCartDrafts = s.val() || {};
+      try { renderOfficeCartDrafts(); } catch(_){}
+    });
+  } catch (e) { _atmCartDraftListen = false; console.warn('[#402] 작성 중 목록 연결 실패:', e); }
+}
+function _atmAgo(ms) {
+  const m = Math.max(0, Math.floor((Date.now() - ms) / 60000));
+  if (m < 1) return '방금';
+  if (m < 60) return m + '분 전';
+  const h = Math.floor(m / 60);
+  return h + '시간 ' + (m % 60) + '분 전';
+}
+function renderOfficeCartDrafts() {
+  try {
+    _atmCartDraftListenStart();
+    const host = document.getElementById('office-cart-drafts');
+    if (!host) return;
+    const all = window._atmCartDrafts || {};
+    const now = Date.now();
+    const rows = [];
+    Object.keys(all).forEach(function(k) {
+      const d = all[k];
+      if (!d || !d.updatedAt) return;
+      if (now - d.updatedAt > 36 * 3600000) return;                 // 36시간 지난 건 안 보임
+      if (d.dismissedAt && d.dismissedAt >= d.updatedAt) return;    // [확인함] 누른 뒤 변경 없음
+      const cid = d.custId || k;
+      if (d.state === 'sending') {
+        // 서버에 이미 들어왔으면 표시 안 함 (기록 삭제가 늦은 경우)
+        if ((DB.orders || []).some(function(o) { return o && ((d.orderId && o.id === d.orderId) || (d.orderNo && o.orderNo === d.orderNo && o.customerId === cid)); })) return;
+      } else {
+        // 다른 기기로 이미 주문을 보냈으면 표시 안 함
+        if ((DB.orders || []).some(function(o) { return o && o.customerId === cid && Date.parse(o.createdAt || o.orderDate || 0) >= d.updatedAt - 60000; })) return;
+      }
+      rows.push({ k: k, cid: cid, d: d });
+    });
+    if (!rows.length) { host.innerHTML = ''; return; }
+    rows.sort(function(a, b) { return a.d.updatedAt - b.d.updatedAt; });
+    const urgent = rows.filter(function(r) { return r.d.state === 'sending' || (now - r.d.updatedAt) >= 10 * 60000; }).length;
+    const body = rows.map(function(r) {
+      const d = r.d;
+      const c = (DB.customers || []).find(function(x) { return x && x.id === r.cid; });
+      const name = c ? c.name : r.cid;
+      const phone = c && (c.phone || c.mobile) ? ' · ☎ ' + escapeHtmlSimple(String(c.phone || c.mobile)) : '';
+      const age = now - d.updatedAt;
+      let st;
+      if (d.state === 'sending') st = '<span style="color:#B3261E; font-weight:800;">📡 전송 누름 · 접수 안 됨</span>';
+      else if (age < 10 * 60000) st = '<span style="color:#2E5C8A; font-weight:700;">✏️ 지금 작성 중</span>';
+      else st = '<span style="color:#B3261E; font-weight:800;">⚠ 담고 안 보냄</span>';
+      const lines = (d.items || []).map(function(it) { return '<li>' + escapeHtmlSimple(String(it.n || '')) + ' · ' + escapeHtmlSimple(String(it.q)) + ' ' + escapeHtmlSimple(String(it.u || '')) + (it.t ? ' <small style="color:#7A5C00;">📝' + escapeHtmlSimple(String(it.t)) + '</small>' : '') + '</li>'; }).join('');
+      return '<div style="padding:6px 0; border-top:1px dashed #E8B4B0;">' +
+        '<b>' + escapeHtmlSimple(String(name)) + '</b>' + phone + ' · ' + st + ' · 품목 ' + (d.n || 0) + '개 · 마지막 ' + _atmAgo(d.updatedAt) +
+        (d.orderNo ? ' · ' + escapeHtmlSimple(String(d.orderNo)) : '') +
+        ' <button class="btn sm secondary" style="padding:2px 8px; font-size:11px;" onclick="officeCartDraftDismiss(\'' + r.k + '\', ' + d.updatedAt + ')">확인함</button>' +
+        '<details style="margin-top:2px;"><summary style="cursor:pointer; font-size:12px; color:var(--muted);">품목 보기</summary><ul style="margin:4px 0 4px 18px; padding:0; font-size:12px;">' + lines + '</ul></details>' +
+      '</div>';
+    }).join('');
+    host.innerHTML = '<div style="background:' + (urgent ? '#FDECEA' : '#EEF4FB') + '; border:2px solid ' + (urgent ? '#C62828' : '#90B4DA') + '; color:#3A1414; padding:10px 14px; border-radius:8px; margin:8px 0; font-size:13px;">' +
+      '<div style="font-weight:800; margin-bottom:4px;">' + (urgent ? '⚠️' : '✏️') + ' 거래처 주문 작성 중·미전송 ' + rows.length + '곳 <span style="font-weight:400; font-size:12px; color:#7A2323;">· 마감 전에 연락해 보세요 · 주문이 들어오면 자동으로 사라집니다</span></div>' +
+      body + '</div>';
+  } catch (e) { console.warn('[#402] 작성 중 목록 표시 실패:', e); }
+}
+function officeCartDraftDismiss(k, updatedAt) {
+  try {
+    if (window._atmCartDrafts && window._atmCartDrafts[k]) window._atmCartDrafts[k].dismissedAt = updatedAt;
+    renderOfficeCartDrafts();
+    firebase.database().ref(ATM_CART_DRAFT_PATH + '/' + k + '/dismissedAt').set(updatedAt).catch(function(){});
+  } catch(_){}
 }
 
 function viewOrder(params) {
@@ -8722,12 +8903,16 @@ function pendingQueueAdd(entry) {
     const q = pendingQueueRead();
     if (!q.some(e => e && e.id === entry.id)) { q.push(entry); pendingQueueWrite(q); }
   } catch(_){}
+  try { if (entry && entry.custId) _atmCartDraftSync(entry.custId, true); } catch(_){}
 }
 function pendingQueueRemove(id) {
+  let _cid = null;
+  try { const _e = pendingQueueRead().find(e => e && e.id === id); _cid = _e && _e.custId; } catch(_){}
   try {
     const q = pendingQueueRead().filter(e => e && e.id !== id);
     pendingQueueWrite(q);
   } catch(_){}
+  try { if (_cid) _atmCartDraftSync(_cid, true); } catch(_){}
 }
 function pendingQueueBackoffMs(attempts) {
   // 30s / 1m / 2m / 5m / 10m (cap)
@@ -8845,7 +9030,8 @@ function startOfficeQueueMonitor() {
   try {
     if (_officeQueueMonitorTimer) clearInterval(_officeQueueMonitorTimer);
     renderOfficePendingQueueMonitor();
-    _officeQueueMonitorTimer = setInterval(renderOfficePendingQueueMonitor, 60 * 1000);
+    try { renderOfficeCartDrafts(); } catch(_){}
+    _officeQueueMonitorTimer = setInterval(function() { renderOfficePendingQueueMonitor(); try { renderOfficeCartDrafts(); } catch(_){} }, 60 * 1000);
   } catch(_){}
 }
 
@@ -9109,6 +9295,9 @@ async function submitOrder(custId, deliveryDateISO) {
   const okBtn = document.getElementById('submitOkBtn');
 
   if (delivered) {
+    // ⭐ (2026-11-27 밤작업#402) 서버 접수 확인 즉시 장바구니 임시본 삭제 → "보내지 않은 주문" 표시·사무실 목록에서 사라짐
+    //   CART 도 바로 비움 (화면 닫힐 때 자동 저장이 다시 임시본을 만들지 않게) · 큐는 기존대로 3초 재확인 후 삭제
+    try { CART = []; clearCartDraft(); } catch(_){}
     // ⭐ (2026-08-22 A-3) 성공 화면에 품목 개수 명시 · 직원이 눈으로 즉시 확인 가능
     const _itemCount = Array.isArray(order.items) ? order.items.length : 0;
     // ⭐ (2026-08-22 C-2) 저장 확인 라운드트립 · Firebase 에 실제로 저장된 items 개수 검증
@@ -10197,6 +10386,8 @@ function viewOffice() {
     ${_backupBanner}
     <!-- ⭐ (2026-09-07 밤작업#337-L4) 미확정 주문 감시 · 이 태블릿 localStorage 큐 · 5분+ 대기 -->
     <div id="office-pending-queue-monitor"></div>
+    <!-- ⭐ (2026-11-27 밤작업#402) 거래처 작성 중·미전송 주문 -->
+    <div id="office-cart-drafts"></div>
     <div class="card">
       <h3>인보이스 발행 대기 (${ready.length}건) <span style="font-weight:400; font-size:12px; color:var(--muted); float:right;">거래처/주문번호 클릭 → 품목·단가 확인 → 발행</span></h3>
       ${ready.length === 0 ? `<div class="empty"><div class="icon">📥</div>발행 대기 중인 주문이 없습니다.</div>` : `
@@ -17050,6 +17241,7 @@ function viewMyOrders() {
 
     <div class="card">
       <h3>최근 주문 내역 / Recent Orders <span style="font-weight:400; color:var(--muted); font-size:12px;">(최근 ${orders.length}건 / latest ${orders.length} of ${allOrders.length})</span></h3>
+      <div style="margin:-2px 0 10px; font-size:12px; color:#2E7D32; background:#F1F8F1; border-radius:6px; padding:6px 10px;">✅ <b>접수</b> 표시가 있는 주문은 ATM에 들어온 주문입니다<br><span style="font-size:11px;">✅ = received by ATM · ⏳ = not sent yet</span></div>
       ${orders.length === 0
         ? `<div class="empty"><div class="icon">📭</div>
              아직 주문 내역이 없습니다.<br>
@@ -17065,10 +17257,12 @@ function viewMyOrders() {
              </tr></thead>
              <tbody>
                ${orders.map(o => `<tr>
-                 <td><b>${o.orderNo}</b>${_pendingIdSet.has(o.id) ? ' <span style="background:#FFF3C4; color:#5C0F0F; border:1px solid #FFC107; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:700;">미확정</span>' : ''}</td>
+                 <td><b>${o.orderNo}</b><br>${_pendingIdSet.has(o.id)
+                   ? '<span style="background:#FDECEA; color:#B3261E; border:1px solid #E57373; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:800; white-space:nowrap;">⏳ 전송 안 됨</span> <button class="btn sm" style="margin-top:3px; background:#C0392B; color:#fff; padding:3px 8px; font-size:11px;" onclick="custResendPending(\'' + o.id + '\', this)">다시 보내기 / Resend</button>'
+                   : '<span title="Received" style="background:#E8F5E9; color:#2E7D32; border:1px solid #A5D6A7; padding:1px 6px; border-radius:4px; font-size:11px; font-weight:800; white-space:nowrap;">✅ 접수</span>'}</td>
                  <td>${toLocalISODate(o.orderDate)}</td>
                  <td>${o.items.length}개</td>
-                 <td><span class="pill ${o.status}">${statusLabel(o.status)}</span></td>
+                 <td><span class="pill ${o.status}">${custStatusLabel(o.status)}</span></td>
                  <td class="act"><button class="btn sm secondary" onclick="location.hash='#orderDetail?id=${o.id}'">보기 / View</button></td>
                </tr>`).join('')}
              </tbody>
@@ -17094,7 +17288,7 @@ function viewOrderDetail(params) {
       new: '📥 주문이 접수되었습니다. 곧 작업이 시작됩니다.',
       weighing: '⚖️ 작업장에서 품목을 챙기고 있습니다.',
       weighed: '✅ 계근이 완료되어 사무실에서 인보이스를 준비 중입니다.',
-      invoiced: '📋 인보이스가 발행되었습니다. 곧 배송됩니다.',
+      invoiced: '🚚 배송 준비 중입니다. 곧 배송됩니다. / Preparing for delivery',
       delivered: '🚚 배송이 완료되었습니다. 이용해주셔서 감사합니다!',
       merged: '📋 같은 날 다른 주문과 함께 인보이스 하나로 발행됩니다.'
     }[o.status] || '';
@@ -17104,7 +17298,7 @@ function viewOrderDetail(params) {
         <span class="sub">주문 상세</span></h2>
       <div class="card">
         <div class="btn-row" style="margin-bottom:10px;">
-          <span class="pill ${o.status}" style="padding:6px 14px; font-size:13px;">${statusLabel(o.status)}</span>
+          <span class="pill ${o.status}" style="padding:6px 14px; font-size:13px;">${custStatusLabel(o.status)}</span>
           <button class="btn secondary" onclick="location.hash='#myOrders'">← 내 주문으로</button>
           <button style="background:#FEE500; color:#3A1D1D; border:none; padding:6px 14px; border-radius:6px; cursor:pointer; font-size:13px; font-weight:700; font-family:inherit;" onclick="shareOrder('${o.id}')">💬 카톡 공유</button>
         </div>
