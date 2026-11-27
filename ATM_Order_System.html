@@ -2260,7 +2260,7 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 402;
+const APP_VERSION = 403;
 const APP_VERSION_DATE = '27/11';
 function _appVerBadge() {
   let latest = 0;
@@ -2359,6 +2359,8 @@ function route() {
   }
   view(params);
   try { if (typeof renderUnsentBadge === 'function') renderUnsentBadge(); } catch(_){}   // (#402)
+  // ⭐ (2026-11-27 밤작업#403) 화면 아래 [확인]·[주문 제출] 바가 있으면 ↻ 버튼을 그 위로 (겹쳐서 잘못 누르는 것 방지)
+  try { document.body.classList.toggle('atm-bottombar', !!document.querySelector('#app .summary-bar, #app .order-confirm-bar')); } catch(_){}
   // ⭐ (2026-07-26) B: 원격 업데이트 재렌더 시 스크롤 유지 (플래그 확인)
   if (!window._preserveScrollOnce) {
     window.scrollTo(0, 0);
@@ -23980,6 +23982,8 @@ if (FIREBASE_READY && DB_REF) {
       @media print {
         #atm-refresh-btn, #atm-conn-dot { display: none !important; }
       }
+      /* (#403) 아래 [확인]·[주문 제출] 바 있는 화면 · ↻ 버튼을 바 위로 */
+      body.atm-bottombar #atm-refresh-btn { bottom: calc(96px + env(safe-area-inset-bottom, 0px)); }
     `;
     document.head.appendChild(hudStyle);
 
