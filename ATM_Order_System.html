@@ -518,6 +518,12 @@
     h2.page-title .sub { font-size: 11px !important; margin-left: 6px !important; }
     .card { padding: 10px 12px !important; margin-bottom: 8px !important; }
     .card h3 { font-size: 12px !important; margin: 4px 0 6px 0 !important; }
+    /* ⭐ (2026-11-27 밤작업#406) 주문 화면 · 휴대폰에서 좌우 여백 줄이고 장바구니 품목 이름 12px → 품목 설명이 더 들어가게 */
+    main.narrow { padding-left: 6px !important; padding-right: 6px !important; }
+    main.narrow .card { padding-left: 8px !important; padding-right: 8px !important; }
+    #cart .cart-row-compact { padding: 6px 6px !important; gap: 4px !important; }
+    #cart .cart-name { font-size: 12px !important; }
+    main.narrow .summary-bar, main.narrow .order-confirm-bar { margin-left: -6px !important; margin-right: -6px !important; }
     /* 하단 summary bar 컴팩트 */
     .summary-bar { padding: 6px 10px !important; }
     .summary-bar .info { font-size: 12px !important; }
@@ -2213,7 +2219,7 @@ function updateNav() {
     nav.innerHTML = `
       <span class="logo">🥩 ATM</span>
       <button class="tab" data-route="#order?c=${CUSTOMER_MODE}" style="background:#fff; color:var(--brand-dark); font-weight:700; padding:6px 12px; border-radius:6px; box-shadow:0 2px 6px rgba(0,0,0,0.18);">🛒 주문</button>
-      <button class="tab" data-route="#myOrders" style="background:#FFD54F; color:#3A1D1D; font-weight:800; padding:6px 12px; border-radius:6px; border:2px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,0.25);" title="내 주문이 접수됐는지 확인 / Check my orders">📋 내역 ✓</button>
+      <button class="tab" data-route="#myOrders" style="background:#FFD54F; color:#3A1D1D; font-weight:800; padding:6px 12px; border-radius:6px; border:2px solid #fff; box-shadow:0 2px 6px rgba(0,0,0,0.25);" title="내 주문이 접수됐는지 확인 / Check my orders">📋 주문내역 보기</button>
       <span class="spacer"></span>
       <span class="cust-name" style="color:rgba(255,255,255,0.9); margin-right:6px; font-size:12px;">👤 ${cust ? cust.name : '거래처'}</span>
       <button class="util" onclick="exitCustomerMode()" style="background:#fff;">Logout</button>
@@ -2260,7 +2266,7 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 403;
+const APP_VERSION = 406;
 const APP_VERSION_DATE = '27/11';
 function _appVerBadge() {
   let latest = 0;
@@ -7896,7 +7902,7 @@ function renderUnsentBadge() {
       b.style.cssText = 'position:fixed; top:30px; right:6px; z-index:99998; background:#C0392B; color:#fff; border:2px solid #fff; border-radius:8px; padding:4px 9px; font-size:12px; font-weight:800; line-height:1.25; text-align:center; box-shadow:0 3px 10px rgba(0,0,0,0.3); cursor:pointer; font-family:inherit; animation:atmUnsentPulse 1.4s ease-in-out infinite;';
       if (!document.getElementById('atm-unsent-anim')) {
         const st = document.createElement('style'); st.id = 'atm-unsent-anim';
-        st.textContent = '@keyframes atmUnsentPulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.06); } } @media print { #atm-unsent-badge { display:none !important; } }';
+        st.textContent = '@keyframes atmUnsentPulse { 0%,100% { transform:scale(1); } 50% { transform:scale(1.06); } } @media print { #atm-unsent-badge { display:none !important; } } @media (max-width: 400px) { #atm-unsent-badge { font-size:10.5px !important; padding:3px 6px !important; } #atm-unsent-badge span { font-size:10px !important; } }';
         document.head.appendChild(st);
       }
       document.body.appendChild(b);
@@ -8086,7 +8092,7 @@ function viewOrder(params) {
     <div class="card" id="cartCard" style="position:sticky; top:52px; z-index:50; background:#E4EEF7; border:0.5px solid #BBD3E7;">
       <h3>주문 내용 / Order Summary <span id="cartCount" style="float:right; color:var(--brand-dark); font-size:18px; font-weight:800;">0개</span></h3>
       <!-- ⭐ (2026-08-10) 최대 8개 (~260px) 노출, 초과 시 카트 내부 스크롤. 8개 이하는 스크롤바 안 뜸 -->
-      <div id="cart" style="max-height:260px; overflow-y:auto;"></div>
+      <div id="cart" style="max-height:260px; overflow-y:auto; clear:both;"></div>
     </div>
 
     <div class="card" id="favCard">
@@ -8106,7 +8112,7 @@ function viewOrder(params) {
     <div class="summary-bar">
       <div class="info">총 <b id="totalQty">0</b>개</div>
       ${CUSTOMER_MODE
-        ? `<button onclick="goToOrderConfirm('${cust.id}')">확인 / Confirm →</button>`
+        ? `<button onclick="goToOrderConfirm('${cust.id}')">주문확인 / Confirm →</button>`
         : `<button onclick="confirmAndSubmitOrder('${cust.id}')">주문 제출 / Submit Order</button>`}
     </div>
   `;
@@ -8416,7 +8422,7 @@ function renderCart() {
       const revealHtml = isExpanded
         ? `<button class="cart-edit-btn" onclick="event.stopPropagation(); openCartEditModal(${idx})" style="background:#5C0F0F; color:#fff; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:600; margin-right:4px;">✎ 수정</button>
            <button class="cart-del-btn" onclick="event.stopPropagation(); confirmCartDelete(${idx})" style="background:#C62828; color:#fff; border:none; border-radius:4px; padding:4px 8px; font-size:11px; font-weight:600;">🗑 삭제</button>`
-        : `<span style="color:var(--muted); font-size:11px;">탭</span>`;
+        : `<span style="color:var(--muted); font-size:10px; line-height:1.1; text-align:center; white-space:nowrap;">수정<br>삭제</span>`;   // (#405) "탭" → "수정/삭제" 안내 글씨 (두 줄로 · 품목 이름 자리 거의 그대로)
       // 미입력 항목은 빨간 배경 + 빨간 좌측 라인 (확장 상태보다 우선)
       const rowBg = isEmpty ? '#FFEBEE' : (isExpanded ? '#FFF3C4' : '#FFFCF3');
       const rowBorder = isEmpty ? '#C62828' : (isExpanded ? '#E8A317' : '#F0D89A');
@@ -8425,7 +8431,7 @@ function renderCart() {
         <div class="cart-row-compact"
              onclick="event.stopPropagation(); toggleCartRowExpand(${idx})"
              style="display:flex; align-items:center; gap:6px; padding:6px 8px; background:${rowBg}; border:0.5px solid ${rowBorder}; ${emptyLeftBar} border-radius:5px; margin-bottom:3px; cursor:pointer; min-height:28px; transition:background 0.12s;">
-          <span style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:${isEmpty?'700':'500'}; font-size:13px; color:${isEmpty?'#C62828':'var(--ink)'};">${escapeHtmlSimple(pName)}${notesTag}</span>
+          <span class="cart-name" style="flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; font-weight:${isEmpty?'700':'500'}; font-size:13px; color:${isEmpty?'#C62828':'var(--ink)'};">${escapeHtmlSimple(pName)}${notesTag}</span>
           <span style="color:#5C0F0F; font-weight:700; font-size:13px; white-space:nowrap;">${qtyStr}</span>
           <span style="display:flex; align-items:center; margin-left:4px;">${revealHtml}</span>
         </div>
