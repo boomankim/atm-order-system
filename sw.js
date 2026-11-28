@@ -11,7 +11,7 @@
  *
  * 배포 시 아래 CACHE 버전만 올리면 옛 캐시가 자동 정리되고 새 HTML이 즉시 적용됨.
  */
-const CACHE = 'atm-20261128-sat-407';
+const CACHE = 'atm-20261128-night-408';
 
 // 앱 셸 — 첫 install 시 미리 캐싱
 const APP_SHELL = [

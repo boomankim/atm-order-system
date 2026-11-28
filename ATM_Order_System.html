@@ -2360,7 +2360,7 @@ function updateNav() {
 }
 
 // ⭐ (2026-10-16 #392) 앱 버전 표시 · 배포할 때 sw.js CACHE 번호와 같이 올림
-const APP_VERSION = 407;
+const APP_VERSION = 408;
 const APP_VERSION_DATE = '28/11';
 function _appVerBadge() {
   let latest = 0;
@@ -12044,21 +12044,15 @@ async function getDailyReportDirHandle() {
   const sub = await getMasterSubDir('매출일보');
   if (sub) return sub;
   // legacy fallback
+  // ⭐ (#408) 통합 폴더가 지정돼 있으면 예전 개별 폴더로 넘어가지 않음 (허락 창 두 번 방지)
+  if (window._atmFsKnownMaster) return null;
   if (_dailyReportDirHandle) {
-    try {
-      const perm = await _dailyReportDirHandle.queryPermission({ mode: 'readwrite' });
-      if (perm === 'granted') return _dailyReportDirHandle;
-      const req = await _dailyReportDirHandle.requestPermission({ mode: 'readwrite' });
-      if (req === 'granted') return _dailyReportDirHandle;
-    } catch(e) {}
+    if (await _atmFsAccess(_dailyReportDirHandle, 'dailyReportDirHandle')) return _dailyReportDirHandle;
+    return null;
   }
   try {
-    const handle = await idbGet('dailyReportDirHandle');
-    if (handle) {
-      let perm = await handle.queryPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { _dailyReportDirHandle = handle; return handle; }
-    }
+    const handle = await _atmTimeout(idbGet('dailyReportDirHandle'), 3000, null);
+    if (handle && await _atmFsAccess(handle, 'dailyReportDirHandle')) { _dailyReportDirHandle = handle; return handle; }
   } catch(e) {}
   return null;
 }
@@ -12197,6 +12191,7 @@ window.saveDailyReportPDF = async function() {
       }
     } else {
       doc.save(filename);
+      if (window._atmFsNeedPerm) showToast('💾 매출일보는 다운로드 폴더에 저장 · 📁 저장 폴더 허락 필요 → 오른쪽 위 [허용하기]', 7000); else   // (#408)
       setTimeout(() => alert('💾 매출일보 다운로드 완료!\n\n📁 매번 같은 폴더에 자동 저장하려면\n"📁 폴더 변경" 버튼을 한 번 눌러서\n저장 폴더를 지정해 주세요.\n\n이후부터는 클릭만 하면\n자동으로 그 폴더에 "년-월" 하위폴더가 만들어지고\n그 안에 PDF가 저장됩니다.'), 300);
     }
   } catch(e) {
@@ -17519,6 +17514,109 @@ async function idbSet(key, value) {
 let _backupDirHandle = null;
 
 // =========================================================================
+//  ⭐ (2026-11-28 밤작업#408) 폴더 허락 대기로 멈추지 않게
+//   원인 (11/24): 폴더 저장 전 requestPermission() 이 크롬 허락 창을 띄우고 답을 무한정 기다림
+//                 → 백업 진행 화면 뒤라 안 보임 → "JSON 백업 저장 중" 에서 멈춤
+//   대책: · 허락 확인 3초 · 허락 창 20초 제한 (답 없으면 건너뜀)
+//         · 버튼을 누른 직후(사용자 동작)에만 허락 창 · 자동 저장은 허락 창 안 띄움
+//         · 허락이 끊기면 오른쪽 위 [📁 저장 폴더 허락 필요 · 허용하기] · 누를 때까지 다시 묻지 않음
+//         · 폴더는 있는데 허락만 없을 때 · 전체 백업이 PDF 수천 개를 다운로드하지 않게 (exportInvoicePDFs)
+// =========================================================================
+function _atmTimeout(p, ms, fallback) {
+  return Promise.race([Promise.resolve(p), new Promise(function(r) { setTimeout(function() { r(fallback); }, ms); })]);
+}
+window._atmFsNeedPerm = null;      // 허락이 필요한 폴더 핸들 (있으면 [허용하기] 표시 중)
+window._atmFsKnownMaster = false;  // 통합 저장 폴더가 지정돼 있음 → 예전 개별 폴더로 넘어가지 않음
+window._ATM_FS_ASK_MS = 20000;
+function _atmFsAskHint(on) {
+  let h = document.getElementById('atm-fs-ask-hint');
+  if (!on) { if (h) h.remove(); return; }
+  if (h) return;
+  h = document.createElement('div');
+  h.id = 'atm-fs-ask-hint';
+  h.className = 'no-print';
+  h.style.cssText = 'position:fixed; top:8px; left:50%; transform:translateX(-50%); z-index:100001; max-width:92vw;'
+    + 'background:#1F3A5F; color:#fff; padding:10px 16px; border-radius:10px; font-size:13px; font-weight:700; line-height:1.45;'
+    + 'box-shadow:0 6px 20px rgba(0,0,0,0.35); text-align:center; border:2px solid #FFD54F;';
+  h.innerHTML = '🔐 브라우저 위쪽(주소창 근처)에 <b style="color:#FFD54F;">"파일 수정 허용"</b> 창이 떴으면 <b style="color:#FFD54F;">[허용]</b>을 눌러 주세요'
+    + '<br><span style="font-weight:500; font-size:12px; opacity:0.9;">' + Math.round(window._ATM_FS_ASK_MS / 1000) + '초 안에 답이 없으면 저장을 건너뛰고 계속합니다</span>';
+  document.body.appendChild(h);
+}
+function _atmFsClearNeed() {
+  window._atmFsNeedPerm = null;
+  const p = document.getElementById('atm-fs-perm-pill'); if (p) p.remove();
+}
+function _atmFsShowPill() {
+  if (document.getElementById('atm-fs-perm-pill')) return;
+  const old = document.getElementById('backup-folder-pill'); if (old) old.remove();   // 예전 "재지정" 안내와 겹치지 않게
+  const pill = document.createElement('div');
+  pill.id = 'atm-fs-perm-pill';
+  pill.className = 'no-print';
+  pill.style.cssText = 'position:fixed; top:110px; right:12px; z-index:9998; padding:9px 12px; border-radius:20px;'
+    + 'background:#C0392B; color:#fff; font-size:12px; font-weight:700; box-shadow:0 3px 10px rgba(0,0,0,0.3);'
+    + 'cursor:pointer; user-select:none; display:flex; align-items:center; gap:8px;';
+  pill.innerHTML = '<span>📁 저장 폴더 허락 필요 · <u>허용하기</u></span>'
+    + '<button type="button" style="background:rgba(0,0,0,0.2); border:none; color:#fff; border-radius:50%; width:20px; height:20px; cursor:pointer; padding:0; font-size:12px; font-weight:700;" title="닫기">✕</button>';
+  pill.onclick = function(e) {
+    if (e.target.tagName === 'BUTTON') { pill.remove(); return; }
+    atmFsGrantNow();
+  };
+  document.body.appendChild(pill);
+}
+// [허용하기] · 사용자가 누른 그 순간 바로 허락 창 (await 전에 호출해야 크롬이 허락 창을 띄움)
+window.atmFsGrantNow = function() {
+  const h = window._atmFsNeedPerm || _masterDirHandle;
+  if (!h || typeof h.requestPermission !== 'function') {
+    if (typeof window.setMasterFolder === 'function') window.setMasterFolder().then(function(ok) { if (ok) _atmFsClearNeed(); });
+    return;
+  }
+  let p;
+  try { p = h.requestPermission({ mode: 'readwrite' }); } catch (e) { p = Promise.reject(e); }
+  _atmFsAskHint(true);
+  _atmTimeout(p, 60000, 'timeout').then(function(r) {
+    _atmFsAskHint(false);
+    if (r === 'granted') {
+      _atmFsClearNeed();
+      showToast('✅ 저장 폴더 허용됨 · 필요하면 [💾 전체 백업]을 다시 눌러 주세요', 6000);
+    } else {
+      alert('📁 저장 폴더 허락이 되지 않았습니다.\n\n· 다시 [허용하기]를 누르고 브라우저 위쪽 창에서 [허용]을 눌러 주세요.\n· 계속 안 되면 오른쪽 위 [📁 통합 저장 폴더] 버튼으로 같은 폴더(ATM CLAUDE)를 다시 선택해 주세요.');
+    }
+  }).catch(function(e) {
+    _atmFsAskHint(false);
+    console.warn('[#408] 허락 요청 실패 → 폴더 다시 선택:', e);
+    if (typeof window.setMasterFolder === 'function') window.setMasterFolder().then(function(ok) { if (ok) _atmFsClearNeed(); });
+  });
+};
+// 폴더 핸들 사용 가능? (허락 확인 + 필요하면 허락 창 · 시간 제한)
+async function _atmFsAccess(handle, label) {
+  if (!handle || typeof handle.queryPermission !== 'function') return false;
+  let perm;
+  try { perm = await _atmTimeout(handle.queryPermission({ mode: 'readwrite' }), 3000, 'timeout'); } catch (e) { perm = 'error'; }
+  if (perm === 'granted') {
+    if (window._atmFsNeedPerm) _atmFsClearNeed();
+    return true;
+  }
+  // 이미 안내 중 · 다시 묻지 않음 (인보이스 발행 때마다 허락 창 반복 방지) · 단 [전체 백업]을 직접 다시 누른 경우는 한 번 더 물어봄
+  if (window._atmFsNeedPerm && !window._atmFsForceAsk) { _atmFsShowPill(); return false; }
+  const act = navigator.userActivation;
+  const canAsk = (perm === 'prompt') && (!act || act.isActive);      // 버튼 누른 직후에만
+  if (canAsk) {
+    _atmFsAskHint(true);
+    let req;
+    try { req = await _atmTimeout(handle.requestPermission({ mode: 'readwrite' }), window._ATM_FS_ASK_MS, 'timeout'); } catch (e) { req = 'error:' + (e && e.name); }
+    _atmFsAskHint(false);
+    if (req === 'granted') { if (window._atmFsNeedPerm) _atmFsClearNeed(); return true; }
+    window._atmFsForceAsk = false;   // 이번 백업에서 한 번 물었으면 · 다음 단계(PDF)에서 또 묻지 않음
+    console.warn('[#408] 폴더 허락 안 됨 (' + (label || '') + '): ' + req);
+  } else {
+    console.warn('[#408] 폴더 허락 필요 · 허락 창 안 띄움 (' + (label || '') + ' · ' + perm + (act && !act.isActive ? ' · 사용자 동작 없음' : '') + ')');
+  }
+  window._atmFsNeedPerm = handle;
+  _atmFsShowPill();
+  return false;
+}
+
+// =========================================================================
 //  ⭐ (2026-08-11) 통합 저장 폴더 (master folder)
 //  사용자는 한 번만 "ATM CLAUDE" 같은 마스터 폴더를 지정한다.
 //  하위에 매출일보/, 매입일보/, 재고현황/, ATM Invoice/, ATM 주문서/,
@@ -17526,23 +17624,13 @@ let _backupDirHandle = null;
 // =========================================================================
 let _masterDirHandle = null;
 async function getMasterDirHandle() {
-  if (_masterDirHandle) {
-    try {
-      const perm = await _masterDirHandle.queryPermission({ mode: 'readwrite' });
-      if (perm === 'granted') return _masterDirHandle;
-      const req = await _masterDirHandle.requestPermission({ mode: 'readwrite' });
-      if (req === 'granted') return _masterDirHandle;
-    } catch(e) {}
+  // ⭐ (#408) 허락 확인·허락 창 모두 시간 제한 (_atmFsAccess) · 폴더 정보 읽기 3초 제한
+  if (!_masterDirHandle) {
+    try { const h = await _atmTimeout(idbGet('masterDirHandle'), 3000, null); if (h) _masterDirHandle = h; } catch(e) {}
   }
-  try {
-    const handle = await idbGet('masterDirHandle');
-    if (handle) {
-      let perm = await handle.queryPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { _masterDirHandle = handle; return handle; }
-    }
-  } catch(e) {}
-  return null;
+  if (!_masterDirHandle) return null;
+  window._atmFsKnownMaster = true;
+  return (await _atmFsAccess(_masterDirHandle, '통합 저장 폴더')) ? _masterDirHandle : null;
 }
 async function getMasterSubDir(subName) {
   const master = await getMasterDirHandle();
@@ -17609,21 +17697,15 @@ async function getInvoiceBackupDirHandle() {
   const master = await getMasterDirHandle();
   if (master) return master;
   // legacy fallback
+  // ⭐ (#408) 통합 폴더가 지정돼 있으면 예전 개별 폴더로 넘어가지 않음 (허락 창 두 번 방지)
+  if (window._atmFsKnownMaster) return null;
   if (_invoiceBackupDirHandle) {
-    try {
-      const perm = await _invoiceBackupDirHandle.queryPermission({ mode: 'readwrite' });
-      if (perm === 'granted') return _invoiceBackupDirHandle;
-      const req = await _invoiceBackupDirHandle.requestPermission({ mode: 'readwrite' });
-      if (req === 'granted') return _invoiceBackupDirHandle;
-    } catch(e) {}
+    if (await _atmFsAccess(_invoiceBackupDirHandle, 'invoiceBackupDirHandle')) return _invoiceBackupDirHandle;
+    return null;
   }
   try {
-    const handle = await idbGet('invoiceBackupDirHandle');
-    if (handle) {
-      let perm = await handle.queryPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { _invoiceBackupDirHandle = handle; return handle; }
-    }
+    const handle = await _atmTimeout(idbGet('invoiceBackupDirHandle'), 3000, null);
+    if (handle && await _atmFsAccess(handle, 'invoiceBackupDirHandle')) { _invoiceBackupDirHandle = handle; return handle; }
   } catch(e) {}
   return null;
 }
@@ -17885,6 +17967,13 @@ async function exportOrderPDFs(silent = false, onProgress = null) {
   container.style.cssText = 'position:fixed;left:-9999px;top:0;width:780px;background:#fff;z-index:-1;pointer-events:none;';
   document.body.appendChild(container);
   const dirHandle = await getBackupDirHandle();
+  // ⭐ (#408) 폴더는 있는데 허락이 없음 → PDF 를 하나씩 다운로드하지 않고 건너뜀 (수천 개 다운로드 방지)
+  if (!dirHandle && window._atmFsNeedPerm) {
+    try { document.body.removeChild(container); } catch(_){}
+    const _sk = '폴더 허락 필요 · PDF 건너뜀 (오른쪽 위 [허용하기] 후 다시 백업)';
+    if (!silent) alert('📁 저장 폴더 허락이 필요해 PDF 저장을 건너뜁니다.\n\n오른쪽 위 [📁 저장 폴더 허락 필요 · 허용하기]를 누른 뒤 다시 해 주세요.');
+    return { saved: 0, failed: 0, skipped: _sk, needPerm: true };
+  }
   let saved = 0, failed = 0;
   let _idx = 0;
   for (const o of orders) {
@@ -17982,6 +18071,13 @@ async function exportInvoicePDFs(silent = false, onProgress = null) {
   document.body.appendChild(container);
   const pad = n => String(n).padStart(2,'0');
   const dirHandle = await getBackupDirHandle();
+  // ⭐ (#408) 폴더는 있는데 허락이 없음 → PDF 를 하나씩 다운로드하지 않고 건너뜀 (수천 개 다운로드 방지)
+  if (!dirHandle && window._atmFsNeedPerm) {
+    try { document.body.removeChild(container); } catch(_){}
+    const _sk = '폴더 허락 필요 · PDF 건너뜀 (오른쪽 위 [허용하기] 후 다시 백업)';
+    if (!silent) alert('📁 저장 폴더 허락이 필요해 PDF 저장을 건너뜁니다.\n\n오른쪽 위 [📁 저장 폴더 허락 필요 · 허용하기]를 누른 뒤 다시 해 주세요.');
+    return { saved: 0, failed: 0, skipped: _sk, needPerm: true };
+  }
   let saved = 0, failed = 0, skippedExisting = 0;
   let _idx = 0;
   for (const o of invoicedOrders) {
@@ -18071,21 +18167,15 @@ async function getBackupDirHandle() {
   const master = await getMasterDirHandle();
   if (master) return master;
   // legacy fallback
+  // ⭐ (#408) 통합 폴더가 지정돼 있으면 예전 개별 폴더로 넘어가지 않음 (허락 창 두 번 방지)
+  if (window._atmFsKnownMaster) return null;
   if (_backupDirHandle) {
-    try {
-      const perm = await _backupDirHandle.queryPermission({ mode: 'readwrite' });
-      if (perm === 'granted') return _backupDirHandle;
-      const req = await _backupDirHandle.requestPermission({ mode: 'readwrite' });
-      if (req === 'granted') return _backupDirHandle;
-    } catch(e) {}
+    if (await _atmFsAccess(_backupDirHandle, 'backupDirHandle')) return _backupDirHandle;
+    return null;
   }
   try {
-    const handle = await idbGet('backupDirHandle');
-    if (handle) {
-      let perm = await handle.queryPermission({ mode: 'readwrite' });
-      if (perm !== 'granted') perm = await handle.requestPermission({ mode: 'readwrite' });
-      if (perm === 'granted') { _backupDirHandle = handle; return handle; }
-    }
+    const handle = await _atmTimeout(idbGet('backupDirHandle'), 3000, null);
+    if (handle && await _atmFsAccess(handle, 'backupDirHandle')) { _backupDirHandle = handle; return handle; }
   } catch(e) {}
   return null;
 }
@@ -18104,6 +18194,9 @@ async function exportAll(silent = false) {
       if (!silent) showToast(`✅ 백업 저장 완료 — 📁 _백업(JSON)/${dateStr}/${filename}`);
       return { success: true, filename, folder: `_백업(JSON)/${dateStr}` };
     } catch(e) { console.warn('폴더 저장 실패, 다운로드로 대체:', e); }
+  } else if (window._atmFsNeedPerm) {
+    // ⭐ (#408) 폴더는 있는데 허락이 없음 · 폴더 다시 고르라고 하지 않음 · 다운로드로 저장 + [허용하기] 안내
+    if (!silent) showToast('📁 저장 폴더 허락이 필요해 다운로드 폴더에 저장합니다 · 오른쪽 위 [허용하기]', 6000);
   } else {
     if (!silent) {
       const go = confirm('💡 백업 저장 폴더가 설정되지 않았습니다.\n\n지금 폴더를 선택하시겠습니까?\n\n(취소 시 다운로드 폴더로 저장됩니다)');
@@ -18193,6 +18286,7 @@ async function exportAllFull() {
   }
   _backupInProgress = true;
   window._backupInProgress = true;
+  window._atmFsForceAsk = true;   // (#408) 직접 누른 전체 백업 · 허락이 끊겼으면 한 번 물어봄
   // ⭐ (2026-09-28 밤작업#367) 백업 성공 여부 — finally 에서 배너 제거 판단용.
   //   이 함수엔 catch 가 없어 중간에 예외가 나도 finally 는 실행되므로,
   //   플래그 없이 배너를 지우면 "실패했는데 배너가 사라지는" 더 나쁜 상태가 된다.
@@ -18209,6 +18303,16 @@ async function exportAllFull() {
   //   필요 시 콘솔에서 exportOrderPDFs() 수동 호출 가능
   const orderResult = { saved: 0, failed: 0, skipped: '주문서 PDF 백업 스킵 (2026-08-18 정책)' };
   hideBackupProgress();
+  // ⭐ (#408) 폴더 허락 문제로 PDF 를 건너뛰었으면 · "전체 백업 완료"로 기록하지 않음 (배너가 남아 다시 하도록)
+  const _permSkipped = !!(pdfResult && pdfResult.needPerm) || (!!window._atmFsNeedPerm && !(jsonResult && jsonResult.folder));
+  if (_permSkipped) {
+    alert('⚠️ 전체 백업 일부만 완료\n\n'
+      + '💾 JSON: ' + (jsonResult && jsonResult.folder ? '📁 ' + jsonResult.folder + ' / ' : '') + (jsonResult && jsonResult.filename || '') + (jsonResult && jsonResult.folder ? '' : ' (다운로드 폴더)') + '\n'
+      + '📄 인보이스 PDF: 저장 폴더 허락이 없어 건너뜀\n\n'
+      + '👉 오른쪽 위 [📁 저장 폴더 허락 필요 · 허용하기]를 누르고 [허용] → [💾 전체 백업]을 다시 눌러 주세요.\n'
+      + '(데이터는 서버(Firebase)에 그대로 안전합니다)');
+    return;
+  }
   // ⭐ (2026-07-07) 전체 백업 성공 시각 기록 — 편집 잠금 & 배너 트리거 기준.
   //   Firebase 부분 업데이트로 다른 기기에도 즉시 전파.
   try {
@@ -18251,6 +18355,7 @@ async function exportAllFull() {
     hideBackupProgress();
     _backupInProgress = false;
     window._backupInProgress = false;
+    window._atmFsForceAsk = false;   // (#408)
     await _releaseBackupWakeLock();
     // ⭐ (2026-09-28 밤작업#367) 백업 완료 후 [전체 백업 권장] 배너 즉시 정리
     //   문제: lastFullBackupAt 은 위에서 갱신되는데 화면을 다시 그리지 않아
@@ -22826,8 +22931,9 @@ async function getInventoryDirHandle() {
   // ⭐ (2026-08-11) 통합 폴더 우선 — master/재고현황/YYYY-MM/에 저장
   const sub = await getMasterSubDir('재고현황');
   if (sub) return sub;
+  if (window._atmFsKnownMaster) return null;   // (#408) 통합 폴더 있으면 예전 폴더로 안 넘어감
   // legacy fallback
-  try { return await idbGet('inventoryDirHandle'); } catch(e) { return null; }
+  try { const h = await _atmTimeout(idbGet('inventoryDirHandle'), 3000, null); return (h && await _atmFsAccess(h, 'inventoryDirHandle')) ? h : null; } catch(e) { return null; }
 }
 
 // ⭐ (2026-08-11) 개별 폴더 지정 → 통합 폴더 지정으로 리다이렉트
@@ -23069,6 +23175,7 @@ window.saveInventoryPDF = async function() {
       }
     } else {
       doc.save(filename);
+      if (window._atmFsNeedPerm) showToast('💾 재고현황은 다운로드 폴더에 저장 · 📁 저장 폴더 허락 필요 → 오른쪽 위 [허용하기]', 7000); else   // (#408)
       setTimeout(() => alert('💾 재고현황 PDF 다운로드 완료!\n\n📁 매번 같은 폴더에 자동 저장하려면\n"📁 폴더 변경" 버튼을 한 번 눌러서\n저장 폴더를 지정해 주세요 (매출일보와 별도 폴더).'), 300);
     }
   } catch(e) {
@@ -23437,7 +23544,8 @@ async function autoSaveInvoice(orderId) {
       }
     } else {
       // 폴더 미지정 → 다운로드 없이 pill 안내만
-      if (typeof window._showBackupFolderPill === 'function') window._showBackupFolderPill();
+      // (#408) 폴더는 있는데 허락만 없으면 [허용하기] 안내가 이미 떠 있음 → "재지정" 안내 안 띄움
+      if (!window._atmFsNeedPerm && typeof window._showBackupFolderPill === 'function') window._showBackupFolderPill();
     }
   } catch(e) { console.warn('JSON 백업 실패:', e); }
 
