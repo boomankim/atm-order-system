@@ -18558,7 +18558,7 @@ window.savePayment = function() {
   succ.style.display = 'block';
   setTimeout(() => { succ.style.display = 'none'; }, 3000);
   // Refresh balance display
-  id2 = document.getElementById('payCustomer').value;
+  const cid2 = document.getElementById('payCustomer').value;   // (#408) 오타 수정 · 예전엔 여기서 오류 → 잔액 칸이 안 바뀜 (입금 저장은 됐음)
   document.getElementById('payBalanceBox').innerHTML = window.renderPaymentBalance(cid2);
 };
 
